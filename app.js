@@ -284,10 +284,11 @@ const requestFileList = document.querySelector("#requestFileList");
 const requestSalesRepName = document.querySelector("#requestSalesRepName");
 const requestSalesRepEmail = document.querySelector("#requestSalesRepEmail");
 const requestSalesRepPhone = document.querySelector("#requestSalesRepPhone");
-const requestSalesRepBranch = document.querySelector("#requestSalesRepBranch");
 const requestSalesRepOptions = document.querySelector("#requestSalesRepOptions");
 const salesRequestDocumentsPanel = document.querySelector("#salesRequestDocumentsPanel");
 const salesRequestDocumentsList = document.querySelector("#salesRequestDocumentsList");
+const salesRequestSummaryPanel = document.querySelector("#salesRequestSummaryPanel");
+const salesRequestSummary = document.querySelector("#salesRequestSummary");
 
 const permissionDefinitions = [
   { key: "dashboard", label: "Dashboard", section: "dashboard" },
@@ -1037,6 +1038,7 @@ function resetQuoteForm() {
   refreshAutoTerms();
   updateSupplierQuoteDisplay();
   renderSalesRequestDocuments(null);
+  renderSalesRequestSummary(null);
   renderAll();
 }
 
@@ -2501,13 +2503,27 @@ function selectedRequestSalesRep() {
   ));
 }
 
+function currentUserSalesRep() {
+  const email = normalizeEmail(currentUser());
+  const name = currentUserName().toLowerCase();
+  return salesRepSearchRecords().find((rep) => (
+    normalizeEmail(rep.email) === email ||
+    rep.name.toLowerCase() === name
+  ));
+}
+
+function autoPopulateRequestSalesRep(force = false) {
+  if (!force && (requestSalesRepName.value.trim() || requestSalesRepEmail.value.trim())) return;
+  const rep = currentUserSalesRep();
+  if (rep) applyRequestSalesRep(rep);
+}
+
 function applyRequestSalesRep(rep) {
   if (!rep) return;
   state.selectedRequestSalesRepId = rep.id;
   requestSalesRepName.value = rep.name || "";
   requestSalesRepEmail.value = rep.email || "";
   requestSalesRepPhone.value = rep.phone || "";
-  requestSalesRepBranch.value = rep.branch || rep.department || "";
 }
 
 function renderRequestFileList() {
@@ -2534,6 +2550,28 @@ function renderSalesRequestDocuments(request) {
       <button class="secondary-btn" type="button" data-download-request-file="${escapeHtml(file.id || file.fileId || "")}">Download</button>
     </div>
   `).join("");
+}
+
+function renderSalesRequestSummary(request) {
+  salesRequestSummaryPanel.hidden = !request;
+  if (!request) {
+    salesRequestSummary.innerHTML = "";
+    return;
+  }
+  salesRequestSummary.innerHTML = `
+    <div class="internal-costing-grid request-summary-grid">
+      <div><small>Request number</small><strong>${escapeHtml(request.request_number || "-")}</strong></div>
+      <div><small>Client</small><strong>${escapeHtml(request.client_name || "-")}</strong></div>
+      <div><small>Contact</small><strong>${escapeHtml([request.client_contact_person, request.client_email, request.client_phone].filter(Boolean).join(" / ") || "-")}</strong></div>
+      <div><small>Site / project</small><strong>${escapeHtml(request.site_project_name || "-")}</strong></div>
+      <div><small>Site address</small><strong>${escapeHtml(request.site_address || "-")}</strong></div>
+      <div><small>Sales rep</small><strong>${escapeHtml([request.sales_rep_name, request.sales_rep_email, request.sales_rep_phone].filter(Boolean).join(" / ") || "-")}</strong></div>
+      <div><small>Due date</small><strong>${escapeHtml(formatDate(request.required_due_date))}</strong></div>
+      <div><small>Status</small><strong>${escapeHtml(request.status || "-")}</strong></div>
+      <div><small>Description of work</small><strong>${escapeHtml(request.description_of_work || "-")}</strong></div>
+      <div><small>Notes to quotation builder</small><strong>${escapeHtml(request.notes_for_builder || "-")}</strong></div>
+    </div>
+  `;
 }
 
 function openRequestDocument(fileId, mode = "view") {
@@ -2569,6 +2607,7 @@ function salesRequestsForCurrentUser() {
 
 function renderSalesRequests() {
   if (!canAccess("salesRequests")) return;
+  autoPopulateRequestSalesRep();
   const requests = salesRequestsForCurrentUser().sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
   salesRequestList.innerHTML = "";
   if (!requests.length) {
@@ -2593,8 +2632,8 @@ function renderSalesRequests() {
         <div class="approval-table-row" role="row">
           <span><strong>${escapeHtml(request.request_number)}</strong><small>${escapeHtml(request.supplier_name || "-")}</small></span>
           <span>${escapeHtml(request.client_name)}</span>
-          <span>${escapeHtml(request.site_project_name)}</span>
-          <span><strong>${escapeHtml(request.sales_rep_name)}</strong><small>${escapeHtml(request.sales_rep_email)}</small></span>
+          <span>${escapeHtml(request.site_project_name || "-")}</span>
+          <span><strong>${escapeHtml(request.sales_rep_name)}</strong><small>${escapeHtml([request.sales_rep_email, request.sales_rep_phone].filter(Boolean).join(" | "))}</small></span>
           <span><mark class="status-badge ${request.status === "Rejected - Insufficient Information" ? "status-rejected" : request.status === "Completed" ? "status-complete" : "status-warning"}">${escapeHtml(request.status)}</mark></span>
           <span>${escapeHtml(request.accepted_by_name || "-")}</span>
           <span>${escapeHtml(formatDate((request.created_at || "").slice(0, 10)))}</span>
@@ -2629,7 +2668,7 @@ function createQuotationFromRequest(id) {
   fields.contactPerson.value = request.client_contact_person || "";
   fields.contactEmail.value = request.client_email || "";
   fields.contactNumber.value = request.client_phone || "";
-  fields.projectSummary.value = [request.description_of_work, request.special_client_requirements, request.notes_for_builder].filter(Boolean).join("\n\n");
+  fields.projectSummary.value = request.description_of_work || "";
   if (request.required_due_date) {
     const quoteDate = new Date(`${fields.quoteDate.value}T00:00:00`);
     const dueDate = new Date(`${request.required_due_date}T00:00:00`);
@@ -2648,6 +2687,7 @@ function createQuotationFromRequest(id) {
   state.supplierQuote = state.supplierQuotes[0] || null;
   updateSupplierQuoteDisplay();
   renderSalesRequestDocuments(request);
+  renderSalesRequestSummary(request);
   updateSalesRequest(id, { linked_quotation_id: fields.quoteNumber.value });
   writeAudit("Quotation created from request", request.request_number, "Sales Quotation Requests", request.request_number, fields.quoteNumber.value);
   writeAudit("User redirected to quotation builder", request.request_number, "Sales Quotation Requests", request.request_number, currentUserName());
@@ -4647,7 +4687,6 @@ salesRequestForm.addEventListener("submit", (event) => {
     ["requestContactPerson", "Client contact person"],
     ["requestClientEmail", "Client email"],
     ["requestClientPhone", "Client phone number"],
-    ["requestProjectName", "Site/project name"],
     ["requestSiteAddress", "Site address"],
     ["requestSalesRepName", "Sales rep name"],
     ["requestSalesRepEmail", "Sales rep email"],
@@ -4672,10 +4711,8 @@ salesRequestForm.addEventListener("submit", (event) => {
     sales_rep_name: requestSalesRepName.value.trim(),
     sales_rep_email: requestSalesRepEmail.value.trim(),
     sales_rep_phone: requestSalesRepPhone.value.trim(),
-    sales_rep_branch: requestSalesRepBranch.value.trim(),
     required_due_date: document.querySelector("#requestDueDate").value,
     description_of_work: document.querySelector("#requestDescription").value.trim(),
-    special_client_requirements: document.querySelector("#requestSpecialRequirements").value.trim(),
     notes_for_builder: document.querySelector("#requestNotes").value.trim(),
     status: "Submitted",
     submitted_by_user_id: currentUser(),
@@ -4689,6 +4726,7 @@ salesRequestForm.addEventListener("submit", (event) => {
   state.selectedRequestSalesRepId = "";
   salesRequestForm.reset();
   renderRequestSalesRepOptions();
+  autoPopulateRequestSalesRep(true);
   renderRequestFileList();
   renderSalesRequests();
 });
@@ -5054,6 +5092,7 @@ portalHubGrid.addEventListener("click", (event) => {
 seedPortalTables();
 renderPermissionChecklist(roleDefaultPermissions[memberAccess.value] || []);
 renderRequestSalesRepOptions();
+autoPopulateRequestSalesRep(true);
 hydrateSharedSessionFromUrl();
 loadSalesRepsFromStorage();
 renderSalesRepOptions();

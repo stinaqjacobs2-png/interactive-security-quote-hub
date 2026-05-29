@@ -510,6 +510,15 @@
             <div class="preview-actions">
               <button class="primary-btn" id="saveQuote" type="button">Submit for approval</button>
             </div>
+            <section class="panel linked-request-summary" id="salesRequestSummaryPanel" hidden>
+              <div class="panel-heading compact-heading">
+                <div>
+                  <p class="eyebrow">Linked request</p>
+                  <h2>Sales Quotation Request Information</h2>
+                </div>
+              </div>
+              <div id="salesRequestSummary"></div>
+            </section>
           </aside>
         </section>
 
@@ -533,10 +542,8 @@
                 </label>
                 <input id="requestSalesRepEmail" type="email" placeholder="Sales rep email" />
                 <input id="requestSalesRepPhone" type="tel" placeholder="Sales rep phone number" />
-                <input id="requestSalesRepBranch" type="text" placeholder="Sales rep branch / department" />
                 <label>Required quotation due date<input id="requestDueDate" type="date" /></label>
                 <textarea id="requestDescription" rows="4" placeholder="Description of work required" spellcheck="true"></textarea>
-                <textarea id="requestSpecialRequirements" rows="3" placeholder="Special client requirements" spellcheck="true"></textarea>
                 <textarea id="requestNotes" rows="3" placeholder="Notes for quotation builder" spellcheck="true"></textarea>
                 <label class="upload-control">
                   Upload supporting documents
