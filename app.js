@@ -16,6 +16,8 @@ const state = {
   supplierImportErrors: [],
   salesRequestFiles: [],
   revisionSourceId: "",
+  activeSalesRequestId: "",
+  selectedRequestSalesRepId: "",
   items: [{ stockCode: "", description: "", quantity: 1, supplierCost: 0 }],
   costing: { stockCost: 0, consumablesCost: 0, labourCost: 0 },
 };
@@ -279,6 +281,13 @@ const salesRequestForm = document.querySelector("#salesRequestForm");
 const salesRequestList = document.querySelector("#salesRequestList");
 const requestFiles = document.querySelector("#requestFiles");
 const requestFileList = document.querySelector("#requestFileList");
+const requestSalesRepName = document.querySelector("#requestSalesRepName");
+const requestSalesRepEmail = document.querySelector("#requestSalesRepEmail");
+const requestSalesRepPhone = document.querySelector("#requestSalesRepPhone");
+const requestSalesRepBranch = document.querySelector("#requestSalesRepBranch");
+const requestSalesRepOptions = document.querySelector("#requestSalesRepOptions");
+const salesRequestDocumentsPanel = document.querySelector("#salesRequestDocumentsPanel");
+const salesRequestDocumentsList = document.querySelector("#salesRequestDocumentsList");
 
 const permissionDefinitions = [
   { key: "dashboard", label: "Dashboard", section: "dashboard" },
@@ -1003,6 +1012,7 @@ function reserveQuoteNumber(dateValue) {
 function resetQuoteForm() {
   state.revisingQuoteId = "";
   state.revisionSourceId = "";
+  state.activeSalesRequestId = "";
   state.revisionNumber = 0;
   fields.selectedCompany.value = "";
   fields.clientName.value = "";
@@ -1026,6 +1036,7 @@ function resetQuoteForm() {
   state.items = [{ stockCode: "", description: "", quantity: 1, supplierCost: 0 }];
   refreshAutoTerms();
   updateSupplierQuoteDisplay();
+  renderSalesRequestDocuments(null);
   renderAll();
 }
 
@@ -2428,10 +2439,119 @@ function requestFileMetadata(file) {
   };
 }
 
+function salesRepSearchRecords(query = "") {
+  const normalizedQuery = query.trim().toLowerCase();
+  const members = storageList(membersStorageKey)
+    .filter((member) => (member.inviteStatus || (member.hasLoggedIn ? "Active" : "Pending")) !== "Disabled")
+    .map((member) => ({
+      id: member.id,
+      name: member.name,
+      email: member.email,
+      phone: member.phone || "",
+      branch: member.branch || "",
+      department: member.department || "",
+      source: "member",
+    }));
+  const reps = salesRepsList().map((rep) => ({
+    id: rep.id,
+    name: rep.name,
+    email: rep.email,
+    phone: rep.phone || "",
+    branch: rep.branch || "",
+    department: rep.department || "",
+    source: "sales-rep",
+  }));
+  const unique = new Map();
+  [...members, ...reps].forEach((rep) => {
+    const key = normalizeEmail(rep.email) || rep.id;
+    if (!unique.has(key)) unique.set(key, rep);
+  });
+  return Array.from(unique.values())
+    .filter((rep) => !normalizedQuery || [rep.name, rep.email, rep.phone, rep.branch, rep.department].filter(Boolean).join(" ").toLowerCase().includes(normalizedQuery))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function renderRequestSalesRepOptions(query = "") {
+  const reps = salesRepSearchRecords(query);
+  requestSalesRepOptions.innerHTML = reps.map((rep) => `
+    <option value="${escapeHtml(rep.name)}" data-id="${escapeHtml(rep.id)}" data-email="${escapeHtml(rep.email)}">${escapeHtml(rep.email)}${rep.phone ? ` | ${escapeHtml(rep.phone)}` : ""}</option>
+  `).join("");
+  if (window.location.protocol !== "file:") {
+    fetch(`/api/members/search?query=${encodeURIComponent(query)}`, { credentials: "include" })
+      .then((response) => (response.ok ? response.json() : { members: [] }))
+      .then((data) => {
+        const localEmails = new Set(reps.map((rep) => normalizeEmail(rep.email)));
+        const backendReps = (data.members || []).filter((rep) => !localEmails.has(normalizeEmail(rep.email)));
+        if (!backendReps.length) return;
+        requestSalesRepOptions.innerHTML += backendReps.map((rep) => `
+          <option value="${escapeHtml(rep.name)}" data-id="${escapeHtml(rep.id)}" data-email="${escapeHtml(rep.email)}">${escapeHtml(rep.email)}${rep.phone ? ` | ${escapeHtml(rep.phone)}` : ""}</option>
+        `).join("");
+      })
+      .catch(() => {});
+  }
+}
+
+function selectedRequestSalesRep() {
+  const typedName = requestSalesRepName.value.trim().toLowerCase();
+  const typedEmail = normalizeEmail(requestSalesRepEmail.value);
+  return salesRepSearchRecords().find((rep) => (
+    rep.id === state.selectedRequestSalesRepId ||
+    rep.name.toLowerCase() === typedName ||
+    normalizeEmail(rep.email) === typedEmail
+  ));
+}
+
+function applyRequestSalesRep(rep) {
+  if (!rep) return;
+  state.selectedRequestSalesRepId = rep.id;
+  requestSalesRepName.value = rep.name || "";
+  requestSalesRepEmail.value = rep.email || "";
+  requestSalesRepPhone.value = rep.phone || "";
+  requestSalesRepBranch.value = rep.branch || rep.department || "";
+}
+
 function renderRequestFileList() {
   requestFileList.innerHTML = state.salesRequestFiles.length
     ? state.salesRequestFiles.map((file) => `<span class="upload-file-pill">${escapeHtml(file.file_name)} (${escapeHtml(formatFileSize(file.file_size))})</span>`).join("")
     : "No request documents uploaded.";
+}
+
+function renderSalesRequestDocuments(request) {
+  const files = request?.files || [];
+  state.activeSalesRequestId = request?.id || "";
+  salesRequestDocumentsPanel.hidden = !request || !files.length;
+  if (!request || !files.length) {
+    salesRequestDocumentsList.innerHTML = "";
+    return;
+  }
+  salesRequestDocumentsList.innerHTML = files.map((file) => `
+    <span>
+      <strong>${escapeHtml(file.file_name || file.name || "Document")}</strong>
+      <small>${escapeHtml(file.file_type || file.type || "Unknown file type")} | Uploaded ${escapeHtml(file.uploaded_at ? new Date(file.uploaded_at).toLocaleDateString("en-ZA") : "-")}</small>
+    </span>
+    <div>
+      <button class="secondary-btn" type="button" data-view-request-file="${escapeHtml(file.id || file.fileId || "")}">View</button>
+      <button class="secondary-btn" type="button" data-download-request-file="${escapeHtml(file.id || file.fileId || "")}">Download</button>
+    </div>
+  `).join("");
+}
+
+function openRequestDocument(fileId, mode = "view") {
+  const request = loadSalesRequests().find((item) => item.id === state.activeSalesRequestId);
+  const file = (request?.files || []).find((item) => (item.id || item.fileId) === fileId);
+  if (!file) return;
+  const content = `Sales request document placeholder\n\nFile: ${file.file_name || file.name}\nType: ${file.file_type || file.type || "Unknown"}\nUploaded: ${file.uploaded_at || "-"}\n\nIn the local prototype, uploaded request file metadata is preserved and linked. The live cloud version should store the actual file in cloud storage and use this button to open/download it.`;
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  if (mode === "download") {
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${file.file_name || file.name || "sales-request-document"}.txt`;
+    anchor.click();
+  } else {
+    window.open(url, "_blank");
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function canProcessSalesRequest(request) {
@@ -2503,12 +2623,20 @@ function createQuotationFromRequest(id) {
   const request = loadSalesRequests().find((item) => item.id === id);
   if (!request) return;
   resetQuoteForm();
+  state.activeSalesRequestId = request.id;
   fields.clientName.value = request.client_name || "";
   fields.clientAddress.value = request.site_address || "";
   fields.contactPerson.value = request.client_contact_person || "";
   fields.contactEmail.value = request.client_email || "";
   fields.contactNumber.value = request.client_phone || "";
   fields.projectSummary.value = [request.description_of_work, request.special_client_requirements, request.notes_for_builder].filter(Boolean).join("\n\n");
+  if (request.required_due_date) {
+    const quoteDate = new Date(`${fields.quoteDate.value}T00:00:00`);
+    const dueDate = new Date(`${request.required_due_date}T00:00:00`);
+    const diffDays = Math.max(1, Math.ceil((dueDate - quoteDate) / 86400000));
+    fields.validityDays.value = String(diffDays);
+    fields.validUntil.value = request.required_due_date;
+  }
   const rep = salesRepsList().find((item) => normalizeEmail(item.email) === normalizeEmail(request.sales_rep_email));
   if (rep) fields.salesRep.value = rep.id;
   state.supplierQuotes = (request.files || []).map((file) => ({
@@ -2519,11 +2647,24 @@ function createQuotationFromRequest(id) {
   }));
   state.supplierQuote = state.supplierQuotes[0] || null;
   updateSupplierQuoteDisplay();
-  updateSalesRequest(id, { status: "Accepted for Processing", linked_quotation_id: fields.quoteNumber.value });
+  renderSalesRequestDocuments(request);
+  updateSalesRequest(id, { linked_quotation_id: fields.quoteNumber.value });
   writeAudit("Quotation created from request", request.request_number, "Sales Quotation Requests", request.request_number, fields.quoteNumber.value);
+  writeAudit("User redirected to quotation builder", request.request_number, "Sales Quotation Requests", request.request_number, currentUserName());
   showSection("builder");
-  window.location.hash = "builder";
+  const params = new URLSearchParams(window.location.search);
+  params.set("salesRequestId", id);
+  window.history.pushState({}, document.title, `${window.location.pathname}?${params.toString()}#builder`);
   renderAll();
+}
+
+function loadSalesRequestFromUrl() {
+  const requestId = new URLSearchParams(window.location.search).get("salesRequestId");
+  if (!requestId) return false;
+  const request = loadSalesRequests().find((item) => item.id === requestId);
+  if (!request) return false;
+  createQuotationFromRequest(requestId);
+  return true;
 }
 
 function updateStoredQuote(id, updates) {
@@ -2772,6 +2913,7 @@ function currentQuotePayload(status = "Submitted for approval") {
     createdByName: currentUserName(),
     submittedBy: currentUser(),
     submittedByName: currentUserName(),
+    sales_request_id: state.activeSalesRequestId || "",
     status,
     approvalStatus: status,
     workflowStatus: status,
@@ -2858,6 +3000,15 @@ async function submitCurrentQuoteForApproval() {
   }
 
   saveApprovals(approvals);
+  if (state.activeSalesRequestId) {
+    const request = updateSalesRequest(state.activeSalesRequestId, {
+      status: "Completed",
+      linked_quotation_id: payload.id,
+      completed_at: new Date().toISOString(),
+    });
+    writeAudit("Quotation created from sales request", payload.quoteNumber, "Build Quotation", payload.quoteNumber, request?.request_number || state.activeSalesRequestId);
+    writeAudit("Sales request completed", request?.request_number || state.activeSalesRequestId, "Sales Quotation Requests", request?.request_number || state.activeSalesRequestId, payload.quoteNumber);
+  }
   if (state.revisingQuoteId) {
     writeAudit("Revised quotation saved", payload.quoteNumber, "Build Quotation", payload.quoteNumber, `Revision ${payload.revisionNumber}`);
     writeAudit("Revised quotation resubmitted for approval", payload.quoteNumber, "Approval", payload.quoteNumber, `Revision ${payload.revisionNumber}`);
@@ -4476,6 +4627,18 @@ requestFiles.addEventListener("change", () => {
   renderRequestFileList();
 });
 
+requestSalesRepName.addEventListener("input", () => {
+  state.selectedRequestSalesRepId = "";
+  renderRequestSalesRepOptions(requestSalesRepName.value);
+  const rep = salesRepSearchRecords().find((item) => item.name.toLowerCase() === requestSalesRepName.value.trim().toLowerCase());
+  if (rep) applyRequestSalesRep(rep);
+});
+
+requestSalesRepName.addEventListener("change", () => {
+  const rep = selectedRequestSalesRep();
+  if (rep) applyRequestSalesRep(rep);
+});
+
 salesRequestForm.addEventListener("submit", (event) => {
   event.preventDefault();
   if (!enforceAccess("salesRequests")) return;
@@ -4488,8 +4651,6 @@ salesRequestForm.addEventListener("submit", (event) => {
     ["requestSiteAddress", "Site address"],
     ["requestSalesRepName", "Sales rep name"],
     ["requestSalesRepEmail", "Sales rep email"],
-    ["requestSupplierName", "Supplier name"],
-    ["requestSupplierQuoteNumber", "Supplier quote number"],
     ["requestDueDate", "Required quotation due date"],
     ["requestDescription", "Description of work required"],
   ];
@@ -4507,13 +4668,11 @@ salesRequestForm.addEventListener("submit", (event) => {
     client_phone: document.querySelector("#requestClientPhone").value.trim(),
     site_project_name: document.querySelector("#requestProjectName").value.trim(),
     site_address: document.querySelector("#requestSiteAddress").value.trim(),
-    sales_rep_name: document.querySelector("#requestSalesRepName").value.trim(),
-    sales_rep_email: document.querySelector("#requestSalesRepEmail").value.trim(),
-    supplier_name: document.querySelector("#requestSupplierName").value.trim(),
-    supplier_contact_person: document.querySelector("#requestSupplierContact").value.trim(),
-    supplier_email: document.querySelector("#requestSupplierEmail").value.trim(),
-    supplier_quote_number: document.querySelector("#requestSupplierQuoteNumber").value.trim(),
-    supplier_quote_date: document.querySelector("#requestSupplierQuoteDate").value,
+    sales_rep_user_id: state.selectedRequestSalesRepId || selectedRequestSalesRep()?.id || "",
+    sales_rep_name: requestSalesRepName.value.trim(),
+    sales_rep_email: requestSalesRepEmail.value.trim(),
+    sales_rep_phone: requestSalesRepPhone.value.trim(),
+    sales_rep_branch: requestSalesRepBranch.value.trim(),
     required_due_date: document.querySelector("#requestDueDate").value,
     description_of_work: document.querySelector("#requestDescription").value.trim(),
     special_client_requirements: document.querySelector("#requestSpecialRequirements").value.trim(),
@@ -4527,7 +4686,9 @@ salesRequestForm.addEventListener("submit", (event) => {
   saveSalesRequests([request, ...loadSalesRequests()]);
   writeAudit("Request submitted", request.request_number, "Sales Quotation Requests", request.request_number, request.client_name);
   state.salesRequestFiles = [];
+  state.selectedRequestSalesRepId = "";
   salesRequestForm.reset();
+  renderRequestSalesRepOptions();
   renderRequestFileList();
   renderSalesRequests();
 });
@@ -4539,14 +4700,20 @@ salesRequestList.addEventListener("click", (event) => {
   const createId = event.target.dataset.createQuoteRequest;
   const docsId = event.target.dataset.viewRequestDocs;
   if (acceptId) {
+    const existingRequest = loadSalesRequests().find((item) => item.id === acceptId);
+    if (existingRequest?.accepted_by_user_id && existingRequest.accepted_by_user_id !== currentUser() && !["Admin", "Super Admin"].includes(currentMember().access)) {
+      alert(`This request is already being processed by ${existingRequest.accepted_by_name || "another user"}.`);
+      return;
+    }
     const request = updateSalesRequest(acceptId, {
       status: "Accepted for Processing",
       accepted_by_user_id: currentUser(),
       accepted_by_name: currentUserName(),
       accepted_at: new Date().toISOString(),
     });
-    writeAudit("Request accepted", request.request_number, "Sales Quotation Requests", request.request_number, `Accepted by ${currentUserName()}`);
-    renderSalesRequests();
+    writeAudit("Sales request accepted", request.request_number, "Sales Quotation Requests", request.request_number, `Accepted by ${currentUserName()}`);
+    createQuotationFromRequest(acceptId);
+    return;
   }
   if (rejectId) {
     const reason = prompt("Please enter the rejection reason:");
@@ -4670,6 +4837,13 @@ supplierQuoteName.addEventListener("click", (event) => {
   state.supplierQuoteFiles.splice(index, 1);
   state.supplierQuote = state.supplierQuotes[0] || null;
   updateSupplierQuoteDisplay();
+});
+
+salesRequestDocumentsList.addEventListener("click", (event) => {
+  const viewId = event.target.dataset.viewRequestFile;
+  const downloadId = event.target.dataset.downloadRequestFile;
+  if (viewId) openRequestDocument(viewId, "view");
+  if (downloadId) openRequestDocument(downloadId, "download");
 });
 
 [costingStockCost, costingConsumablesCost, costingLabourCost].forEach((input) => {
@@ -4879,6 +5053,7 @@ portalHubGrid.addEventListener("click", (event) => {
 
 seedPortalTables();
 renderPermissionChecklist(roleDefaultPermissions[memberAccess.value] || []);
+renderRequestSalesRepOptions();
 hydrateSharedSessionFromUrl();
 loadSalesRepsFromStorage();
 renderSalesRepOptions();
@@ -4917,6 +5092,7 @@ consumeHubSsoTokenIfPresent().then((handledSso) => {
   if (isSignedIn()) {
     loginScreen.hidden = true;
     applyPermissions();
+    if (initialSection === "builder" && loadSalesRequestFromUrl()) return;
     showSection(canAccess(initialSection) ? initialSection : "portal");
   } else {
     loginScreen.hidden = false;

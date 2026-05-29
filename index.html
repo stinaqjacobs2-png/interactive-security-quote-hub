@@ -413,6 +413,16 @@
               </label>
               <p class="upload-note" id="supplierQuoteName">No supplier quotation uploaded.</p>
             </section>
+
+            <section class="panel" id="salesRequestDocumentsPanel" hidden>
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Request documents</p>
+                  <h2>Sales Request Documents</h2>
+                </div>
+              </div>
+              <div id="salesRequestDocumentsList" class="document-access-row"></div>
+            </section>
           </form>
 
           <aside class="preview-panel">
@@ -516,13 +526,14 @@
                 <input id="requestClientPhone" type="tel" placeholder="Client phone number" />
                 <input id="requestProjectName" type="text" placeholder="Site/project name" />
                 <input id="requestSiteAddress" type="text" placeholder="Site address" />
-                <input id="requestSalesRepName" type="text" placeholder="Sales rep name" />
+                <label class="autocomplete-field">
+                  Sales rep
+                  <input id="requestSalesRepName" type="text" placeholder="Search sales rep name" list="requestSalesRepOptions" autocomplete="off" />
+                  <datalist id="requestSalesRepOptions"></datalist>
+                </label>
                 <input id="requestSalesRepEmail" type="email" placeholder="Sales rep email" />
-                <input id="requestSupplierName" type="text" placeholder="Supplier name" />
-                <input id="requestSupplierContact" type="text" placeholder="Supplier contact person" />
-                <input id="requestSupplierEmail" type="email" placeholder="Supplier email" />
-                <input id="requestSupplierQuoteNumber" type="text" placeholder="Supplier quote number" />
-                <label>Supplier quote date<input id="requestSupplierQuoteDate" type="date" /></label>
+                <input id="requestSalesRepPhone" type="tel" placeholder="Sales rep phone number" />
+                <input id="requestSalesRepBranch" type="text" placeholder="Sales rep branch / department" />
                 <label>Required quotation due date<input id="requestDueDate" type="date" /></label>
                 <textarea id="requestDescription" rows="4" placeholder="Description of work required" spellcheck="true"></textarea>
                 <textarea id="requestSpecialRequirements" rows="3" placeholder="Special client requirements" spellcheck="true"></textarea>

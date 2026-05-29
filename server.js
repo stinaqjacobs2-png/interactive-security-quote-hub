@@ -34,7 +34,7 @@ function ensureDb() {
   }
   const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
   let changed = false;
-  ["sessions", "sso_tokens", "user_permissions", "sales_quotation_requests", "sales_quotation_request_files", "email_logs", "audit_trail"].forEach((table) => {
+  ["sessions", "sso_tokens", "members", "user_permissions", "sales_quotation_requests", "sales_quotation_request_files", "email_logs", "audit_trail"].forEach((table) => {
     if (!Array.isArray(db[table])) {
       db[table] = [];
       changed = true;
@@ -116,6 +116,21 @@ function saveSession(user) {
   };
   db.sessions = db.sessions.filter((item) => item.email !== session.email || new Date(item.expiresAt) > new Date());
   db.sessions.push(session);
+  const memberIndex = db.members.findIndex((member) => member.email === session.email || member.id === session.userId);
+  const memberRecord = {
+    id: session.userId,
+    name: session.name,
+    email: session.email,
+    phone: user.phone || user.phoneNumber || "",
+    branch: user.branch || "",
+    department: user.department || "",
+    inviteStatus: user.inviteStatus || "Active",
+    role: session.role,
+    permissions: session.permissions,
+    updated_at: new Date().toISOString(),
+  };
+  if (memberIndex >= 0) db.members[memberIndex] = { ...db.members[memberIndex], ...memberRecord };
+  else db.members.push({ ...memberRecord, created_at: new Date().toISOString() });
   writeDb(db);
   return session;
 }
@@ -195,6 +210,26 @@ async function handleApi(req, res) {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
     return json(res, 200, { user: session });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/members/search") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    const query = (url.searchParams.get("query") || "").trim().toLowerCase();
+    const db = readDb();
+    const activeMembers = db.members
+      .filter((member) => (member.inviteStatus || "Active") !== "Disabled")
+      .filter((member) => !query || [member.name, member.email, member.phone, member.branch, member.department].filter(Boolean).join(" ").toLowerCase().includes(query))
+      .slice(0, 20)
+      .map((member) => ({
+        id: member.id,
+        name: member.name,
+        email: member.email,
+        phone: member.phone || "",
+        branch: member.branch || "",
+        department: member.department || "",
+      }));
+    return json(res, 200, { members: activeMembers });
   }
 
   if (req.method === "POST" && url.pathname === "/api/sso/create-token") {
