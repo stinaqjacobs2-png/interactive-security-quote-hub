@@ -2462,13 +2462,53 @@ function reserveRequestNumber() {
   return `SQR-${year}-${String(nextSequence).padStart(4, "0")}`;
 }
 
-function requestFileMetadata(file) {
+const supportedRequestDocumentTypes = new Map([
+  ["application/pdf", [".pdf"]],
+  ["application/msword", [".doc"]],
+  ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", [".docx"]],
+  ["application/vnd.ms-excel", [".xls"]],
+  ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", [".xlsx"]],
+  ["text/csv", [".csv"]],
+  ["image/png", [".png"]],
+  ["image/jpeg", [".jpg", ".jpeg"]],
+]);
+
+function requestDocumentMimeType(file) {
+  const extension = `.${(file.name.split(".").pop() || "").toLowerCase()}`;
+  if (file.type && supportedRequestDocumentTypes.has(file.type)) return file.type;
+  for (const [mimeType, extensions] of supportedRequestDocumentTypes.entries()) {
+    if (extensions.includes(extension)) return mimeType;
+  }
+  return file.type || "";
+}
+
+function isSupportedRequestDocument(file) {
+  const mimeType = requestDocumentMimeType(file);
+  return supportedRequestDocumentTypes.has(mimeType);
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || "");
+      resolve(dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function requestFileMetadata(file) {
+  const mimeType = requestDocumentMimeType(file);
   return {
     id: `request-file-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     file_name: file.name,
     file_url: "",
-    file_type: file.type || "Unknown file type",
+    file_type: mimeType || "Unknown file type",
+    mime_type: mimeType || file.type || "application/octet-stream",
     file_size: file.size,
+    file_data_base64: await fileToBase64(file),
     uploaded_by_user_id: currentUser(),
     uploaded_at: new Date().toISOString(),
   };
@@ -2576,7 +2616,7 @@ function renderSalesRequestDocuments(request) {
   salesRequestDocumentsList.innerHTML = files.map((file) => `
     <span>
       <strong>${escapeHtml(file.file_name || file.name || "Document")}</strong>
-      <small>${escapeHtml(file.file_type || file.type || "Unknown file type")} | Uploaded ${escapeHtml(file.uploaded_at ? new Date(file.uploaded_at).toLocaleDateString("en-ZA") : "-")}</small>
+      <small>${escapeHtml(file.file_type || file.mime_type || file.type || "Unknown file type")} | ${escapeHtml(formatFileSize(file.file_size || file.size || 0))} | Uploaded ${escapeHtml(file.uploaded_at ? new Date(file.uploaded_at).toLocaleDateString("en-ZA") : "-")}</small>
     </span>
     <div>
       <button class="secondary-btn" type="button" data-view-request-file="${escapeHtml(file.id || file.fileId || "")}">View</button>
@@ -2611,18 +2651,40 @@ function openRequestDocument(fileId, mode = "view") {
   const request = loadSalesRequests().find((item) => item.id === state.activeSalesRequestId);
   const file = (request?.files || []).find((item) => (item.id || item.fileId) === fileId);
   if (!file) return;
-  const content = `Sales request document placeholder\n\nFile: ${file.file_name || file.name}\nType: ${file.file_type || file.type || "Unknown"}\nUploaded: ${file.uploaded_at || "-"}\n\nIn the local prototype, uploaded request file metadata is preserved and linked. The live cloud version should store the actual file in cloud storage and use this button to open/download it.`;
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  if (file.file_url) {
+    if (mode === "download") {
+      const anchor = document.createElement("a");
+      anchor.href = file.file_url;
+      anchor.download = file.file_name || file.name || "sales-request-document";
+      anchor.click();
+    } else {
+      window.open(file.file_url, "_blank", "noopener,noreferrer");
+    }
+    return;
+  }
+  const encoded = file.file_data_base64 || file.base64 || "";
+  if (!encoded) {
+    alert("The original uploaded file data is not available for this older request document. Please upload the document again.");
+    return;
+  }
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  const mimeType = file.mime_type || file.file_type || file.type || "application/pdf";
+  const blob = new Blob([bytes], { type: mimeType });
   const url = URL.createObjectURL(blob);
+  const filename = file.file_name || file.name || "sales-request-document";
   if (mode === "download") {
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `${file.file_name || file.name || "sales-request-document"}.txt`;
+    anchor.download = filename;
     anchor.click();
   } else {
-    window.open(url, "_blank");
+    window.open(url, "_blank", "noopener,noreferrer");
   }
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 function canProcessSalesRequest(request) {
@@ -4717,9 +4779,23 @@ dashboardPrintReport.addEventListener("click", () => {
   window.print();
 });
 
-requestFiles.addEventListener("change", () => {
+requestFiles.addEventListener("change", async () => {
   const files = Array.from(requestFiles.files || []);
-  state.salesRequestFiles = [...state.salesRequestFiles, ...files.map(requestFileMetadata)];
+  const unsupported = files.filter((file) => !isSupportedRequestDocument(file));
+  if (unsupported.length) {
+    alert(`Unsupported file type: ${unsupported.map((file) => file.name).join(", ")}. Please upload PDF, Word, Excel, CSV, PNG or JPG documents.`);
+  }
+  const supported = files.filter(isSupportedRequestDocument);
+  try {
+    const uploadedFiles = [];
+    for (const file of supported) {
+      uploadedFiles.push(await requestFileMetadata(file));
+    }
+    state.salesRequestFiles = [...state.salesRequestFiles, ...uploadedFiles];
+  } catch (error) {
+    console.error("Request document upload failed", error);
+    alert("One or more request documents could not be read. Please try uploading again.");
+  }
   requestFiles.value = "";
   renderRequestFileList();
 });
