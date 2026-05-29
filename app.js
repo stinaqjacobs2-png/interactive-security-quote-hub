@@ -23,6 +23,8 @@ const quoteSequencePrefix = "quotePilotSequence";
 const approvalsStorageKey = "quotePilotApprovalQueue";
 const auditStorageKey = "quotePilotAuditTrail";
 const sessionStorageKey = "quotePilotSignedInUser";
+const sharedSessionStorageKey = "interactiveSecuritySignedInUser";
+const sharedSessionDetailsKey = "interactiveSecuritySession";
 const membersStorageKey = "quotePilotMembers";
 const salesRepsStorageKey = "quotePilotSalesReps";
 const supplierPricesStorageKey = "quotePilotSupplierPrices";
@@ -902,8 +904,47 @@ function clearValidation() {
   validationSummary.textContent = "";
 }
 
+function currentSession() {
+  try {
+    return JSON.parse(localStorage.getItem(sharedSessionDetailsKey) || "null");
+  } catch {
+    localStorage.removeItem(sharedSessionDetailsKey);
+    return null;
+  }
+}
+
 function currentUser() {
-  return sessionStorage.getItem(sessionStorageKey) || "Local prototype user";
+  return (
+    currentSession()?.email ||
+    localStorage.getItem(sharedSessionStorageKey) ||
+    sessionStorage.getItem(sessionStorageKey) ||
+    ""
+  );
+}
+
+function isSignedIn() {
+  return Boolean(currentUser());
+}
+
+function saveSharedSession(member, email) {
+  const normalizedEmail = normalizeEmail(email || member?.email || "");
+  const session = {
+    userId: member?.id || slugify(normalizedEmail),
+    email: normalizedEmail,
+    name: member?.name || displayNameFromUser(normalizedEmail),
+    role: member?.access || "Admin",
+    signedInAt: new Date().toISOString(),
+  };
+  localStorage.setItem(sharedSessionStorageKey, normalizedEmail);
+  localStorage.setItem(sharedSessionDetailsKey, JSON.stringify(session));
+  sessionStorage.setItem(sessionStorageKey, normalizedEmail);
+  return session;
+}
+
+function clearSharedSession() {
+  localStorage.removeItem(sharedSessionStorageKey);
+  localStorage.removeItem(sharedSessionDetailsKey);
+  sessionStorage.removeItem(sessionStorageKey);
 }
 
 function currentUserName() {
@@ -1065,6 +1106,14 @@ function renderSalesRepOptions() {
 
 function currentMember() {
   const email = normalizeEmail(currentUser());
+  if (!email) {
+    return {
+      id: "",
+      name: "",
+      email: "",
+      access: "Guest",
+    };
+  }
   const members = storageList(membersStorageKey);
   const member = members.find((item) => normalizeEmail(item.email) === email);
   return member || {
@@ -1076,6 +1125,7 @@ function currentMember() {
 }
 
 function canAccess(section) {
+  if (!isSignedIn()) return false;
   if (section === "portal") return true;
   const access = currentMember().access;
   if (access === "Admin") return true;
@@ -1086,8 +1136,9 @@ function canAccess(section) {
 
 function enforceAccess(section) {
   if (canAccess(section)) return true;
-  alert("You do not have access to this area.");
-  showSection("builder");
+  alert(isSignedIn() ? "Access denied" : "Please sign in to continue.");
+  if (isSignedIn()) showSection("portal");
+  else loginScreen.hidden = false;
   return false;
 }
 
@@ -1410,6 +1461,7 @@ function isManagementPortalUser() {
 }
 
 function hasHubAccess(hub) {
+  if (!isSignedIn()) return false;
   if (!hub || hub.status !== "active") return false;
   const member = currentMember();
   if ((member.inviteStatus || "") === "Disabled") return false;
@@ -3869,33 +3921,38 @@ loginForm.addEventListener("submit", async (event) => {
     }
   }
 
-  sessionStorage.setItem(sessionStorageKey, email);
-  loginScreen.hidden = true;
   if (member?.mustChangePassword) {
     const newPassword = prompt("Please create a new password before continuing.");
     if (!newPassword || newPassword.trim().length < 8) {
       alert("Please use a password of at least 8 characters.");
-      sessionStorage.removeItem(sessionStorageKey);
+      clearSharedSession();
       loginScreen.hidden = false;
       return;
     }
-    saveMemberRecord({
+    const updatedMember = {
       ...member,
       passwordHash: await hashPassword(newPassword.trim()),
       mustChangePassword: false,
       hasLoggedIn: true,
       inviteStatus: "Active",
       activatedAt: new Date().toISOString(),
-    });
+    };
+    saveMemberRecord(updatedMember);
+    saveSharedSession(updatedMember, email);
     writeAudit("Changed temporary password", email, "Authentication", email, "First login password change");
   } else if (member && !member.hasLoggedIn) {
-    saveMemberRecord({
+    const updatedMember = {
       ...member,
       hasLoggedIn: true,
       inviteStatus: "Active",
       activatedAt: new Date().toISOString(),
-    });
+    };
+    saveMemberRecord(updatedMember);
+    saveSharedSession(updatedMember, email);
+  } else {
+    saveSharedSession(member, email);
   }
+  loginScreen.hidden = true;
   writeAudit("Signed in", email);
   applyPermissions();
   const route = window.location.hash.slice(1) === "approval" ? "approvals" : window.location.hash.slice(1);
@@ -3921,8 +3978,13 @@ Object.values(fields).forEach((field) => {
 
 function showSection(sectionName) {
   const activeSection = sectionName === "approval" ? "approvals" : sectionName;
+  if (!isSignedIn()) {
+    loginScreen.hidden = false;
+    window.location.hash = "portal";
+    return;
+  }
   if (!canAccess(activeSection)) {
-    alert("You do not have access to this area.");
+    alert("Access denied");
     showSection("portal");
     return;
   }
@@ -3962,9 +4024,14 @@ document.querySelectorAll(".nav-item").forEach((button) => {
 portalHubGrid.addEventListener("click", (event) => {
   const slug = event.target.dataset.openHub;
   if (!slug) return;
+  if (!isSignedIn()) {
+    loginScreen.hidden = false;
+    window.location.hash = "portal";
+    return;
+  }
   const hub = storageList(hubsStorageKey).find((item) => item.slug === slug);
   if (!hasHubAccess(hub)) {
-    alert("You do not have access to this hub.");
+    alert("Access denied");
     return;
   }
   writeAudit("Opened hub", hub.name, "Portal", hub.slug, "Opened from company portal");
@@ -3997,19 +4064,16 @@ if (!fields.quoteNumber.value) {
 refreshAutoTerms();
 updateSupplierQuoteDisplay();
 renderAll();
-renderPortal();
-renderDashboard();
-renderApprovals();
-renderQuoteLibrary();
-renderAudit();
-renderSetup();
 applyPermissions();
 const routeSection = window.location.hash.slice(1) === "approval" ? "approvals" : window.location.hash.slice(1);
 const initialSection = ["portal", "dashboard", "builder", "approvals", "library", "settings", "audit"].includes(routeSection)
   ? routeSection
   : "portal";
-showSection(canAccess(initialSection) ? initialSection : "portal");
-if (sessionStorage.getItem(sessionStorageKey)) {
+if (isSignedIn()) {
   loginScreen.hidden = true;
   applyPermissions();
+  showSection(canAccess(initialSection) ? initialSection : "portal");
+} else {
+  loginScreen.hidden = false;
+  window.location.hash = "portal";
 }
