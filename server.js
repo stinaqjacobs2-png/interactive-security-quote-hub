@@ -40,6 +40,26 @@ function ensureDb() {
       changed = true;
     }
   });
+  db.sales_quotation_requests = db.sales_quotation_requests.map((request) => {
+    const normalized = String(request.status || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    let status = "Accepted for Processing";
+    if (normalized === "approved") status = "Approved";
+    if (["submitted_for_approval", "pending_approval", "awaiting_approval", "completed"].includes(normalized)) {
+      status = "Submitted for Approval";
+    }
+    if (request.status === status) return request;
+    changed = true;
+    return {
+      ...request,
+      legacy_status: request.legacy_status || request.status || "",
+      status,
+      updated_at: request.updated_at || new Date().toISOString(),
+    };
+  });
   if (changed) fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
 }
 

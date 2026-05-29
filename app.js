@@ -2421,6 +2421,39 @@ function saveSalesRequests(requests) {
   saveStorageList(salesRequestsStorageKey, requests);
 }
 
+function salesRequestStatusLabel(status = "") {
+  const normalized = normalizedStatus(status);
+  if (normalized === "approved") return "Approved";
+  if (normalized === "submitted_for_approval" || normalized === "pending_approval" || normalized === "awaiting_approval" || normalized === "completed") {
+    return "Submitted for Approval";
+  }
+  return "Accepted for Processing";
+}
+
+function salesRequestStatusClass(status = "") {
+  const label = salesRequestStatusLabel(status);
+  if (label === "Approved") return "status-badge status-complete";
+  if (label === "Submitted for Approval") return "status-badge status-info";
+  return "status-badge status-warning";
+}
+
+function migrateSalesRequestStatuses() {
+  const requests = loadSalesRequests();
+  let changed = false;
+  const migrated = requests.map((request) => {
+    const mappedStatus = salesRequestStatusLabel(request.status);
+    if (request.status === mappedStatus) return request;
+    changed = true;
+    return {
+      ...request,
+      legacy_status: request.legacy_status || request.status || "",
+      status: mappedStatus,
+      updated_at: request.updated_at || new Date().toISOString(),
+    };
+  });
+  if (changed) saveSalesRequests(migrated);
+}
+
 function reserveRequestNumber() {
   const year = quoteYear(todayInputValue());
   const key = `${requestSequencePrefix}-${year}`;
@@ -2567,7 +2600,7 @@ function renderSalesRequestSummary(request) {
       <div><small>Site address</small><strong>${escapeHtml(request.site_address || "-")}</strong></div>
       <div><small>Sales rep</small><strong>${escapeHtml([request.sales_rep_name, request.sales_rep_email, request.sales_rep_phone].filter(Boolean).join(" / ") || "-")}</strong></div>
       <div><small>Due date</small><strong>${escapeHtml(formatDate(request.required_due_date))}</strong></div>
-      <div><small>Status</small><strong>${escapeHtml(request.status || "-")}</strong></div>
+      <div><small>Status</small><strong>${escapeHtml(salesRequestStatusLabel(request.status))}</strong></div>
       <div><small>Description of work</small><strong>${escapeHtml(request.description_of_work || "-")}</strong></div>
       <div><small>Notes to quotation builder</small><strong>${escapeHtml(request.notes_for_builder || "-")}</strong></div>
     </div>
@@ -2594,7 +2627,7 @@ function openRequestDocument(fileId, mode = "view") {
 
 function canProcessSalesRequest(request) {
   if (!hasPermission("build_quotation") && !hasPermission("approval")) return false;
-  if (request.status !== "Submitted" && request.status !== "Rejected - Insufficient Information") return false;
+  if (salesRequestStatusLabel(request.status) !== "Accepted for Processing") return false;
   return !request.accepted_by_user_id || request.accepted_by_user_id === currentUser() || ["Admin", "Super Admin"].includes(currentMember().access);
 }
 
@@ -2634,14 +2667,13 @@ function renderSalesRequests() {
           <span>${escapeHtml(request.client_name)}</span>
           <span>${escapeHtml(request.site_project_name || "-")}</span>
           <span><strong>${escapeHtml(request.sales_rep_name)}</strong><small>${escapeHtml([request.sales_rep_email, request.sales_rep_phone].filter(Boolean).join(" | "))}</small></span>
-          <span><mark class="status-badge ${request.status === "Rejected - Insufficient Information" ? "status-rejected" : request.status === "Completed" ? "status-complete" : "status-warning"}">${escapeHtml(request.status)}</mark></span>
+          <span><mark class="${salesRequestStatusClass(request.status)}">${escapeHtml(salesRequestStatusLabel(request.status))}</mark></span>
           <span>${escapeHtml(request.accepted_by_name || "-")}</span>
           <span>${escapeHtml(formatDate((request.created_at || "").slice(0, 10)))}</span>
           <span>${escapeHtml(formatDate(request.required_due_date))}</span>
           <span class="approval-row-actions">
-            ${canProcessSalesRequest(request) ? `<button class="primary-btn" type="button" data-accept-request="${escapeHtml(request.id)}">Accept Request</button>` : ""}
-            ${canProcessSalesRequest(request) ? `<button class="danger-btn" type="button" data-reject-request="${escapeHtml(request.id)}">Reject Request</button>` : ""}
-            ${request.status === "Accepted for Processing" && request.accepted_by_user_id === currentUser() ? `<button class="secondary-btn" type="button" data-create-quote-request="${escapeHtml(request.id)}">Create Quotation from Request</button>` : ""}
+            ${canProcessSalesRequest(request) && !request.accepted_by_user_id ? `<button class="primary-btn" type="button" data-accept-request="${escapeHtml(request.id)}">Accept Request</button>` : ""}
+            ${salesRequestStatusLabel(request.status) === "Accepted for Processing" && request.accepted_by_user_id === currentUser() ? `<button class="secondary-btn" type="button" data-create-quote-request="${escapeHtml(request.id)}">Create Quotation from Request</button>` : ""}
             <button class="secondary-btn" type="button" data-view-request-docs="${escapeHtml(request.id)}">Docs (${(request.files || []).length})</button>
           </span>
         </div>
@@ -2651,11 +2683,30 @@ function renderSalesRequests() {
 }
 
 function updateSalesRequest(id, updates) {
-  const requests = loadSalesRequests().map((request) => (
-    request.id === id ? { ...request, ...updates, updated_at: new Date().toISOString() } : request
-  ));
+  let updatedRequest = null;
+  const requests = loadSalesRequests().map((request) => {
+    if (request.id !== id) return request;
+    const previousStatus = salesRequestStatusLabel(request.status);
+    const nextStatus = updates.status ? salesRequestStatusLabel(updates.status) : previousStatus;
+    updatedRequest = {
+      ...request,
+      ...updates,
+      status: nextStatus,
+      updated_at: new Date().toISOString(),
+    };
+    if (updates.status && previousStatus !== nextStatus) {
+      writeAudit(
+        "Sales request status changed",
+        updatedRequest.request_number,
+        "Sales Quotation Requests",
+        updatedRequest.request_number,
+        `Changed by ${currentUserName()} on ${new Date().toLocaleString("en-ZA")}. Previous status: ${previousStatus}. New status: ${nextStatus}`
+      );
+    }
+    return updatedRequest;
+  });
   saveSalesRequests(requests);
-  return requests.find((request) => request.id === id);
+  return updatedRequest || requests.find((request) => request.id === id);
 }
 
 function createQuotationFromRequest(id) {
@@ -3042,12 +3093,12 @@ async function submitCurrentQuoteForApproval() {
   saveApprovals(approvals);
   if (state.activeSalesRequestId) {
     const request = updateSalesRequest(state.activeSalesRequestId, {
-      status: "Completed",
+      status: "Submitted for Approval",
       linked_quotation_id: payload.id,
-      completed_at: new Date().toISOString(),
+      submitted_for_approval_at: new Date().toISOString(),
     });
     writeAudit("Quotation created from sales request", payload.quoteNumber, "Build Quotation", payload.quoteNumber, request?.request_number || state.activeSalesRequestId);
-    writeAudit("Sales request completed", request?.request_number || state.activeSalesRequestId, "Sales Quotation Requests", request?.request_number || state.activeSalesRequestId, payload.quoteNumber);
+    writeAudit("Sales request submitted for approval", request?.request_number || state.activeSalesRequestId, "Sales Quotation Requests", request?.request_number || state.activeSalesRequestId, payload.quoteNumber);
   }
   if (state.revisingQuoteId) {
     writeAudit("Revised quotation saved", payload.quoteNumber, "Build Quotation", payload.quoteNumber, `Revision ${payload.revisionNumber}`);
@@ -3100,6 +3151,12 @@ function decideQuote(id, status, rejectionReason = "") {
   saveApprovals(approvals);
   const quote = approvals.find((item) => item.id === id);
   if (quote) {
+    if (normalizedStatus(status) === "approved" && quote.sales_request_id) {
+      updateSalesRequest(quote.sales_request_id, {
+        status: "Approved",
+        approved_at: new Date().toISOString(),
+      });
+    }
     writeAudit(
       normalizedStatus(status) === "rejected" ? "Rejected quotation" : "Approved quotation",
       `${quote.quoteNumber} for ${quote.clientName}`,
@@ -4714,7 +4771,7 @@ salesRequestForm.addEventListener("submit", (event) => {
     required_due_date: document.querySelector("#requestDueDate").value,
     description_of_work: document.querySelector("#requestDescription").value.trim(),
     notes_for_builder: document.querySelector("#requestNotes").value.trim(),
-    status: "Submitted",
+    status: "Accepted for Processing",
     submitted_by_user_id: currentUser(),
     files: state.salesRequestFiles,
     created_at: new Date().toISOString(),
@@ -4734,7 +4791,6 @@ salesRequestForm.addEventListener("submit", (event) => {
 salesRequestList.addEventListener("click", (event) => {
   if (!enforceAccess("salesRequests")) return;
   const acceptId = event.target.dataset.acceptRequest;
-  const rejectId = event.target.dataset.rejectRequest;
   const createId = event.target.dataset.createQuoteRequest;
   const docsId = event.target.dataset.viewRequestDocs;
   if (acceptId) {
@@ -4752,26 +4808,6 @@ salesRequestList.addEventListener("click", (event) => {
     writeAudit("Sales request accepted", request.request_number, "Sales Quotation Requests", request.request_number, `Accepted by ${currentUserName()}`);
     createQuotationFromRequest(acceptId);
     return;
-  }
-  if (rejectId) {
-    const reason = prompt("Please enter the rejection reason:");
-    if (!reason?.trim()) return;
-    const request = updateSalesRequest(rejectId, {
-      status: "Rejected - Insufficient Information",
-      rejected_by_user_id: currentUser(),
-      rejected_by_name: currentUserName(),
-      rejected_at: new Date().toISOString(),
-      rejection_reason: reason.trim(),
-      email_logs: [{
-        to: loadSalesRequests().find((item) => item.id === rejectId)?.sales_rep_email,
-        subject: "Sales quotation request rejected - insufficient information",
-        body: reason.trim(),
-        sent_at: new Date().toISOString(),
-      }],
-    });
-    writeAudit("Request rejected", request.request_number, "Sales Quotation Requests", request.request_number, reason.trim());
-    writeAudit("Rejection email sent", request.request_number, "Sales Quotation Requests", request.sales_rep_email, reason.trim());
-    renderSalesRequests();
   }
   if (createId) createQuotationFromRequest(createId);
   if (docsId) {
@@ -5090,6 +5126,7 @@ portalHubGrid.addEventListener("click", (event) => {
 });
 
 seedPortalTables();
+migrateSalesRequestStatuses();
 renderPermissionChecklist(roleDefaultPermissions[memberAccess.value] || []);
 renderRequestSalesRepOptions();
 autoPopulateRequestSalesRep(true);

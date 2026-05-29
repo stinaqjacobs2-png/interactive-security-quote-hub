@@ -1076,6 +1076,11 @@ textarea:focus {
   background: #fff0bf !important;
 }
 
+.status-info {
+  color: #124c91 !important;
+  background: #dbeafe !important;
+}
+
 .status-complete {
   color: #0c6b36 !important;
   background: #dff8e9 !important;
