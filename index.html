@@ -43,7 +43,8 @@
         <nav>
           <button class="nav-item active" type="button" data-section="portal">Portal Dashboard</button>
           <button class="nav-item" type="button" data-section="dashboard">Dashboard</button>
-          <button class="nav-item active" type="button" data-section="builder">Building the quotation</button>
+          <button class="nav-item" type="button" data-section="builder">Building the quotation</button>
+          <button class="nav-item" type="button" data-section="salesRequests">Sales Quotation Requests</button>
           <button class="nav-item approval-nav" type="button" data-section="approvals">
             Approval
             <span id="approvalCount">0</span>
@@ -231,6 +232,14 @@
                   Quotation date
                   <input id="quoteDate" type="date" readonly />
                 </label>
+                <label>
+                  Validity days
+                  <input id="validityDays" type="number" min="1" step="1" value="30" />
+                </label>
+                <label>
+                  Valid until
+                  <input id="validUntil" type="date" readonly />
+                </label>
               </div>
 
               <label>
@@ -247,8 +256,9 @@
                 </div>
                 <div class="pricing-controls">
                   <label>
-                    Markup
-                    <select id="markupPercent">
+                    Markup %
+                    <input id="markupPercent" type="number" min="0" step="0.01" list="markupPercentOptions" value="20" />
+                    <datalist id="markupPercentOptions">
                       <option value="0">0%</option>
                       <option value="5">5%</option>
                       <option value="10">10%</option>
@@ -263,7 +273,7 @@
                       <option value="55">55%</option>
                       <option value="60">60%</option>
                       <option value="65">65%</option>
-                    </select>
+                    </datalist>
                   </label>
                   <button class="primary-btn" id="addItem" type="button">Add item</button>
                 </div>
@@ -379,6 +389,10 @@
 
               <div class="assistant-grid">
                 <label>
+                  AI instruction / focus
+                  <input id="aiInstruction" type="text" placeholder="Example: Focus on installation assumptions, exclusions, payment terms, or client responsibilities." spellcheck="true" />
+                </label>
+                <label>
                   Terms and assumptions
                   <textarea id="termsText" rows="6" spellcheck="true"></textarea>
                 </label>
@@ -489,6 +503,45 @@
           </aside>
         </section>
 
+        <section class="hidden-state" id="salesRequests-section" hidden>
+          <h2>Sales Quotation Requests</h2>
+          <p>Submit supplier quotations and supporting information for quotation builders.</p>
+          <div class="request-layout">
+            <section class="panel">
+              <h3>New request</h3>
+              <form class="setup-form request-form" id="salesRequestForm">
+                <input id="requestClientName" type="text" placeholder="Client name" />
+                <input id="requestContactPerson" type="text" placeholder="Client contact person" />
+                <input id="requestClientEmail" type="email" placeholder="Client email" />
+                <input id="requestClientPhone" type="tel" placeholder="Client phone number" />
+                <input id="requestProjectName" type="text" placeholder="Site/project name" />
+                <input id="requestSiteAddress" type="text" placeholder="Site address" />
+                <input id="requestSalesRepName" type="text" placeholder="Sales rep name" />
+                <input id="requestSalesRepEmail" type="email" placeholder="Sales rep email" />
+                <input id="requestSupplierName" type="text" placeholder="Supplier name" />
+                <input id="requestSupplierContact" type="text" placeholder="Supplier contact person" />
+                <input id="requestSupplierEmail" type="email" placeholder="Supplier email" />
+                <input id="requestSupplierQuoteNumber" type="text" placeholder="Supplier quote number" />
+                <label>Supplier quote date<input id="requestSupplierQuoteDate" type="date" /></label>
+                <label>Required quotation due date<input id="requestDueDate" type="date" /></label>
+                <textarea id="requestDescription" rows="4" placeholder="Description of work required" spellcheck="true"></textarea>
+                <textarea id="requestSpecialRequirements" rows="3" placeholder="Special client requirements" spellcheck="true"></textarea>
+                <textarea id="requestNotes" rows="3" placeholder="Notes for quotation builder" spellcheck="true"></textarea>
+                <label class="upload-control">
+                  Upload supporting documents
+                  <input id="requestFiles" type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg" />
+                </label>
+                <p class="upload-note" id="requestFileList">No request documents uploaded.</p>
+                <button class="primary-btn" type="submit">Submit request</button>
+              </form>
+            </section>
+            <section class="panel">
+              <h3>Requests</h3>
+              <div id="salesRequestList" class="approval-list"></div>
+            </section>
+          </div>
+        </section>
+
         <section class="hidden-state" id="library-section" hidden>
           <h2>Quote Library</h2>
           <p>Approved and rejected quotations are stored here.</p>
@@ -522,10 +575,14 @@
                 <input id="memberName" type="text" placeholder="Member full name" />
                 <input id="memberEmail" type="email" placeholder="member@interactivesecurity.co.za" />
                 <select id="memberAccess">
+                  <option value="Super Admin">Super Admin</option>
                   <option value="Admin">Admin</option>
                   <option value="Full Access Member">Full Access Member</option>
                   <option value="Quotation Builder Only">Quotation Builder Only</option>
                 </select>
+                <fieldset class="permission-checklist" id="memberPermissionChecklist">
+                  <legend>Allowed tabs/pages</legend>
+                </fieldset>
                 <select id="memberInviteStatus">
                   <option value="Pending">Pending</option>
                   <option value="Invite Sent">Invite Sent</option>
@@ -539,6 +596,21 @@
                 <button class="primary-btn" type="submit">Save member</button>
               </form>
               <div class="setup-list" id="memberList"></div>
+            </section>
+
+            <section class="setup-panel">
+              <h3>Quotation settings</h3>
+              <form class="setup-form" id="quotationSettingsForm">
+                <label>
+                  Profit deduction percentage
+                  <input id="profitDeductionPercent" type="number" min="0" step="0.01" value="16.08" title="Internal deduction used in the profit calculation. This can be changed in Setup." />
+                </label>
+                <label>
+                  Commission percentage
+                  <input id="commissionPercent" type="number" min="0" step="0.01" value="4" title="Commission percentage deducted from markup and labour profit. This can be changed in Setup." />
+                </label>
+                <button class="primary-btn" type="submit">Save quotation settings</button>
+              </form>
             </section>
 
             <section class="setup-panel">

@@ -24,8 +24,23 @@ function ensureDb() {
     fs.writeFileSync(dbPath, JSON.stringify({
       sessions: [],
       sso_tokens: [],
+      user_permissions: [],
+      sales_quotation_requests: [],
+      sales_quotation_request_files: [],
+      email_logs: [],
+      audit_trail: [],
     }, null, 2));
+    return;
   }
+  const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
+  let changed = false;
+  ["sessions", "sso_tokens", "user_permissions", "sales_quotation_requests", "sales_quotation_request_files", "email_logs", "audit_trail"].forEach((table) => {
+    if (!Array.isArray(db[table])) {
+      db[table] = [];
+      changed = true;
+    }
+  });
+  if (changed) fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
 }
 
 function readDb() {
@@ -95,6 +110,7 @@ function saveSession(user) {
     email: user.email,
     name: user.name || user.email,
     role: user.role || user.access || "Admin",
+    permissions: Array.isArray(user.permissions) ? user.permissions : [],
     createdAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
   };
@@ -106,7 +122,21 @@ function saveSession(user) {
 
 function canAccessHub(session, hubSlug) {
   if (!session || hubSlug !== "quotation-hub") return false;
+  if (session.role === "Super Admin") return true;
+  if (Array.isArray(session.permissions) && session.permissions.length) return session.permissions.includes("quotation_hub");
   return ["Admin", "Full Access Member", "Quotation Builder Only"].includes(session.role);
+}
+
+function hasPermission(session, permissionKey) {
+  if (!session) return false;
+  if (session.role === "Super Admin") return true;
+  if (Array.isArray(session.permissions) && session.permissions.includes(permissionKey)) return true;
+  const roleDefaults = {
+    Admin: ["dashboard", "build_quotation", "quote_library", "approval", "reports", "audit_trail", "setup", "supplier_prices", "member_access_management", "quotation_hub", "sales_quotation_requests"],
+    "Full Access Member": ["dashboard", "reports", "build_quotation", "quote_library", "approval", "quotation_hub", "sales_quotation_requests"],
+    "Quotation Builder Only": ["build_quotation", "quotation_hub", "sales_quotation_requests"],
+  };
+  return (roleDefaults[session.role] || []).includes(permissionKey);
 }
 
 function serveIndex(res) {
@@ -156,6 +186,7 @@ async function handleApi(req, res) {
         email: session.email,
         name: session.name,
         role: session.role,
+        permissions: session.permissions,
       },
     });
   }
@@ -184,6 +215,7 @@ async function handleApi(req, res) {
         email: session.email,
         name: session.name,
         role: session.role,
+        permissions: session.permissions,
       },
       hub_slug: hubSlug,
       expires_at: new Date(Date.now() + 60 * 1000).toISOString(),
@@ -219,8 +251,41 @@ async function handleApi(req, res) {
         email: session.email,
         name: session.name,
         role: session.role,
+        permissions: session.permissions,
       },
     });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/permissions") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    return json(res, 200, {
+      userId: session.userId,
+      role: session.role,
+      permissions: session.permissions || [],
+    });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/permissions") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
+    const body = await readBody(req);
+    const db = readDb();
+    const now = new Date().toISOString();
+    db.user_permissions = db.user_permissions.filter((item) => item.user_id !== body.userId);
+    (body.permissions || []).forEach((permissionKey) => {
+      db.user_permissions.push({
+        id: crypto.randomUUID(),
+        user_id: body.userId,
+        permission_key: permissionKey,
+        can_access: true,
+        created_at: now,
+        updated_at: now,
+      });
+    });
+    writeDb(db);
+    return json(res, 200, { ok: true });
   }
 
   return json(res, 404, { error: "API route not found" });

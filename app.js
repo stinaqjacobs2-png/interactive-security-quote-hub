@@ -3,6 +3,7 @@ const state = {
   selectedCompanyId: "",
   selectedApprovalId: "",
   selectedLibraryId: "",
+  selectedSalesRequestId: "",
   focusRejectionReason: false,
   auditReportRows: [],
   markupPercent: 20,
@@ -13,6 +14,8 @@ const state = {
   revisionNumber: 0,
   supplierImport: null,
   supplierImportErrors: [],
+  salesRequestFiles: [],
+  revisionSourceId: "",
   items: [{ stockCode: "", description: "", quantity: 1, supplierCost: 0 }],
   costing: { stockCost: 0, consumablesCost: 0, labourCost: 0 },
 };
@@ -33,6 +36,10 @@ const hubsStorageKey = "interactiveSecurityHubs";
 const hubPermissionsStorageKey = "interactiveSecurityHubPermissions";
 const userHubAccessStorageKey = "interactiveSecurityUserHubAccess";
 const hubActivitySummaryStorageKey = "interactiveSecurityHubActivitySummary";
+const userPermissionsStorageKey = "interactiveSecurityUserPermissions";
+const quotationSettingsStorageKey = "interactiveSecurityQuotationSettings";
+const salesRequestsStorageKey = "interactiveSecuritySalesQuotationRequests";
+const requestSequencePrefix = "interactiveSecuritySalesRequestSequence";
 const supplierQuoteDbName = "quotePilotSupplierQuotations";
 const supplierQuoteStoreName = "files";
 const libraryDocumentStoreName = "libraryDocuments";
@@ -158,7 +165,10 @@ const fields = {
   quoteNumber: document.querySelector("#quoteNumber"),
   salesRep: document.querySelector("#salesRep"),
   quoteDate: document.querySelector("#quoteDate"),
+  validityDays: document.querySelector("#validityDays"),
+  validUntil: document.querySelector("#validUntil"),
   markupPercent: document.querySelector("#markupPercent"),
+  aiInstruction: document.querySelector("#aiInstruction"),
   projectSummary: document.querySelector("#projectSummary"),
   termsText: document.querySelector("#termsText"),
 };
@@ -204,6 +214,7 @@ const memberForm = document.querySelector("#memberForm");
 const memberName = document.querySelector("#memberName");
 const memberEmail = document.querySelector("#memberEmail");
 const memberAccess = document.querySelector("#memberAccess");
+const memberPermissionChecklist = document.querySelector("#memberPermissionChecklist");
 const memberInviteStatus = document.querySelector("#memberInviteStatus");
 const memberTempPassword = document.querySelector("#memberTempPassword");
 const generateTempPassword = document.querySelector("#generateTempPassword");
@@ -261,6 +272,34 @@ const portalSummaryTitle = document.querySelector("#portalSummaryTitle");
 const portalSummaryGrid = document.querySelector("#portalSummaryGrid");
 const portalMonthlyChart = document.querySelector("#portalMonthlyChart");
 const portalSalesRepTable = document.querySelector("#portalSalesRepTable");
+const quotationSettingsForm = document.querySelector("#quotationSettingsForm");
+const profitDeductionPercent = document.querySelector("#profitDeductionPercent");
+const commissionPercent = document.querySelector("#commissionPercent");
+const salesRequestForm = document.querySelector("#salesRequestForm");
+const salesRequestList = document.querySelector("#salesRequestList");
+const requestFiles = document.querySelector("#requestFiles");
+const requestFileList = document.querySelector("#requestFileList");
+
+const permissionDefinitions = [
+  { key: "dashboard", label: "Dashboard", section: "dashboard" },
+  { key: "build_quotation", label: "Build Quotation", section: "builder" },
+  { key: "quote_library", label: "Quote Library", section: "library" },
+  { key: "approval", label: "Approval", section: "approvals" },
+  { key: "reports", label: "Reports", section: "dashboard" },
+  { key: "audit_trail", label: "Audit Trail", section: "audit" },
+  { key: "setup", label: "Setup", section: "settings" },
+  { key: "supplier_prices", label: "Supplier Prices", section: "settings" },
+  { key: "member_access_management", label: "Member Access Management", section: "settings" },
+  { key: "quotation_hub", label: "Quotation Hub", hubSlug: "quotation-hub" },
+  { key: "sales_quotation_requests", label: "Sales Quotation Requests", section: "salesRequests" },
+];
+
+const roleDefaultPermissions = {
+  "Super Admin": permissionDefinitions.map((permission) => permission.key),
+  Admin: permissionDefinitions.map((permission) => permission.key),
+  "Full Access Member": ["dashboard", "reports", "build_quotation", "quote_library", "approval", "quotation_hub", "sales_quotation_requests"],
+  "Quotation Builder Only": ["build_quotation", "quotation_hub", "sales_quotation_requests"],
+};
 
 const sectionHeadings = {
   portal: {
@@ -282,6 +321,11 @@ const sectionHeadings = {
     eyebrow: "Approval workspace",
     title: "Approve submitted quotations",
     status: "Approval",
+  },
+  salesRequests: {
+    eyebrow: "Sales requests",
+    title: "Sales Quotation Requests",
+    status: "Requests",
   },
   library: {
     eyebrow: "Quotation records",
@@ -354,11 +398,22 @@ function roundCurrency(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
 
+function quotationSettings() {
+  const defaults = { profitDeductionPercent: 16.08, commissionPercent: 4 };
+  try {
+    return { ...defaults, ...(JSON.parse(localStorage.getItem(quotationSettingsStorageKey) || "{}")) };
+  } catch {
+    localStorage.removeItem(quotationSettingsStorageKey);
+    return defaults;
+  }
+}
+
 function quoteCostingSubtotal() {
   return roundCurrency(state.items.reduce((sum, item) => sum + itemTotal(item), 0));
 }
 
 function costingValues(costing = state.costing, markup = Number(fields.markupPercent.value || 0)) {
+  const settings = quotationSettings();
   const stockCost = roundCurrency(costing.stockCost);
   const consumablesCost = roundCurrency(costing.consumablesCost);
   const labourCost = roundCurrency(costing.labourCost);
@@ -372,9 +427,9 @@ function costingValues(costing = state.costing, markup = Number(fields.markupPer
   const totalCostValue = roundCurrency(stockCost + consumablesCost + labourCost);
   const totalMarkup = stockMarkup;
   const markupAndLabourTotal = roundCurrency(totalMarkup + labourCost);
-  const deduction16 = roundCurrency(markupAndLabourTotal * 0.1608);
+  const deduction16 = roundCurrency(markupAndLabourTotal * (Number(settings.profitDeductionPercent || 0) / 100));
   const profit = roundCurrency(markupAndLabourTotal - deduction16);
-  const commission4 = roundCurrency(markupAndLabourTotal * 0.04);
+  const commission4 = roundCurrency(markupAndLabourTotal * (Number(settings.commissionPercent || 0) / 100));
   const totalQuotationProfit = roundCurrency(profit - commission4);
   const quoteSubtotalValue = quoteCostingSubtotal();
   const totalQuotationProfitPercentage = quoteSubtotalValue
@@ -403,6 +458,7 @@ function costingValues(costing = state.costing, markup = Number(fields.markupPer
 }
 
 function quoteCostingValues(quote) {
+  const settings = quotationSettings();
   const costing = quote.costing || { stockCost: 0, consumablesCost: 0, labourCost: 0 };
   const stockCost = roundCurrency(costing.stockCost);
   const consumablesCost = roundCurrency(costing.consumablesCost);
@@ -416,9 +472,9 @@ function quoteCostingValues(quote) {
   const quoteSubtotalValue = roundCurrency(quoteSubtotal(quote));
   const totalMarkup = stockMarkup;
   const markupAndLabourTotal = roundCurrency(totalMarkup + labourCost);
-  const deduction16 = roundCurrency(markupAndLabourTotal * 0.1608);
+  const deduction16 = roundCurrency(markupAndLabourTotal * (Number(settings.profitDeductionPercent || 0) / 100));
   const profit = roundCurrency(markupAndLabourTotal - deduction16);
-  const commission4 = roundCurrency(markupAndLabourTotal * 0.04);
+  const commission4 = roundCurrency(markupAndLabourTotal * (Number(settings.commissionPercent || 0) / 100));
   const totalQuotationProfit = roundCurrency(profit - commission4);
   const totalQuotationProfitPercentage = quoteSubtotalValue
     ? roundCurrency((totalQuotationProfit / quoteSubtotalValue) * 100)
@@ -451,7 +507,7 @@ function profitPercentageClass(percentage) {
 }
 
 function canSeeInternalCosting() {
-  return currentMember().access === "Admin";
+  return hasPermission("approval") || hasPermission("reports") || ["Admin", "Super Admin"].includes(currentMember().access);
 }
 
 function escapeHtml(value = "") {
@@ -724,6 +780,94 @@ function processedQuotationHtml(quote) {
   `;
 }
 
+function clientQuotationHtml(quote) {
+  const company = companies[quote.selectedCompany];
+  const salesRep = salesReps[quote.salesRep];
+  const subtotal = quoteSubtotal(quote);
+  const vat = subtotal * state.taxRate;
+  const total = subtotal + vat;
+  const rows = (quote.items || []).map((item) => `
+    <tr>
+      <td>${escapeHtml(item.stockCode || "")}</td>
+      <td>${escapeHtml(item.description || "")}</td>
+      <td class="right">${money.format(quoteUnitPrice(quote, item))}</td>
+      <td class="right">${escapeHtml(item.quantity || 0)}</td>
+      <td class="right">${money.format(quoteItemTotal(quote, item))}</td>
+    </tr>
+  `).join("");
+  return `
+    <!doctype html>
+    <html>
+      <head>
+        <title>${escapeHtml(quote.quoteNumber)} Client Quotation</title>
+        <style>
+          body { font-family: Arial, Helvetica, sans-serif; color: #17212b; margin: 22px; font-size: 11px; }
+          .logo { width: 190px; display: block; margin: 0 auto 8px; }
+          .brand, .contact { text-align: center; }
+          .rule { border-top: 2px solid #17212b; margin: 10px 0; }
+          .meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
+          .box { border: 1px solid #dce3ea; background: #f3f7f8; padding: 8px; border-radius: 6px; white-space: pre-line; }
+          .box small { display: block; font-weight: 800; color: #5d6a78; }
+          h1 { text-transform: uppercase; font-size: 18px; margin-bottom: 4px; }
+          table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+          th, td { border: 1px solid #17212b; padding: 7px; }
+          th { background: #17212b; color: #fff; text-align: left; }
+          .right { text-align: right; }
+          .totals { margin-left: auto; width: 280px; }
+          .totals div { display: flex; justify-content: space-between; border: 1px solid #17212b; border-top: 0; padding: 7px; }
+          .section-title { background: #17212b; color: #fff; padding: 7px; font-weight: 800; }
+          .yellow { background: #fff2a8; padding: 3px 6px; }
+          @media print { button { display: none; } }
+        </style>
+      </head>
+      <body>
+        <button onclick="window.print()">Print / Save as PDF</button>
+        <img class="logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+        <div class="brand"><strong>${escapeHtml(company?.name || "Interactive Security")}</strong><br><span class="yellow">Reg no: ${escapeHtml(company?.registration || "-")} | VAT No: ${escapeHtml(company?.vat || "-")}</span></div>
+        <div class="rule"></div>
+        <div class="contact">${escapeHtml(company?.address || "-")}<br>Tel: ${escapeHtml(company?.phone || "-")} / Email: ${escapeHtml(company?.email || "-")} / Website: ${escapeHtml(company?.website || "-")}</div>
+        <h1>Quotation</h1>
+        <h2>${escapeHtml(quote.quoteNumber)}</h2>
+        <div class="meta">
+          <div class="box"><small>Client Detail</small><strong>${escapeHtml([quote.clientName, quote.clientAddress].filter(Boolean).join("\n") || "-")}</strong></div>
+          <div class="box"><small>Contact Detail</small><strong>${escapeHtml([quote.contactPerson, quote.contactEmail, quote.contactNumber].filter(Boolean).join("\n") || "-")}</strong></div>
+          <div class="box"><small>Sales Rep</small><strong>${escapeHtml([salesRep?.name, salesRep?.email, salesRep?.phone].filter(Boolean).join("\n") || "-")}</strong></div>
+          <div class="box"><small>Date</small><strong>${escapeHtml(formatDate(quote.quoteDate))}</strong></div>
+        </div>
+        <div class="section-title">Scope of Work</div>
+        <p>${escapeHtml(quote.projectSummary || fixedScopeText)}</p>
+        <table>
+          <thead><tr><th>Stock Code</th><th>Description</th><th>Cost Per Unit Excl. VAT</th><th>Quantity</th><th>Total Cost Excl. VAT</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="5">No line items</td></tr>`}</tbody>
+        </table>
+        <div class="totals">
+          <div><span>Subtotal</span><strong>${money.format(subtotal)}</strong></div>
+          <div><span>VAT 15%</span><strong>${money.format(vat)}</strong></div>
+          <div><span>Total</span><strong>${money.format(total)}</strong></div>
+        </div>
+        <h3>Terms</h3>
+        <p>${escapeHtml(quote.termsText || "")}</p>
+        <h3>Banking Details</h3>
+        <p><strong>Bank:</strong> ${escapeHtml(company?.bankName || "-")}<br><strong>Account Holder:</strong> ${escapeHtml(company?.name || "-")}<br><strong>Account Type:</strong> ${escapeHtml(company?.accountType || "-")}<br><strong>Account Number:</strong> ${escapeHtml(company?.accountNumber || "-")}<br><strong>Branch Code:</strong> ${escapeHtml(company?.branchCode || "-")}</p>
+        <p><strong>Please use quotation number ${escapeHtml(quote.quoteNumber)} as your reference.</strong></p>
+      </body>
+    </html>
+  `;
+}
+
+function openClientQuotation(quoteId) {
+  const quote = loadApprovals().find((item) => item.id === quoteId);
+  if (!quote) return;
+  const win = window.open("", "_blank");
+  if (!win) {
+    alert("The client quotation could not be opened. Please allow pop-ups.");
+    return;
+  }
+  win.document.write(clientQuotationHtml(quote));
+  win.document.close();
+  writeAudit("Opened client quotation", quote.quoteNumber, "Client Quotation", quote.quoteNumber, "Client-facing print/download view");
+}
+
 function openProcessedQuotation(quoteId) {
   if (!canSeeInternalCosting()) {
     alert("You do not have access to internal processed quotations.");
@@ -834,6 +978,10 @@ function formatDateObject(date) {
 
 function todayInputValue() {
   const date = new Date();
+  return dateInputValue(date);
+}
+
+function dateInputValue(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
@@ -854,6 +1002,7 @@ function reserveQuoteNumber(dateValue) {
 
 function resetQuoteForm() {
   state.revisingQuoteId = "";
+  state.revisionSourceId = "";
   state.revisionNumber = 0;
   fields.selectedCompany.value = "";
   fields.clientName.value = "";
@@ -862,6 +1011,8 @@ function resetQuoteForm() {
   fields.contactEmail.value = "";
   fields.contactNumber.value = "";
   fields.quoteDate.value = todayInputValue();
+  fields.validityDays.value = "30";
+  fields.validUntil.value = dateInputValue(addDays(fields.quoteDate.value, 30));
   fields.quoteNumber.value = reserveQuoteNumber(fields.quoteDate.value);
   fields.projectSummary.value = "";
   fields.termsText.value = "";
@@ -880,15 +1031,20 @@ function resetQuoteForm() {
 
 function buildTerms() {
   const client = fields.clientName.value || "the client";
-  const validUntil = formatDateObject(addDays(fields.quoteDate.value, 7));
+  const days = Math.max(1, Number(fields.validityDays.value || 30));
+  fields.validUntil.value = dateInputValue(addDays(fields.quoteDate.value, days));
+  const validUntil = formatDate(fields.validUntil.value);
+  const instruction = fields.aiInstruction.value.trim();
+  const instructionText = instruction ? ` Additional focus: ${instruction}` : "";
 
-  return `This quotation is valid for 7 days, until ${validUntil}. A 70% deposit is required before work can be done. Pricing excludes work outside the agreed scope unless approved in writing by ${client}. Final delivery depends on timely access to required information and approvals.`;
+  return `This quotation is valid until ${validUntil}. A 70% deposit is required before work can be done. Pricing excludes work outside the agreed scope unless approved in writing by ${client}. Final delivery depends on timely access to required information and approvals.${instructionText}`;
 }
 
 function isAutoTerms(value = "") {
   return (
     !value.trim() ||
     value.includes("This quotation is valid for 7 days") ||
+    value.includes("This quotation is valid until") ||
     value.includes("A 70% deposit is required") ||
     value.includes("Pricing excludes work outside the agreed scope")
   );
@@ -938,6 +1094,7 @@ function saveSharedSession(member, email) {
     email: normalizedEmail,
     name: member?.name || displayNameFromUser(normalizedEmail),
     role: member?.access || "Admin",
+    permissions: member?.permissions || Array.from(memberPermissions(member || { email: normalizedEmail, access: "Admin", id: slugify(normalizedEmail) })),
     signedInAt: new Date().toISOString(),
   };
   localStorage.setItem(sharedSessionStorageKey, normalizedEmail);
@@ -954,6 +1111,7 @@ function saveSharedSessionObject(session) {
     email: normalizedEmail,
     name: session.name || displayNameFromUser(normalizedEmail),
     role: session.role || session.access || "Admin",
+    permissions: session.permissions || [],
     signedInAt: session.signedInAt || new Date().toISOString(),
   };
   localStorage.setItem(sharedSessionStorageKey, normalizedEmail);
@@ -1165,6 +1323,12 @@ function seedPortalTables() {
   if (!localStorage.getItem(hubActivitySummaryStorageKey)) {
     saveStorageList(hubActivitySummaryStorageKey, []);
   }
+  if (!localStorage.getItem(userPermissionsStorageKey)) {
+    saveStorageList(userPermissionsStorageKey, []);
+  }
+  if (!localStorage.getItem(quotationSettingsStorageKey)) {
+    localStorage.setItem(quotationSettingsStorageKey, JSON.stringify({ profitDeductionPercent: 16.08, commissionPercent: 4 }));
+  }
   if (window.location.protocol !== "file:") {
     const hubs = storageList(hubsStorageKey);
     const quoteHub = hubs.find((hub) => hub.slug === "quotation-hub");
@@ -1173,6 +1337,36 @@ function seedPortalTables() {
       saveStorageList(hubsStorageKey, hubs);
     }
   }
+}
+
+function renderPermissionChecklist(selectedKeys = []) {
+  const selected = new Set(selectedKeys);
+  memberPermissionChecklist.innerHTML = `<legend>Allowed tabs/pages</legend>` + permissionDefinitions.map((permission) => `
+    <label class="permission-option">
+      <input type="checkbox" value="${escapeHtml(permission.key)}" ${selected.has(permission.key) ? "checked" : ""} />
+      ${escapeHtml(permission.label)}
+    </label>
+  `).join("");
+}
+
+function selectedPermissionKeys() {
+  return Array.from(memberPermissionChecklist.querySelectorAll("input[type='checkbox']:checked")).map((input) => input.value);
+}
+
+function saveUserPermissions(member) {
+  const selected = new Set(member.permissions || []);
+  const existing = storageList(userPermissionsStorageKey).filter((permission) => permission.user_id !== member.id);
+  const timestamp = new Date().toISOString();
+  const records = permissionDefinitions.map((permission) => ({
+    id: `${member.id}-${permission.key}`,
+    user_id: member.id,
+    user_email: member.email,
+    permission_key: permission.key,
+    can_access: selected.has(permission.key),
+    created_at: timestamp,
+    updated_at: timestamp,
+  }));
+  saveStorageList(userPermissionsStorageKey, [...existing, ...records]);
 }
 
 function objectToList(object) {
@@ -1278,14 +1472,42 @@ function currentMember() {
   };
 }
 
+function permissionKeyForSection(section) {
+  return {
+    portal: "quotation_hub",
+    dashboard: "dashboard",
+    builder: "build_quotation",
+    approvals: "approval",
+    approval: "approval",
+    library: "quote_library",
+    settings: "setup",
+    audit: "audit_trail",
+    salesRequests: "sales_quotation_requests",
+  }[section] || section;
+}
+
+function memberPermissions(member = currentMember()) {
+  const defaults = roleDefaultPermissions[member.access] || ["build_quotation", "quotation_hub"];
+  const explicit = Array.isArray(member.permissions) ? member.permissions : null;
+  const stored = storageList(userPermissionsStorageKey)
+    .filter((permission) => permission.user_id === member.id || normalizeEmail(permission.user_email) === normalizeEmail(member.email))
+    .filter((permission) => permission.can_access)
+    .map((permission) => permission.permission_key);
+  return new Set(explicit || (stored.length ? stored : defaults));
+}
+
+function hasPermission(permissionKey, member = currentMember()) {
+  if (!isSignedIn()) return false;
+  if (["Super Admin"].includes(member.access)) return true;
+  return memberPermissions(member).has(permissionKey);
+}
+
 function canAccess(section) {
   if (!isSignedIn()) return false;
-  if (section === "portal") return true;
-  const access = currentMember().access;
-  if (access === "Admin") return true;
-  if (access === "Full Access Member") return ["dashboard", "builder", "approvals", "library"].includes(section);
-  if (access === "Quotation Builder Only") return section === "builder";
-  return section === "builder";
+  if (section === "portal") return hasPermission("quotation_hub");
+  if (section === "settings") return ["setup", "supplier_prices", "member_access_management"].some((permission) => hasPermission(permission));
+  const permissionKey = permissionKeyForSection(section);
+  return hasPermission(permissionKey);
 }
 
 function enforceAccess(section) {
@@ -1302,6 +1524,7 @@ function applyPermissions() {
     button.hidden = !allowed;
     button.disabled = !allowed;
   });
+  document.body.classList.toggle("has-quotation-hub-access", hasPermission("quotation_hub"));
 }
 
 function loadAudit() {
@@ -1489,15 +1712,15 @@ function dashboardQuotes() {
 }
 
 function isInternallyApproved(quote) {
-  return normalizedStatus(quote.status) === "approved";
+  return ["approved", "sent_to_client", "client_accepted", "client_declined"].includes(normalizedStatus(quote.status));
 }
 
 function isClientAccepted(quote) {
-  return isInternallyApproved(quote) && quote.clientOutcome === "Approved by client";
+  return normalizedStatus(quote.status) === "client_accepted" || quote.clientOutcome === "Approved by client";
 }
 
 function isOutstandingClientApproval(quote) {
-  return isInternallyApproved(quote) && !["Approved by client", "Rejected by client"].includes(quote.clientOutcome);
+  return isInternallyApproved(quote) && !["client_accepted", "client_declined"].includes(normalizedStatus(quote.status)) && !["Approved by client", "Rejected by client"].includes(quote.clientOutcome);
 }
 
 function salesRepNameForQuote(quote) {
@@ -1611,7 +1834,7 @@ function renderDashboard() {
 }
 
 function isManagementPortalUser() {
-  return currentMember().access === "Admin";
+  return ["Admin", "Super Admin"].includes(currentMember().access) || hasPermission("reports");
 }
 
 function hasHubAccess(hub) {
@@ -1625,6 +1848,8 @@ function hasHubAccess(hub) {
   ));
   if (explicitAccess) return explicitAccess.status === "active";
 
+  if (hub.slug === "quotation-hub") return hasPermission("quotation_hub", member);
+  if (hub.slug === "cost-hub") return hasPermission("cost_hub", member);
   return storageList(hubPermissionsStorageKey).some((permission) => (
     permission.hubSlug === hub.slug && permission.accessLevel === member.access
   ));
@@ -1643,8 +1868,8 @@ function portalQuotes() {
 
 function portalData() {
   const quotes = portalQuotes();
-  const pending = quotes.filter((quote) => ["submitted", "pending", "awaiting_approval", "submitted_for_approval"].includes(normalizedStatus(quote.status)));
-  const approved = quotes.filter((quote) => normalizedStatus(quote.status) === "approved");
+  const pending = quotes.filter(isApprovalPendingQuote);
+  const approved = quotes.filter(isInternallyApproved);
   const rejected = quotes.filter((quote) => normalizedStatus(quote.status) === "rejected");
   const accepted = quotes.filter(isClientAccepted);
   const byMonth = new Map();
@@ -1803,6 +2028,7 @@ function renderMembers() {
       <div>
         <strong>${escapeHtml(member.name)}</strong>
         <small>${escapeHtml(member.email)} | ${escapeHtml(member.access)} | ${escapeHtml(inviteStatus)}</small>
+        <small>Permissions: ${escapeHtml(Array.from(memberPermissions(member)).map((key) => permissionDefinitions.find((permission) => permission.key === key)?.label || key).join(", ") || "None selected")}</small>
         <small>${member.inviteSentAt ? `Invite sent: ${escapeHtml(formatDate(member.inviteSentAt.slice(0, 10)))}` : "Invite not sent yet"}</small>
       </div>
       <div class="setup-actions">
@@ -1860,6 +2086,12 @@ function renderClients() {
 
 function renderSetup() {
   if (!canAccess("settings")) return;
+  const settings = quotationSettings();
+  profitDeductionPercent.value = settings.profitDeductionPercent;
+  commissionPercent.value = settings.commissionPercent;
+  if (!memberPermissionChecklist.children.length) {
+    renderPermissionChecklist(roleDefaultPermissions[memberAccess.value] || []);
+  }
   renderMembers();
   renderSetupSalesReps();
   renderSupplierPrices();
@@ -2164,8 +2396,134 @@ function submittedQuotes() {
 }
 
 function libraryQuotes() {
-  const finalizedStatuses = new Set(["approved", "rejected"]);
+  const finalizedStatuses = new Set(["approved", "rejected", "sent_to_client", "client_accepted", "client_declined"]);
   return loadApprovals().filter((quote) => finalizedStatuses.has(normalizedStatus(quote.status)));
+}
+
+function loadSalesRequests() {
+  return storageList(salesRequestsStorageKey);
+}
+
+function saveSalesRequests(requests) {
+  saveStorageList(salesRequestsStorageKey, requests);
+}
+
+function reserveRequestNumber() {
+  const year = quoteYear(todayInputValue());
+  const key = `${requestSequencePrefix}-${year}`;
+  const nextSequence = Number(localStorage.getItem(key) || 0) + 1;
+  localStorage.setItem(key, String(nextSequence));
+  return `SQR-${year}-${String(nextSequence).padStart(4, "0")}`;
+}
+
+function requestFileMetadata(file) {
+  return {
+    id: `request-file-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    file_name: file.name,
+    file_url: "",
+    file_type: file.type || "Unknown file type",
+    file_size: file.size,
+    uploaded_by_user_id: currentUser(),
+    uploaded_at: new Date().toISOString(),
+  };
+}
+
+function renderRequestFileList() {
+  requestFileList.innerHTML = state.salesRequestFiles.length
+    ? state.salesRequestFiles.map((file) => `<span class="upload-file-pill">${escapeHtml(file.file_name)} (${escapeHtml(formatFileSize(file.file_size))})</span>`).join("")
+    : "No request documents uploaded.";
+}
+
+function canProcessSalesRequest(request) {
+  if (!hasPermission("build_quotation") && !hasPermission("approval")) return false;
+  if (request.status !== "Submitted" && request.status !== "Rejected - Insufficient Information") return false;
+  return !request.accepted_by_user_id || request.accepted_by_user_id === currentUser() || ["Admin", "Super Admin"].includes(currentMember().access);
+}
+
+function salesRequestsForCurrentUser() {
+  const requests = loadSalesRequests();
+  if (hasPermission("approval") || hasPermission("build_quotation") || ["Admin", "Super Admin"].includes(currentMember().access)) return requests;
+  const email = normalizeEmail(currentUser());
+  return requests.filter((request) => normalizeEmail(request.sales_rep_email) === email || normalizeEmail(request.submitted_by_user_id) === email);
+}
+
+function renderSalesRequests() {
+  if (!canAccess("salesRequests")) return;
+  const requests = salesRequestsForCurrentUser().sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+  salesRequestList.innerHTML = "";
+  if (!requests.length) {
+    salesRequestList.innerHTML = `<p class="empty-state">No sales quotation requests have been submitted yet.</p>`;
+    return;
+  }
+
+  salesRequestList.innerHTML = `
+    <div class="approval-table request-table" role="table" aria-label="Sales quotation requests">
+      <div class="approval-table-header" role="row">
+        <span>Request number</span>
+        <span>Client name</span>
+        <span>Site/project</span>
+        <span>Sales rep</span>
+        <span>Status</span>
+        <span>Accepted by</span>
+        <span>Submitted</span>
+        <span>Due date</span>
+        <span>Actions</span>
+      </div>
+      ${requests.map((request) => `
+        <div class="approval-table-row" role="row">
+          <span><strong>${escapeHtml(request.request_number)}</strong><small>${escapeHtml(request.supplier_name || "-")}</small></span>
+          <span>${escapeHtml(request.client_name)}</span>
+          <span>${escapeHtml(request.site_project_name)}</span>
+          <span><strong>${escapeHtml(request.sales_rep_name)}</strong><small>${escapeHtml(request.sales_rep_email)}</small></span>
+          <span><mark class="status-badge ${request.status === "Rejected - Insufficient Information" ? "status-rejected" : request.status === "Completed" ? "status-complete" : "status-warning"}">${escapeHtml(request.status)}</mark></span>
+          <span>${escapeHtml(request.accepted_by_name || "-")}</span>
+          <span>${escapeHtml(formatDate((request.created_at || "").slice(0, 10)))}</span>
+          <span>${escapeHtml(formatDate(request.required_due_date))}</span>
+          <span class="approval-row-actions">
+            ${canProcessSalesRequest(request) ? `<button class="primary-btn" type="button" data-accept-request="${escapeHtml(request.id)}">Accept Request</button>` : ""}
+            ${canProcessSalesRequest(request) ? `<button class="danger-btn" type="button" data-reject-request="${escapeHtml(request.id)}">Reject Request</button>` : ""}
+            ${request.status === "Accepted for Processing" && request.accepted_by_user_id === currentUser() ? `<button class="secondary-btn" type="button" data-create-quote-request="${escapeHtml(request.id)}">Create Quotation from Request</button>` : ""}
+            <button class="secondary-btn" type="button" data-view-request-docs="${escapeHtml(request.id)}">Docs (${(request.files || []).length})</button>
+          </span>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function updateSalesRequest(id, updates) {
+  const requests = loadSalesRequests().map((request) => (
+    request.id === id ? { ...request, ...updates, updated_at: new Date().toISOString() } : request
+  ));
+  saveSalesRequests(requests);
+  return requests.find((request) => request.id === id);
+}
+
+function createQuotationFromRequest(id) {
+  const request = loadSalesRequests().find((item) => item.id === id);
+  if (!request) return;
+  resetQuoteForm();
+  fields.clientName.value = request.client_name || "";
+  fields.clientAddress.value = request.site_address || "";
+  fields.contactPerson.value = request.client_contact_person || "";
+  fields.contactEmail.value = request.client_email || "";
+  fields.contactNumber.value = request.client_phone || "";
+  fields.projectSummary.value = [request.description_of_work, request.special_client_requirements, request.notes_for_builder].filter(Boolean).join("\n\n");
+  const rep = salesRepsList().find((item) => normalizeEmail(item.email) === normalizeEmail(request.sales_rep_email));
+  if (rep) fields.salesRep.value = rep.id;
+  state.supplierQuotes = (request.files || []).map((file) => ({
+    fileId: file.id,
+    name: file.file_name,
+    size: file.file_size,
+    type: file.file_type,
+  }));
+  state.supplierQuote = state.supplierQuotes[0] || null;
+  updateSupplierQuoteDisplay();
+  updateSalesRequest(id, { status: "Accepted for Processing", linked_quotation_id: fields.quoteNumber.value });
+  writeAudit("Quotation created from request", request.request_number, "Sales Quotation Requests", request.request_number, fields.quoteNumber.value);
+  showSection("builder");
+  window.location.hash = "builder";
+  renderAll();
 }
 
 function updateStoredQuote(id, updates) {
@@ -2216,6 +2574,7 @@ function renderRevisionHistory(quote) {
 
 function loadQuoteIntoBuilder(quote) {
   state.revisingQuoteId = quote.id;
+  state.revisionSourceId = quote.id;
   state.revisionNumber = Number(quote.revisionNumber || 0) + 1;
   fields.selectedCompany.value = companies[quote.selectedCompany] ? quote.selectedCompany : "";
   fields.clientName.value = quote.clientName || "";
@@ -2226,7 +2585,10 @@ function loadQuoteIntoBuilder(quote) {
   fields.quoteNumber.value = quote.quoteNumber || reserveQuoteNumber(todayInputValue());
   fields.salesRep.value = salesReps[quote.salesRep] ? quote.salesRep : "";
   fields.quoteDate.value = todayInputValue();
+  fields.validityDays.value = quote.validityDays || 30;
+  fields.validUntil.value = quote.validUntil || dateInputValue(addDays(fields.quoteDate.value, Number(fields.validityDays.value || 30)));
   fields.projectSummary.value = quote.additionalScope || "";
+  fields.aiInstruction.value = quote.aiInstruction || "";
   fields.termsText.value = quote.termsText || buildTerms();
   fields.markupPercent.value = String(quote.markupPercent || 20);
   state.markupPercent = Number(fields.markupPercent.value);
@@ -2266,7 +2628,7 @@ function quoteDocuments(quote) {
 }
 
 function missingDocumentLabels(quote) {
-  if (normalizedStatus(quote.status) !== "approved" || quote.clientOutcome !== "Approved by client") return [];
+  if (normalizedStatus(quote.status) !== "client_accepted" && quote.clientOutcome !== "Approved by client") return [];
 
   const documents = quoteDocuments(quote);
   return [
@@ -2291,13 +2653,16 @@ function libraryDocumentStatus(quote) {
 
 function libraryClientOutcomeLabel(quote) {
   if (normalizedStatus(quote.status) === "rejected" && quote.rejectionSource !== "client") return "-";
+  if (normalizedStatus(quote.status) === "sent_to_client") return "Sent to client";
+  if (normalizedStatus(quote.status) === "client_accepted") return "Approved by client";
+  if (normalizedStatus(quote.status) === "client_declined") return "Rejected by client";
   if (quote.clientOutcome === "Approved by client") return "Approved by client";
   if (quote.clientOutcome === "Rejected by client") return "Rejected by client";
   return "Awaiting client outcome";
 }
 
 function internalStatusBadge(quote) {
-  if (normalizedStatus(quote.status) === "approved") {
+  if (["approved", "sent_to_client", "client_accepted", "client_declined"].includes(normalizedStatus(quote.status))) {
     return {
       label: internalApprovalLabel(quote),
       className: "status-badge status-internal-approved",
@@ -2325,14 +2690,14 @@ function libraryStatusBadge(quote) {
     };
   }
 
-  if (quote.clientOutcome === "Rejected by client" || quote.rejectionSource === "client") {
+  if (normalizedStatus(quote.status) === "client_declined" || quote.clientOutcome === "Rejected by client" || quote.rejectionSource === "client") {
     return {
       label: "Rejected by client",
       className: "status-badge status-rejected",
     };
   }
 
-  if (quote.clientOutcome === "Approved by client") {
+  if (normalizedStatus(quote.status) === "client_accepted" || quote.clientOutcome === "Approved by client") {
     const missing = missingDocumentLabels(quote);
     return missing.length
       ? {
@@ -2399,8 +2764,9 @@ function renderDocumentAccess(documentRecord, missingLabel) {
 }
 
 function currentQuotePayload(status = "Submitted for approval") {
+  const revisionSuffix = state.revisingQuoteId ? `-rev-${state.revisionNumber}-${Date.now()}` : "";
   return {
-    id: state.revisingQuoteId || `${fields.quoteNumber.value || "draft"}-${Date.now()}`,
+    id: state.revisingQuoteId ? `${state.revisingQuoteId}${revisionSuffix}` : `${fields.quoteNumber.value || "draft"}-${Date.now()}`,
     submittedAt: new Date().toISOString(),
     createdBy: currentUser(),
     createdByName: currentUserName(),
@@ -2417,8 +2783,11 @@ function currentQuotePayload(status = "Submitted for approval") {
     quoteNumber: fields.quoteNumber.value,
     salesRep: fields.salesRep.value,
     quoteDate: fields.quoteDate.value,
+    validityDays: Number(fields.validityDays.value || 30),
+    validUntil: fields.validUntil.value || dateInputValue(addDays(fields.quoteDate.value, Number(fields.validityDays.value || 30))),
     projectSummary: scopeText(),
     additionalScope: fields.projectSummary.value,
+    aiInstruction: fields.aiInstruction.value,
     termsText: isAutoTerms(fields.termsText.value) ? buildTerms() : fields.termsText.value,
     markupPercent: fields.markupPercent.value,
     selectedCompany: fields.selectedCompany.value,
@@ -2428,13 +2797,16 @@ function currentQuotePayload(status = "Submitted for approval") {
     items: state.items,
     subtotal: state.items.reduce((sum, item) => sum + itemTotal(item), 0),
     revisionNumber: state.revisionNumber,
+    revisionSourceId: state.revisionSourceId,
   };
 }
 
 async function submitCurrentQuoteForApproval() {
   const approvals = loadApprovals();
   const payload = currentQuotePayload();
-  const existingIndex = approvals.findIndex((quote) => quote.id === payload.id || quote.quoteNumber === payload.quoteNumber);
+  const existingIndex = state.revisingQuoteId
+    ? -1
+    : approvals.findIndex((quote) => quote.id === payload.id || quote.quoteNumber === payload.quoteNumber);
 
   await saveSupplierQuoteFile(payload.id);
 
@@ -2469,7 +2841,20 @@ async function submitCurrentQuoteForApproval() {
         : history,
     };
   } else {
-    approvals.unshift(payload);
+    const sourceQuote = state.revisionSourceId ? approvals.find((quote) => quote.id === state.revisionSourceId) : null;
+    approvals.unshift({
+      ...payload,
+      revisionHistory: state.revisionSourceId
+        ? [
+            ...revisionHistory(sourceQuote || {}),
+            {
+              action: "New revision created",
+              timestamp: new Date().toISOString(),
+              details: `${payload.quoteNumber} Rev ${payload.revisionNumber} created from rejected quotation by ${currentUserName()}`,
+            },
+          ]
+        : payload.revisionHistory,
+    });
   }
 
   saveApprovals(approvals);
@@ -2531,10 +2916,35 @@ function decideQuote(id, status, rejectionReason = "") {
       quote.quoteNumber,
       rejectionReason || `Decision by ${currentUserName()}`
     );
+    writeAudit("Approval Completed", `${quote.quoteNumber} ${status}`, "Approval", quote.quoteNumber, `Completed by ${currentUserName()}`);
   }
   state.selectedApprovalId = "";
   renderApprovals();
   renderQuoteLibrary();
+}
+
+function sendQuoteToClient(id) {
+  const quote = loadApprovals().find((item) => item.id === id);
+  if (!quote || !["approved", "sent_to_client"].includes(normalizedStatus(quote.status))) return;
+  updateStoredQuote(id, {
+    status: "Sent to Client",
+    approvalStatus: "Sent to Client",
+    workflowStatus: "Sent to Client",
+    clientOutcome: "Awaiting client outcome",
+    sentToClientAt: new Date().toISOString(),
+    emailLogs: [
+      ...(quote.emailLogs || []),
+      {
+        id: `email-${Date.now()}`,
+        to: quote.contactEmail,
+        subject: `Quotation ${quote.quoteNumber}`,
+        sentAt: new Date().toISOString(),
+        notes: "Client quotation PDF generated for email delivery in local prototype.",
+      },
+    ],
+  });
+  writeAudit("Sent quotation to client", quote.quoteNumber, "Quote Library", quote.quoteNumber, `Email logged for ${quote.contactEmail || "client email not set"}`);
+  openClientQuotation(id);
 }
 
 function renderApprovalDetail(quote) {
@@ -2679,9 +3089,8 @@ function renderApprovalDetail(quote) {
 function renderApprovals() {
   const allApprovalQuotes = loadApprovals()
     .sort((a, b) => new Date(b.submittedAt || b.updatedAt || b.quoteDate || 0) - new Date(a.submittedAt || a.updatedAt || a.quoteDate || 0));
-  const isAdminApprovalDebug = canSeeInternalCosting();
-  const pending = isAdminApprovalDebug ? allApprovalQuotes : submittedQuotes();
-  const filterLabel = isAdminApprovalDebug ? "Admin debug: all quotations, no status filter" : "Pending approval statuses only";
+  const pending = submittedQuotes();
+  const filterLabel = "Pending approval statuses only";
   debugApprovalFlow(allApprovalQuotes, pending, allApprovalQuotes.filter((quote) => !pending.some((item) => item.id === quote.id)));
   approvalCount.textContent = String(pending.length);
 
@@ -2760,6 +3169,8 @@ function renderApprovals() {
         })
       : "-";
     const canDecide = isApprovalPendingQuote(quote);
+    const pendingDays = Math.max(0, Math.floor((Date.now() - new Date(quote.submittedAt || quote.createdAt || Date.now()).getTime()) / 86400000));
+    const overdueBadge = pendingDays > 3 ? `<small><mark class="status-badge status-rejected">Overdue ${pendingDays} days</mark></small>` : `<small>Pending ${pendingDays} days</small>`;
     const row = document.createElement("div");
     row.className = "approval-table-row";
     row.dataset.viewApproval = quote.id;
@@ -2776,7 +3187,7 @@ function renderApprovals() {
         <strong>${escapeHtml(quote.createdByName || quote.submittedByName || quote.decidedByName || "Unknown")}</strong>
         <small>${escapeHtml(quote.createdBy || quote.submittedBy || quote.decidedBy || "-")}</small>
       </span>
-      <span><mark>${escapeHtml(quote.status)}</mark></span>
+      <span><mark>${escapeHtml(quote.status)}</mark>${overdueBadge}</span>
       <span>${escapeHtml(createdDate)}</span>
       <span>${escapeHtml(submittedDate)}</span>
       <span class="approval-row-actions">
@@ -2819,9 +3230,9 @@ function renderQuoteLibraryDetail(quote) {
   const total = subtotal * (1 + state.taxRate);
   const documents = quoteDocuments(quote);
   const missing = missingDocumentLabels(quote);
-  const isInternalApproved = normalizedStatus(quote.status) === "approved";
+  const isInternalApproved = ["approved", "sent_to_client", "client_accepted", "client_declined"].includes(normalizedStatus(quote.status));
   const canRevise = canReviseQuote(quote);
-  const isClientApproved = quote.clientOutcome === "Approved by client";
+  const isClientApproved = normalizedStatus(quote.status) === "client_accepted" || quote.clientOutcome === "Approved by client";
   const isClientRejected = quote.clientOutcome === "Rejected by client";
   const clientOutcomeLabel = libraryClientOutcomeLabel(quote);
   const statusBadge = libraryStatusBadge(quote);
@@ -2863,8 +3274,11 @@ function renderQuoteLibraryDetail(quote) {
       <h3>Client outcome</h3>
       ${isInternalApproved ? `
         <div class="approval-detail-actions">
-          <button class="primary-btn" type="button" data-client-approved="${quote.id}">Approved by client</button>
-          <button class="danger-btn" type="button" data-client-rejected="${quote.id}">Rejected by client</button>
+          <button class="primary-btn" type="button" data-send-client="${quote.id}">Send to Client</button>
+          <button class="secondary-btn" type="button" data-client-print="${quote.id}">Print Client Quotation</button>
+          <button class="secondary-btn" type="button" data-client-download="${quote.id}">Download Client PDF</button>
+          <button class="primary-btn" type="button" data-client-approved="${quote.id}">Mark as Accepted</button>
+          <button class="danger-btn" type="button" data-client-rejected="${quote.id}">Mark as Declined</button>
         </div>
         <label class="${isClientRejected && !quote.clientRejectionReason ? "field-error-wrap" : ""}">
           Client rejection reason
@@ -2959,8 +3373,8 @@ function renderQuoteLibraryDetail(quote) {
     <div class="approval-detail-actions">
       <button class="secondary-btn" type="button" data-back-library="true">Back to quote library</button>
       <button class="secondary-btn" type="button" data-open-supplier="${quote.id}">Open supplier quotation</button>
-      ${canViewInternal ? `<button class="secondary-btn" type="button" data-processed-print="${quote.id}">Print processed quotation</button>` : ""}
-      ${canViewInternal ? `<button class="secondary-btn" type="button" data-processed-download="${quote.id}">Download processed quotation PDF</button>` : ""}
+      ${canViewInternal ? `<button class="secondary-btn" type="button" data-processed-print="${quote.id}">Print Costing</button>` : ""}
+      ${canViewInternal ? `<button class="secondary-btn" type="button" data-processed-download="${quote.id}">Download Costing PDF</button>` : ""}
       ${canRevise ? `<button class="primary-btn" type="button" data-revise-quote="${quote.id}">Edit / Revise Quotation</button>` : ""}
     </div>
     <div class="library-documents-panel">
@@ -3002,6 +3416,9 @@ function renderQuoteLibrary() {
           <option value="">All</option>
           <option value="Approved">Approved</option>
           <option value="Rejected">Rejected</option>
+          <option value="Sent to Client">Sent to Client</option>
+          <option value="Client Accepted">Client Accepted</option>
+          <option value="Client Declined">Client Declined</option>
         </select>
       </label>
       <label>
@@ -3017,6 +3434,38 @@ function renderQuoteLibrary() {
         Search
         <input id="librarySearch" type="search" placeholder="Search by client, quote number, requester..." />
       </label>
+      <label>
+        Quote number
+        <input id="libraryQuoteNumberFilter" type="search" placeholder="Q-2026-0001" />
+      </label>
+      <label>
+        Client name
+        <input id="libraryClientFilter" type="search" placeholder="Client name" />
+      </label>
+      <label>
+        Sales rep/member
+        <input id="librarySalesRepFilter" type="search" placeholder="Sales rep" />
+      </label>
+      <label>
+        Date from
+        <input id="libraryDateFromFilter" type="date" />
+      </label>
+      <label>
+        Date to
+        <input id="libraryDateToFilter" type="date" />
+      </label>
+      <label>
+        Minimum total
+        <input id="libraryMinTotalFilter" type="number" min="0" step="0.01" />
+      </label>
+      <label>
+        Maximum total
+        <input id="libraryMaxTotalFilter" type="number" min="0" step="0.01" />
+      </label>
+      <div class="filter-actions">
+        <button class="secondary-btn" type="button" id="libraryClearFilters">Clear filters</button>
+        <button class="secondary-btn" type="button" id="libraryExportFiltered">Export filtered results</button>
+      </div>
     </div>
     <div class="approval-table library-table" role="table" aria-label="Quote library">
       <div class="approval-table-header" role="row">
@@ -3046,9 +3495,9 @@ function renderQuoteLibrary() {
       const statusBadge = libraryStatusBadge(quote);
       const internalBadge = internalStatusBadge(quote);
       const paymentBadge = paymentStatusBadge(quote);
-      const showPayment = normalizedStatus(quote.status) === "approved" && quote.clientOutcome === "Approved by client";
+      const showPayment = ["approved", "sent_to_client", "client_accepted"].includes(normalizedStatus(quote.status)) && libraryClientOutcomeLabel(quote) === "Approved by client";
       const row = document.createElement("div");
-      row.className = `approval-table-row ${normalizedStatus(quote.status) === "approved" ? "row-internal-approved" : "row-internal-rejected"}`;
+      row.className = `approval-table-row ${["approved", "sent_to_client", "client_accepted", "client_declined"].includes(normalizedStatus(quote.status)) ? "row-internal-approved" : "row-internal-rejected"}`;
       row.dataset.viewLibrary = quote.id;
       row.innerHTML = `
         <span>
@@ -3078,8 +3527,18 @@ function renderQuoteLibrary() {
     const internalStatus = quoteLibraryList.querySelector("#libraryInternalStatusFilter").value;
     const clientOutcome = quoteLibraryList.querySelector("#libraryClientOutcomeFilter").value;
     const query = quoteLibraryList.querySelector("#librarySearch").value.trim().toLowerCase();
+    const quoteNumberQuery = quoteLibraryList.querySelector("#libraryQuoteNumberFilter").value.trim().toLowerCase();
+    const clientQuery = quoteLibraryList.querySelector("#libraryClientFilter").value.trim().toLowerCase();
+    const salesRepQuery = quoteLibraryList.querySelector("#librarySalesRepFilter").value.trim().toLowerCase();
+    const dateFrom = quoteLibraryList.querySelector("#libraryDateFromFilter").value;
+    const dateTo = quoteLibraryList.querySelector("#libraryDateToFilter").value;
+    const minTotal = Number(quoteLibraryList.querySelector("#libraryMinTotalFilter").value || 0);
+    const maxTotalRaw = quoteLibraryList.querySelector("#libraryMaxTotalFilter").value;
+    const maxTotal = maxTotalRaw ? Number(maxTotalRaw) : Infinity;
     const filtered = quotes.filter((quote) => {
       const salesRep = salesReps[quote.salesRep];
+      const quoteDate = (quote.quoteDate || quote.submittedAt || "").slice(0, 10);
+      const total = quoteSubtotal(quote) * (1 + state.taxRate);
       const internalStatusMatch = !internalStatus || normalizedStatus(quote.status) === normalizedStatus(internalStatus);
       const clientOutcomeLabel = libraryClientOutcomeLabel(quote);
       const clientOutcomeMatch = !clientOutcome || (
@@ -3094,15 +3553,42 @@ function renderQuoteLibrary() {
         salesRep?.name,
         salesRep?.email,
       ].filter(Boolean).join(" ").toLowerCase().includes(query);
-      return internalStatusMatch && clientOutcomeMatch && searchMatch;
+      const quoteNumberMatch = !quoteNumberQuery || String(quote.quoteNumber || "").toLowerCase().includes(quoteNumberQuery);
+      const clientMatch = !clientQuery || String(quote.clientName || "").toLowerCase().includes(clientQuery);
+      const salesRepMatch = !salesRepQuery || [salesRep?.name, salesRep?.email, quote.createdByName, quote.submittedByName].filter(Boolean).join(" ").toLowerCase().includes(salesRepQuery);
+      const dateMatch = (!dateFrom || quoteDate >= dateFrom) && (!dateTo || quoteDate <= dateTo);
+      const totalMatch = total >= minTotal && total <= maxTotal;
+      return internalStatusMatch && clientOutcomeMatch && searchMatch && quoteNumberMatch && clientMatch && salesRepMatch && dateMatch && totalMatch;
     });
     renderRows(filtered);
+    quoteLibraryList.dataset.filteredIds = JSON.stringify(filtered.map((quote) => quote.id));
   };
 
   renderRows(quotes);
+  quoteLibraryList.dataset.filteredIds = JSON.stringify(quotes.map((quote) => quote.id));
   quoteLibraryList.querySelector("#libraryInternalStatusFilter").addEventListener("change", applyFilters);
   quoteLibraryList.querySelector("#libraryClientOutcomeFilter").addEventListener("change", applyFilters);
   quoteLibraryList.querySelector("#librarySearch").addEventListener("input", applyFilters);
+  ["libraryQuoteNumberFilter", "libraryClientFilter", "librarySalesRepFilter", "libraryDateFromFilter", "libraryDateToFilter", "libraryMinTotalFilter", "libraryMaxTotalFilter"].forEach((id) => {
+    quoteLibraryList.querySelector(`#${id}`).addEventListener("input", applyFilters);
+  });
+  quoteLibraryList.querySelector("#libraryClearFilters").addEventListener("click", () => {
+    quoteLibraryList.querySelectorAll("input, select").forEach((input) => { input.value = ""; });
+    applyFilters();
+  });
+  quoteLibraryList.querySelector("#libraryExportFiltered").addEventListener("click", () => {
+    const ids = JSON.parse(quoteLibraryList.dataset.filteredIds || "[]");
+    const rows = quotes.filter((quote) => ids.includes(quote.id)).map((quote) => [
+      quote.quoteNumber,
+      quote.clientName,
+      salesRepNameForQuote(quote),
+      quote.status,
+      libraryClientOutcomeLabel(quote),
+      quoteSubtotal(quote) * (1 + state.taxRate),
+    ]);
+    const csv = [["Quote number", "Client", "Sales rep", "Status", "Client outcome", "Total"], ...rows].map((row) => row.map(csvEscape).join(",")).join("\n");
+    downloadBlobFile(new Blob([csv], { type: "text/csv;charset=utf-8" }), `quote-library-filtered-${todayInputValue()}.csv`);
+  });
 }
 
 function markInvalid(element) {
@@ -3386,6 +3872,8 @@ function loadSavedQuote() {
   fields.projectSummary.value = payload.additionalScope || payload.projectSummary || "";
   fields.salesRep.value = salesReps[payload.salesRep] ? payload.salesRep : "";
   fields.quoteDate.value = todayInputValue();
+  fields.validityDays.value = payload.validityDays || 30;
+  fields.validUntil.value = payload.validUntil || dateInputValue(addDays(fields.quoteDate.value, Number(fields.validityDays.value || 30)));
   fields.selectedCompany.value = companies[payload.selectedCompany] ? payload.selectedCompany : "";
   fields.markupPercent.value = payload.markupPercent || "20";
   state.supplierQuotes = supplierQuoteList(payload);
@@ -3567,6 +4055,9 @@ quoteLibraryDetail.addEventListener("click", (event) => {
   const removeLibraryDocId = event.target.dataset.removeLibraryDoc;
   const clientApprovedId = event.target.dataset.clientApproved;
   const clientRejectedId = event.target.dataset.clientRejected;
+  const sendClientId = event.target.dataset.sendClient;
+  const clientPrintId = event.target.dataset.clientPrint;
+  const clientDownloadId = event.target.dataset.clientDownload;
   const reviseQuoteId = event.target.dataset.reviseQuote;
 
   if (backToLibrary) {
@@ -3579,6 +4070,13 @@ quoteLibraryDetail.addEventListener("click", (event) => {
   if (downloadSupplierId) openSupplierQuote(downloadSupplierId, supplierFileId, "download");
   if (processedPrintId) openProcessedQuotation(processedPrintId);
   if (processedDownloadId) openProcessedQuotation(processedDownloadId);
+  if (sendClientId) {
+    sendQuoteToClient(sendClientId);
+    renderQuoteLibrary();
+    return;
+  }
+  if (clientPrintId) openClientQuotation(clientPrintId);
+  if (clientDownloadId) openClientQuotation(clientDownloadId);
   if (removeSupplierDocId) {
     const quote = loadApprovals().find((item) => item.id === removeSupplierDocId);
     const supplierQuotes = supplierQuoteList(quote).filter((file) => file.fileId !== supplierFileId);
@@ -3605,6 +4103,9 @@ quoteLibraryDetail.addEventListener("click", (event) => {
 
   if (clientApprovedId) {
     updateStoredQuote(clientApprovedId, {
+      status: "Client Accepted",
+      approvalStatus: "Client Accepted",
+      workflowStatus: "Client Accepted",
       clientOutcome: "Approved by client",
       clientRejectionReason: "",
     });
@@ -3621,6 +4122,9 @@ quoteLibraryDetail.addEventListener("click", (event) => {
       return;
     }
     updateStoredQuote(clientRejectedId, {
+      status: "Client Declined",
+      approvalStatus: "Client Declined",
+      workflowStatus: "Client Declined",
       clientOutcome: "Rejected by client",
       rejectionSource: "client",
       clientRejectionReason: reason,
@@ -3636,7 +4140,7 @@ quoteLibraryDetail.addEventListener("change", async (event) => {
   if (paymentField && state.selectedLibraryId) {
     const quote = libraryQuotes().find((item) => item.id === state.selectedLibraryId);
     if (!quote) return;
-    if (!(normalizedStatus(quote.status) === "approved" && quote.clientOutcome === "Approved by client")) return;
+    if (!(normalizedStatus(quote.status) === "client_accepted" || quote.clientOutcome === "Approved by client")) return;
 
     const updates = { [paymentField]: event.target.checked };
     if (paymentField === "depositReceived" && !event.target.checked) {
@@ -3697,6 +4201,7 @@ memberForm.addEventListener("submit", async (event) => {
     name: memberName.value.trim(),
     email,
     access: memberAccess.value,
+    permissions: selectedPermissionKeys(),
     inviteStatus: memberInviteStatus.value,
   };
   if (temporaryPassword) {
@@ -3710,6 +4215,7 @@ memberForm.addEventListener("submit", async (event) => {
   if (existingIndex >= 0) members[existingIndex] = payload;
   else members.push(payload);
   saveStorageList(membersStorageKey, members);
+  saveUserPermissions(payload);
   if (temporaryPassword) {
     sendInviteEmail(payload, temporaryPassword, Boolean(existing));
     writeAudit(existing ? "Invite resent" : "Member invite sent", payload.email, "Setup - Member access", payload.email, `Access level: ${payload.access}`);
@@ -3717,6 +4223,8 @@ memberForm.addEventListener("submit", async (event) => {
   memberForm.reset();
   delete memberForm.dataset.editId;
   memberInviteStatus.value = "Pending";
+  memberAccess.value = "Admin";
+  renderPermissionChecklist(roleDefaultPermissions[memberAccess.value] || []);
   writeAudit("Updated member access", payload.email);
   applyPermissions();
   renderSetup();
@@ -3736,6 +4244,7 @@ memberList.addEventListener("click", async (event) => {
     memberName.value = member.name;
     memberEmail.value = member.email;
     memberAccess.value = member.access;
+    renderPermissionChecklist(member.permissions || Array.from(memberPermissions(member)));
     memberInviteStatus.value = member.inviteStatus || (member.hasLoggedIn ? "Active" : "Pending");
     memberTempPassword.value = "";
   }
@@ -3770,6 +4279,7 @@ memberList.addEventListener("click", async (event) => {
   }
   if (deleteId) {
     saveStorageList(membersStorageKey, members.filter((item) => item.id !== deleteId));
+    saveStorageList(userPermissionsStorageKey, storageList(userPermissionsStorageKey).filter((permission) => permission.user_id !== deleteId));
     writeAudit("Deleted member access", deleteId);
     applyPermissions();
     renderSetup();
@@ -3959,10 +4469,132 @@ dashboardPrintReport.addEventListener("click", () => {
   window.print();
 });
 
+requestFiles.addEventListener("change", () => {
+  const files = Array.from(requestFiles.files || []);
+  state.salesRequestFiles = [...state.salesRequestFiles, ...files.map(requestFileMetadata)];
+  requestFiles.value = "";
+  renderRequestFileList();
+});
+
+salesRequestForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!enforceAccess("salesRequests")) return;
+  const required = [
+    ["requestClientName", "Client name"],
+    ["requestContactPerson", "Client contact person"],
+    ["requestClientEmail", "Client email"],
+    ["requestClientPhone", "Client phone number"],
+    ["requestProjectName", "Site/project name"],
+    ["requestSiteAddress", "Site address"],
+    ["requestSalesRepName", "Sales rep name"],
+    ["requestSalesRepEmail", "Sales rep email"],
+    ["requestSupplierName", "Supplier name"],
+    ["requestSupplierQuoteNumber", "Supplier quote number"],
+    ["requestDueDate", "Required quotation due date"],
+    ["requestDescription", "Description of work required"],
+  ];
+  const missing = required.filter(([id]) => !document.querySelector(`#${id}`)?.value.trim());
+  if (missing.length) {
+    alert(`Please complete: ${missing.map(([, label]) => label).join(", ")}`);
+    return;
+  }
+  const request = {
+    id: `sqr-${Date.now()}`,
+    request_number: reserveRequestNumber(),
+    client_name: document.querySelector("#requestClientName").value.trim(),
+    client_contact_person: document.querySelector("#requestContactPerson").value.trim(),
+    client_email: document.querySelector("#requestClientEmail").value.trim(),
+    client_phone: document.querySelector("#requestClientPhone").value.trim(),
+    site_project_name: document.querySelector("#requestProjectName").value.trim(),
+    site_address: document.querySelector("#requestSiteAddress").value.trim(),
+    sales_rep_name: document.querySelector("#requestSalesRepName").value.trim(),
+    sales_rep_email: document.querySelector("#requestSalesRepEmail").value.trim(),
+    supplier_name: document.querySelector("#requestSupplierName").value.trim(),
+    supplier_contact_person: document.querySelector("#requestSupplierContact").value.trim(),
+    supplier_email: document.querySelector("#requestSupplierEmail").value.trim(),
+    supplier_quote_number: document.querySelector("#requestSupplierQuoteNumber").value.trim(),
+    supplier_quote_date: document.querySelector("#requestSupplierQuoteDate").value,
+    required_due_date: document.querySelector("#requestDueDate").value,
+    description_of_work: document.querySelector("#requestDescription").value.trim(),
+    special_client_requirements: document.querySelector("#requestSpecialRequirements").value.trim(),
+    notes_for_builder: document.querySelector("#requestNotes").value.trim(),
+    status: "Submitted",
+    submitted_by_user_id: currentUser(),
+    files: state.salesRequestFiles,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  saveSalesRequests([request, ...loadSalesRequests()]);
+  writeAudit("Request submitted", request.request_number, "Sales Quotation Requests", request.request_number, request.client_name);
+  state.salesRequestFiles = [];
+  salesRequestForm.reset();
+  renderRequestFileList();
+  renderSalesRequests();
+});
+
+salesRequestList.addEventListener("click", (event) => {
+  if (!enforceAccess("salesRequests")) return;
+  const acceptId = event.target.dataset.acceptRequest;
+  const rejectId = event.target.dataset.rejectRequest;
+  const createId = event.target.dataset.createQuoteRequest;
+  const docsId = event.target.dataset.viewRequestDocs;
+  if (acceptId) {
+    const request = updateSalesRequest(acceptId, {
+      status: "Accepted for Processing",
+      accepted_by_user_id: currentUser(),
+      accepted_by_name: currentUserName(),
+      accepted_at: new Date().toISOString(),
+    });
+    writeAudit("Request accepted", request.request_number, "Sales Quotation Requests", request.request_number, `Accepted by ${currentUserName()}`);
+    renderSalesRequests();
+  }
+  if (rejectId) {
+    const reason = prompt("Please enter the rejection reason:");
+    if (!reason?.trim()) return;
+    const request = updateSalesRequest(rejectId, {
+      status: "Rejected - Insufficient Information",
+      rejected_by_user_id: currentUser(),
+      rejected_by_name: currentUserName(),
+      rejected_at: new Date().toISOString(),
+      rejection_reason: reason.trim(),
+      email_logs: [{
+        to: loadSalesRequests().find((item) => item.id === rejectId)?.sales_rep_email,
+        subject: "Sales quotation request rejected - insufficient information",
+        body: reason.trim(),
+        sent_at: new Date().toISOString(),
+      }],
+    });
+    writeAudit("Request rejected", request.request_number, "Sales Quotation Requests", request.request_number, reason.trim());
+    writeAudit("Rejection email sent", request.request_number, "Sales Quotation Requests", request.sales_rep_email, reason.trim());
+    renderSalesRequests();
+  }
+  if (createId) createQuotationFromRequest(createId);
+  if (docsId) {
+    const request = loadSalesRequests().find((item) => item.id === docsId);
+    alert((request?.files || []).map((file) => `${file.file_name} (${formatFileSize(file.file_size)})`).join("\n") || "No documents uploaded.");
+  }
+});
+
 generateTempPassword.addEventListener("click", () => {
   memberTempPassword.value = generatePassword();
   memberTempPassword.type = "text";
   memberTempPassword.focus();
+});
+
+memberAccess.addEventListener("change", () => {
+  renderPermissionChecklist(roleDefaultPermissions[memberAccess.value] || []);
+});
+
+quotationSettingsForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!enforceAccess("settings")) return;
+  localStorage.setItem(quotationSettingsStorageKey, JSON.stringify({
+    profitDeductionPercent: Math.max(0, Number(profitDeductionPercent.value || 0)),
+    commissionPercent: Math.max(0, Number(commissionPercent.value || 0)),
+  }));
+  writeAudit("Updated quotation settings", "Profit percentages", "Setup", "Quotation settings", `Deduction ${profitDeductionPercent.value}%, commission ${commissionPercent.value}%`);
+  renderCosting();
+  renderSetup();
 });
 
 supplierImportFile.addEventListener("change", async () => {
@@ -4119,10 +4751,15 @@ loginForm.addEventListener("submit", async (event) => {
 Object.values(fields).forEach((field) => {
   field.addEventListener("input", () => {
     if (field.id === "markupPercent") {
+      fields.markupPercent.value = Math.max(0, Number(fields.markupPercent.value || 0));
       renderAll();
       return;
     }
-    if (["clientName", "quoteDate"].includes(field.id)) {
+    if (field.id === "validityDays") {
+      fields.validityDays.value = Math.max(1, Number(fields.validityDays.value || 30));
+      fields.validUntil.value = dateInputValue(addDays(fields.quoteDate.value, Number(fields.validityDays.value || 30)));
+    }
+    if (["clientName", "quoteDate", "validityDays", "aiInstruction"].includes(field.id)) {
       refreshAutoTerms();
     }
     if (field.classList.contains("field-error") && field.value.trim()) {
@@ -4156,7 +4793,7 @@ function showSection(sectionName) {
     item.classList.toggle("active", item.dataset.section === activeSection);
   });
 
-  ["portal", "dashboard", "builder", "approvals", "library", "settings", "audit"].forEach((section) => {
+  ["portal", "dashboard", "builder", "salesRequests", "approvals", "library", "settings", "audit"].forEach((section) => {
     const sectionElement = document.querySelector(`#${section}-section`);
     const isActive = section === activeSection;
     sectionElement.hidden = !isActive;
@@ -4166,6 +4803,7 @@ function showSection(sectionName) {
 
   if (activeSection === "portal") renderPortal();
   if (activeSection === "dashboard") renderDashboard();
+  if (activeSection === "salesRequests") renderSalesRequests();
   if (activeSection === "approvals") renderApprovals();
   if (activeSection === "library") renderQuoteLibrary();
   if (activeSection === "settings") renderSetup();
@@ -4240,6 +4878,7 @@ portalHubGrid.addEventListener("click", (event) => {
 });
 
 seedPortalTables();
+renderPermissionChecklist(roleDefaultPermissions[memberAccess.value] || []);
 hydrateSharedSessionFromUrl();
 loadSalesRepsFromStorage();
 renderSalesRepOptions();
@@ -4247,6 +4886,8 @@ const restoredDraft = loadSavedQuote();
 fields.selectedCompany.value = "";
 fields.salesRep.value = "";
 fields.quoteDate.value = todayInputValue();
+fields.validityDays.value = fields.validityDays.value || "30";
+fields.validUntil.value = dateInputValue(addDays(fields.quoteDate.value, Number(fields.validityDays.value || 30)));
 fields.clientName.value = "";
 fields.clientAddress.value = "";
 fields.contactPerson.value = "";
@@ -4268,7 +4909,7 @@ updateSupplierQuoteDisplay();
 renderAll();
 applyPermissions();
 const routeSection = window.location.hash.slice(1) === "approval" ? "approvals" : window.location.hash.slice(1);
-const initialSection = ["portal", "dashboard", "builder", "approvals", "library", "settings", "audit"].includes(routeSection)
+const initialSection = ["portal", "dashboard", "builder", "salesRequests", "approvals", "library", "settings", "audit"].includes(routeSection)
   ? routeSection
   : "portal";
 consumeHubSsoTokenIfPresent().then((handledSso) => {
