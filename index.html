@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Interactive Security Portal</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <section class="login-screen" id="loginScreen">
+      <form class="login-card" id="loginForm">
+        <div class="brand login-brand">
+          <img class="brand-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+          <div>
+            <strong>Interactive Security Portal</strong>
+            <small>Company hub</small>
+          </div>
+        </div>
+        <h1>Sign in</h1>
+        <p>Use your company email address and password to access the company portal.</p>
+        <label>
+          Email address
+          <input id="loginEmail" type="email" placeholder="name@interactivesecurity.co.za" required />
+        </label>
+        <label>
+          Password
+          <input id="loginPassword" type="password" placeholder="Password" required />
+        </label>
+        <button class="primary-btn" type="submit">Sign in</button>
+        <p class="login-note">Invited members must use the password sent by the admin.</p>
+      </form>
+    </section>
+
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Main navigation">
+        <div class="brand">
+          <img class="brand-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+          <div>
+            <strong>Interactive Security Portal</strong>
+            <small>Company hubs</small>
+          </div>
+        </div>
+        <nav>
+          <button class="nav-item active" type="button" data-section="portal">Portal Dashboard</button>
+          <button class="nav-item" type="button" data-section="dashboard">Dashboard</button>
+          <button class="nav-item active" type="button" data-section="builder">Building the quotation</button>
+          <button class="nav-item approval-nav" type="button" data-section="approvals">
+            Approval
+            <span id="approvalCount">0</span>
+          </button>
+          <button class="nav-item" type="button" data-section="library">Quote Library</button>
+          <button class="nav-item" type="button" data-section="settings">Setup</button>
+          <button class="nav-item" type="button" data-section="audit">Audit Trail</button>
+        </nav>
+      </aside>
+
+      <main>
+        <header class="topbar">
+          <div>
+            <p class="eyebrow" id="sectionEyebrow">Interactive Security</p>
+            <h1 id="sectionTitle">Quotation platform</h1>
+          </div>
+          <div class="status-pill" id="sectionStatus">
+            <span></span>
+            Workspace
+          </div>
+        </header>
+
+        <section class="hidden-state" id="dashboard-section" hidden>
+          <h2>Dashboard</h2>
+          <p>Main reporting area for quotation activity, approvals, client acceptance, and sales rep performance.</p>
+
+          <div class="dashboard-controls">
+            <div class="dashboard-filter-grid">
+              <label>
+                Select month
+                <input id="dashboardMonth" type="month" />
+              </label>
+              <label>
+                From date
+                <input id="dashboardFromDate" type="date" />
+              </label>
+              <label>
+                To date
+                <input id="dashboardToDate" type="date" />
+              </label>
+            </div>
+            <div class="dashboard-actions">
+              <button class="secondary-btn" id="dashboardPrevMonth" type="button">Previous month</button>
+              <button class="secondary-btn" id="dashboardNextMonth" type="button">Next month</button>
+              <button class="primary-btn" id="dashboardApplyFilters" type="button">Apply filters</button>
+              <button class="secondary-btn" id="dashboardExportCsv" type="button">Export dashboard CSV</button>
+              <button class="secondary-btn" id="dashboardExportSalesCsv" type="button">Export sales rep CSV</button>
+              <button class="secondary-btn" id="dashboardExportOutstandingCsv" type="button">Export outstanding CSV</button>
+              <button class="secondary-btn" id="dashboardPrintReport" type="button">Print / PDF report</button>
+            </div>
+          </div>
+
+          <div class="dashboard-summary-grid" id="dashboardSummary"></div>
+
+          <div class="dashboard-chart-grid">
+            <section class="dashboard-panel">
+              <h3>Approved vs Accepted</h3>
+              <div class="dashboard-chart" id="approvedAcceptedChart"></div>
+            </section>
+            <section class="dashboard-panel">
+              <h3>Quotations per sales rep</h3>
+              <div class="dashboard-chart" id="salesRepQuoteChart"></div>
+            </section>
+            <section class="dashboard-panel">
+              <h3>Income/value per sales rep</h3>
+              <div class="dashboard-chart" id="salesRepValueChart"></div>
+            </section>
+          </div>
+
+          <div class="dashboard-table-grid">
+            <section class="dashboard-panel">
+              <h3>Sales rep totals</h3>
+              <div class="dashboard-table" id="salesRepTotalsTable"></div>
+            </section>
+            <section class="dashboard-panel">
+              <h3>Outstanding client approval</h3>
+              <div class="dashboard-table" id="outstandingClientTable"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="hidden-state" id="portal-section" hidden>
+          <h2>Company Portal</h2>
+          <p>Central dashboard for approved Interactive Security hubs and activity summaries.</p>
+
+          <div class="portal-layout">
+            <section class="portal-panel">
+              <div class="panel-heading compact-heading">
+                <div>
+                  <p class="eyebrow">Available hubs</p>
+                  <h3>Open a hub</h3>
+                </div>
+              </div>
+              <div class="hub-grid" id="portalHubGrid"></div>
+            </section>
+
+            <section class="portal-panel">
+              <div class="panel-heading compact-heading">
+                <div>
+                  <p class="eyebrow">Quotation Hub overview</p>
+                  <h3 id="portalSummaryTitle">Activity summary</h3>
+                </div>
+              </div>
+              <div class="portal-summary-grid" id="portalSummaryGrid"></div>
+            </section>
+          </div>
+
+          <div class="portal-layout">
+            <section class="portal-panel">
+              <h3>Monthly quotation totals</h3>
+              <div class="dashboard-chart" id="portalMonthlyChart"></div>
+            </section>
+            <section class="portal-panel">
+              <h3>Sales rep totals</h3>
+              <div class="dashboard-table" id="portalSalesRepTable"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="workspace" id="builder-section" hidden>
+          <form class="quote-form" id="quoteForm">
+            <div class="validation-summary" id="validationSummary" hidden></div>
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Company</p>
+                  <h2>Project details</h2>
+                </div>
+                <div class="button-group">
+                  <button class="secondary-btn" id="newQuote" type="button">New quotation</button>
+                  <button class="secondary-btn" id="fillSample" type="button">Sample</button>
+                </div>
+              </div>
+
+              <div class="field-grid">
+                <label>
+                  Quoting company
+                  <select id="selectedCompany">
+                    <option value="">Select quoting company</option>
+                    <option value="isc-sa">Interactive Security Consultants SA CC</option>
+                    <option value="isc-limpopo">Interactive Security Consultants Limpopo (Pty) Ltd</option>
+                    <option value="isc-24">Interactive Security Consultants 24 (Pty) Ltd</option>
+                    <option value="isc-converted">Interactive Security Consultants (Pty) Ltd</option>
+                  </select>
+                </label>
+                <label>
+                  Business / client name
+                  <input id="clientName" type="text" placeholder="Acme Projects" spellcheck="true" />
+                </label>
+                <label>
+                  Business / client address
+                  <input id="clientAddress" type="text" placeholder="Client address" spellcheck="true" />
+                </label>
+                <label>
+                  Contact name and surname
+                  <input id="contactPerson" type="text" placeholder="Client contact name" spellcheck="true" />
+                </label>
+                <label>
+                  Contact email
+                  <input id="contactEmail" type="email" placeholder="client@example.co.za" />
+                </label>
+                <label>
+                  Contact number
+                  <input id="contactNumber" type="tel" placeholder="000 000 0000" />
+                </label>
+                <label>
+                  Sales rep
+                  <select id="salesRep">
+                    <option value="">Select sales rep</option>
+                    <option value="elzeri-wright">Elzeri Wright</option>
+                    <option value="renier-de-meyer">Renier de Meyer</option>
+                    <option value="rene-viljoen">Rene Viljoen</option>
+                    <option value="darryn-cock">Darryn Cock</option>
+                    <option value="gordon-van-aswegen">Gordon Van Aswegen</option>
+                    <option value="dean-de-kok">Dean de Kok</option>
+                    <option value="adriaan-van-deventer">Adriaan van Deventer</option>
+                    <option value="jethro-muleya">Jethro Muleya</option>
+                  </select>
+                </label>
+                <label>
+                  Quote number
+                  <input id="quoteNumber" type="text" readonly />
+                </label>
+                <label>
+                  Quotation date
+                  <input id="quoteDate" type="date" readonly />
+                </label>
+              </div>
+
+              <label>
+                Additional scope wording
+                <textarea id="projectSummary" rows="4" placeholder="Add extra wording for this quotation..." spellcheck="true"></textarea>
+              </label>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Pricing</p>
+                  <h2>Line items</h2>
+                </div>
+                <div class="pricing-controls">
+                  <label>
+                    Markup
+                    <select id="markupPercent">
+                      <option value="0">0%</option>
+                      <option value="5">5%</option>
+                      <option value="10">10%</option>
+                      <option value="15">15%</option>
+                      <option value="20">20%</option>
+                      <option value="25">25%</option>
+                      <option value="30">30%</option>
+                      <option value="35">35%</option>
+                      <option value="40">40%</option>
+                      <option value="45">45%</option>
+                      <option value="50">50%</option>
+                      <option value="55">55%</option>
+                      <option value="60">60%</option>
+                      <option value="65">65%</option>
+                    </select>
+                  </label>
+                  <button class="primary-btn" id="addItem" type="button">Add item</button>
+                </div>
+              </div>
+
+              <div class="items-table" role="table" aria-label="Quote line items">
+                <div class="items-header" role="row">
+                  <span>Stock code</span>
+                  <span>Description</span>
+                  <span>Qty</span>
+                  <span>Supplier cost</span>
+                  <span>Cost excl. VAT</span>
+                  <span>Total</span>
+                  <span></span>
+                </div>
+                <div id="itemsBody"></div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Costing</p>
+                  <h2>Costing of the Quotation</h2>
+                </div>
+              </div>
+
+              <div class="costing-table">
+                <div class="costing-header">
+                  <span>Description</span>
+                  <span>Cost</span>
+                  <span>Markup</span>
+                  <span>Total</span>
+                </div>
+                <div class="costing-row">
+                  <strong>Stock</strong>
+                  <input id="costingStockCost" class="costing-input" type="number" min="0" step="0.01" value="0" />
+                  <span id="costingStockMarkup">R0.00</span>
+                  <strong id="costingStockTotal">R0.00</strong>
+                </div>
+                <div class="costing-row">
+                  <strong>Consumables</strong>
+                  <input id="costingConsumablesCost" class="costing-input" type="number" min="0" step="0.01" value="0" />
+                  <span id="costingConsumablesMarkup">R0.00</span>
+                  <strong id="costingConsumablesTotal">R0.00</strong>
+                </div>
+                <div class="costing-row">
+                  <strong>Labour</strong>
+                  <input id="costingLabourCost" class="costing-input" type="number" min="0" step="0.01" value="0" />
+                  <span id="costingLabourMarkup">R0.00</span>
+                  <strong id="costingLabourTotal">R0.00</strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>Costing total</strong>
+                  <span id="costingRawTotal">R0.00</span>
+                  <span></span>
+                  <strong id="costingGrandTotal">R0.00</strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>Total Markup</strong>
+                  <span></span>
+                  <span id="costingTotalMarkup">R0.00</span>
+                  <strong></strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>Labour Amount</strong>
+                  <span></span>
+                  <span></span>
+                  <strong id="costingLabourAmount">R0.00</strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>Markup + Labour Total</strong>
+                  <span></span>
+                  <span></span>
+                  <strong id="costingMarkupLabourTotal">R0.00</strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>16.08% Deduction</strong>
+                  <span></span>
+                  <span></span>
+                  <strong id="costingDeduction16">R0.00</strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>Profit</strong>
+                  <span></span>
+                  <span></span>
+                  <strong id="costingProfit">R0.00</strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>4% Calculation</strong>
+                  <span></span>
+                  <span></span>
+                  <strong id="costingCommission4">R0.00</strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>Total Quotation Profit</strong>
+                  <span></span>
+                  <span></span>
+                  <strong id="costingTotalQuotationProfit">R0.00</strong>
+                </div>
+              </div>
+              <p class="upload-note" id="costingBalanceNote">Costing total must match quotation total excluding VAT.</p>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">AI assistant</p>
+                  <h2>Generated wording</h2>
+                </div>
+                <button class="primary-btn" id="generateAi" type="button">Generate draft</button>
+              </div>
+
+              <div class="assistant-grid">
+                <label>
+                  Terms and assumptions
+                  <textarea id="termsText" rows="6" spellcheck="true"></textarea>
+                </label>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Supplier quotation</p>
+                  <h2>Approval attachment</h2>
+                </div>
+              </div>
+
+              <label class="upload-control">
+                Upload supplier quotation used for this draft
+                <input id="supplierQuoteUpload" type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg" />
+              </label>
+              <p class="upload-note" id="supplierQuoteName">No supplier quotation uploaded.</p>
+            </section>
+          </form>
+
+          <aside class="preview-panel">
+            <div class="quote-preview" id="quotePreview" spellcheck="false">
+              <div class="company-strip quotation-brand">
+                <img class="quotation-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+                <div>
+                  <h2 class="dynamic-field" id="previewCompanyName">Interactive Security Consultants SA CC</h2>
+                  <p class="dynamic-field" id="previewCompanyRegVat">Reg no: 1995/008708/23 | VAT No: 4540148170</p>
+                </div>
+              </div>
+
+              <div class="quotation-contact">
+                <p class="dynamic-field" id="previewCompanyAddress">24 Van Zyl Road, Steynsvlei, Muldersdrift</p>
+                <p class="dynamic-field" id="previewCompanyContact">Tel: 0861 070 007 / Email: finance@interactivesecurity.co.za / Website: www.interactivesecurity.co.za</p>
+              </div>
+
+              <div class="preview-header">
+                <div>
+                  <p>Quotation</p>
+                  <h2 id="previewQuoteNumber">Q-2026-001</h2>
+                </div>
+                <span id="previewStatus">Draft</span>
+              </div>
+
+              <div class="preview-meta">
+                <div>
+                  <small>Client Detail</small>
+                  <strong id="previewClient">No client yet</strong>
+                </div>
+                <div>
+                  <small>Contact Detail</small>
+                  <strong id="previewContactPerson">No contact yet</strong>
+                </div>
+                <div>
+                  <small>Sales Rep</small>
+                  <strong id="previewSalesRep">No sales rep yet</strong>
+                </div>
+                <div>
+                  <small>Date</small>
+                  <strong id="previewQuoteDate">Set date</strong>
+                </div>
+              </div>
+
+              <div class="equipment-description">
+                <h3>Scope of Work</h3>
+                <p id="previewSummary">Add a project summary to start shaping the quotation.</p>
+              </div>
+
+              <div class="quotation-table" role="table" aria-label="Quotation line items">
+                <div class="quotation-table-header" role="row">
+                  <span>Stock Code</span>
+                  <span>Description</span>
+                  <span>Cost Per Unit Excl. VAT</span>
+                  <span>Quantity</span>
+                  <span>Total Cost Excl. VAT</span>
+                </div>
+                <div id="previewItems"></div>
+              </div>
+
+              <div class="totals">
+                <div><span>Subtotal</span><strong id="subtotal">R0.00</strong></div>
+                <div><span>VAT 15%</span><strong id="tax">R0.00</strong></div>
+                <div class="grand-total"><span>Total</span><strong id="grandTotal">R0.00</strong></div>
+              </div>
+
+              <div class="preview-copy">
+                <h3>Terms</h3>
+                <p id="previewTerms">Generate wording to create terms and assumptions.</p>
+              </div>
+
+              <div class="banking-block">
+                <h3>Banking Details</h3>
+                <div class="banking-grid">
+                  <span>Bank:</span><strong class="dynamic-field" id="previewBankName">Nedbank</strong>
+                  <span>Account Holder:</span><strong class="dynamic-field" id="previewAccountHolder">Interactive Security Consultants SA CC</strong>
+                  <span>Account Type:</span><strong class="dynamic-field" id="previewAccountType">Current Account</strong>
+                  <span>Account Number:</span><strong class="dynamic-field" id="previewAccountNumber">102 618 9853</strong>
+                  <span>Branch Code:</span><strong class="dynamic-field" id="previewBranchCode">198 765</strong>
+                </div>
+                <p class="reference-note">Please use quotation number <strong id="referenceQuoteNumber">Q-2026-001</strong> as your reference.</p>
+              </div>
+            </div>
+
+            <div class="preview-actions">
+              <button class="primary-btn" id="saveQuote" type="button">Submit for approval</button>
+            </div>
+          </aside>
+        </section>
+
+        <section class="hidden-state" id="library-section" hidden>
+          <h2>Quote Library</h2>
+          <p>Approved and rejected quotations are stored here.</p>
+          <div class="approval-workspace">
+            <div class="approval-list" id="quoteLibraryList"></div>
+            <aside class="approval-detail" id="quoteLibraryDetail" spellcheck="false" hidden>
+              <p class="empty-state">Select a quotation to view library details.</p>
+            </aside>
+          </div>
+        </section>
+
+        <section class="hidden-state" id="approvals-section" hidden>
+          <h2>Approval</h2>
+          <p>Generated draft quotations appear here for approval or rejection.</p>
+          <div class="approval-workspace">
+            <div class="approval-list" id="approvalList"></div>
+            <aside class="approval-detail" id="approvalDetail" spellcheck="false">
+              <p class="empty-state">Select a quotation to view the full approval details.</p>
+            </aside>
+          </div>
+        </section>
+
+        <section class="hidden-state" id="settings-section" hidden>
+          <h2>Setup</h2>
+          <p>Manage system data, users, access levels, clients, sales reps, and supplier pricing.</p>
+
+          <div class="setup-grid">
+            <section class="setup-panel">
+              <h3>Member access management</h3>
+              <form class="setup-form" id="memberForm">
+                <input id="memberName" type="text" placeholder="Member full name" />
+                <input id="memberEmail" type="email" placeholder="member@interactivesecurity.co.za" />
+                <select id="memberAccess">
+                  <option value="Admin">Admin</option>
+                  <option value="Full Access Member">Full Access Member</option>
+                  <option value="Quotation Builder Only">Quotation Builder Only</option>
+                </select>
+                <select id="memberInviteStatus">
+                  <option value="Pending">Pending</option>
+                  <option value="Invite Sent">Invite Sent</option>
+                  <option value="Active">Active</option>
+                  <option value="Disabled">Disabled</option>
+                </select>
+                <div class="password-field">
+                  <input id="memberTempPassword" type="password" placeholder="Temporary password" autocomplete="new-password" />
+                  <button class="secondary-btn" id="generateTempPassword" type="button">Auto-generate</button>
+                </div>
+                <button class="primary-btn" type="submit">Save member</button>
+              </form>
+              <div class="setup-list" id="memberList"></div>
+            </section>
+
+            <section class="setup-panel">
+              <h3>Sales reps</h3>
+              <form class="setup-form" id="salesRepForm">
+                <input id="setupSalesRepName" type="text" placeholder="Sales rep name and surname" />
+                <input id="setupSalesRepEmail" type="email" placeholder="salesrep@interactivesecurity.co.za" />
+                <input id="setupSalesRepPhone" type="tel" placeholder="Contact number" />
+                <button class="primary-btn" type="submit">Save sales rep</button>
+              </form>
+              <div class="setup-list" id="setupSalesRepList"></div>
+            </section>
+
+            <section class="setup-panel">
+              <h3>Supplier prices</h3>
+              <form class="setup-form" id="supplierPriceForm">
+                <input id="supplierName" type="text" placeholder="Supplier name" />
+                <input id="supplierStockCode" type="text" placeholder="Stock code" />
+                <input id="supplierDescription" type="text" placeholder="Description" />
+                <input id="supplierCategory" type="text" placeholder="Category" />
+                <input id="supplierCost" type="number" min="0" step="0.01" placeholder="Supplier cost excl. VAT" />
+                <button class="primary-btn" type="submit">Save supplier item</button>
+              </form>
+              <div class="import-panel">
+                <div class="panel-heading compact-heading">
+                  <div>
+                    <h4>Import supplier price list</h4>
+                    <p>Upload CSV price lists, map columns, preview, then import or update items.</p>
+                  </div>
+                </div>
+                <input id="supplierImportFile" type="file" accept=".csv,.xlsx,.xls" />
+                <label>
+                  Import mode
+                  <select id="supplierImportMode">
+                    <option value="add">Add new items only</option>
+                    <option value="update">Update existing items</option>
+                    <option value="upsert">Add new and update existing</option>
+                  </select>
+                </label>
+                <div class="import-mapping" id="supplierImportMapping" hidden></div>
+                <div class="import-preview" id="supplierImportPreview" hidden></div>
+                <div class="import-actions">
+                  <button class="primary-btn" id="confirmSupplierImport" type="button" disabled>Import price list</button>
+                  <button class="secondary-btn" id="downloadSupplierImportErrors" type="button" disabled>Download error report</button>
+                </div>
+                <div class="import-summary" id="supplierImportSummary"></div>
+              </div>
+              <div class="setup-list" id="supplierPriceList"></div>
+            </section>
+
+            <section class="setup-panel">
+              <h3>Client information</h3>
+              <form class="setup-form" id="clientForm">
+                <input id="setupClientName" type="text" placeholder="Client / business name" />
+                <input id="setupClientAddress" type="text" placeholder="Client address" />
+                <input id="setupClientContact" type="text" placeholder="Contact person" />
+                <input id="setupClientEmail" type="email" placeholder="Client email" />
+                <input id="setupClientPhone" type="tel" placeholder="Client contact number" />
+                <button class="primary-btn" type="submit">Save client</button>
+              </form>
+              <div class="setup-list" id="clientList"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="hidden-state" id="audit-section" hidden>
+          <h2>Audit Trail</h2>
+          <p>Generate a searchable member activity report.</p>
+          <div class="audit-report-panel">
+            <div class="audit-filter-grid">
+              <label>
+                Select member
+                <select id="auditMemberFilter">
+                  <option value="">All members</option>
+                </select>
+              </label>
+              <label>
+                Single date
+                <input id="auditSingleDate" type="date" />
+              </label>
+              <label>
+                From date
+                <input id="auditFromDate" type="date" />
+              </label>
+              <label>
+                To date
+                <input id="auditToDate" type="date" />
+              </label>
+            </div>
+            <div class="audit-report-actions">
+              <button class="primary-btn" id="generateAuditReport" type="button">Generate report</button>
+              <button class="secondary-btn" id="exportAuditReport" type="button">Export CSV</button>
+            </div>
+          </div>
+          <div class="audit-list" id="auditList"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
