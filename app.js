@@ -376,6 +376,7 @@ function costingValues(costing = state.costing, markup = Number(fields.markupPer
   const profit = roundCurrency(markupAndLabourTotal - deduction16);
   const commission4 = roundCurrency(markupAndLabourTotal * 0.04);
   const totalQuotationProfit = roundCurrency(profit - commission4);
+  const quoteSubtotalValue = quoteCostingSubtotal();
   const totalQuotationProfitPercentage = quoteSubtotalValue
     ? roundCurrency((totalQuotationProfit / quoteSubtotalValue) * 100)
     : 0;
@@ -397,6 +398,7 @@ function costingValues(costing = state.costing, markup = Number(fields.markupPer
     profit,
     commission4,
     totalQuotationProfit,
+    totalQuotationProfitPercentage,
   };
 }
 
@@ -418,6 +420,9 @@ function quoteCostingValues(quote) {
   const profit = roundCurrency(markupAndLabourTotal - deduction16);
   const commission4 = roundCurrency(markupAndLabourTotal * 0.04);
   const totalQuotationProfit = roundCurrency(profit - commission4);
+  const totalQuotationProfitPercentage = quoteSubtotalValue
+    ? roundCurrency((totalQuotationProfit / quoteSubtotalValue) * 100)
+    : 0;
   return {
     stockCost,
     stockMarkup,
@@ -1003,10 +1008,89 @@ function hydrateSharedSessionFromUrl() {
   }
 }
 
+function isQuotationHubSsoRoute() {
+  return window.location.pathname === "/hubs/quotation-hub/sso-login";
+}
+
+async function consumeHubSsoTokenIfPresent() {
+  if (!isQuotationHubSsoRoute()) return false;
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get("token");
+  console.log("Token received by Quote Hub", { token });
+  if (!token) {
+    showSsoExpiredMessage("token not found");
+    return true;
+  }
+  try {
+    const response = await fetch("/api/sso/consume-token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ hubSlug: "quotation-hub", token }),
+    });
+    const data = await response.json().catch(() => ({}));
+    console.log("SSO token validation result", { ok: response.ok, data });
+    if (!response.ok || !data.user) {
+      showSsoExpiredMessage(data.error || "token validation failed");
+      return true;
+    }
+    saveSharedSessionObject({
+      userId: data.user.userId,
+      email: data.user.email,
+      name: data.user.name,
+      role: data.user.role,
+    });
+    console.log("Quote Hub session created", data.user);
+    window.location.replace("/hubs/quotation-hub#dashboard");
+    return true;
+  } catch (error) {
+    console.warn("SSO token validation failed", error);
+    showSsoExpiredMessage("token validation failed");
+    return true;
+  }
+}
+
+function showSsoExpiredMessage(reason) {
+  console.warn("SSO failed", reason);
+  loginScreen.hidden = false;
+  loginForm.innerHTML = `
+    <div class="brand login-brand">
+      <img class="brand-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+      <div>
+        <strong>Interactive Security Portal</strong>
+        <small>Secure hub login</small>
+      </div>
+    </div>
+    <h1>Hub login expired</h1>
+    <p>Your secure hub login link has expired. Please return to the Main Interactive Hub and open the hub again.</p>
+    <p class="login-note">Debug reason: ${escapeHtml(reason || "unknown")}</p>
+    <button class="primary-btn" type="button" onclick="window.location.href='/'">Return to Main Interactive Hub</button>
+  `;
+}
+
 function clearSharedSession() {
   localStorage.removeItem(sharedSessionStorageKey);
   localStorage.removeItem(sharedSessionDetailsKey);
   sessionStorage.removeItem(sessionStorageKey);
+}
+
+async function syncBackendLogin(session) {
+  if (!session?.email || window.location.protocol === "file:") return null;
+  try {
+    const response = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(session),
+    });
+    if (!response.ok) throw new Error(`Auth sync failed: ${response.status}`);
+    const data = await response.json();
+    console.log("Backend session created", data.user);
+    return data.user;
+  } catch (error) {
+    console.warn("Backend session could not be created", error);
+    return null;
+  }
 }
 
 function currentUserName() {
@@ -1080,6 +1164,14 @@ function seedPortalTables() {
 
   if (!localStorage.getItem(hubActivitySummaryStorageKey)) {
     saveStorageList(hubActivitySummaryStorageKey, []);
+  }
+  if (window.location.protocol !== "file:") {
+    const hubs = storageList(hubsStorageKey);
+    const quoteHub = hubs.find((hub) => hub.slug === "quotation-hub");
+    if (quoteHub) {
+      quoteHub.url = `${window.location.origin}/hubs/quotation-hub`;
+      saveStorageList(hubsStorageKey, hubs);
+    }
   }
 }
 
@@ -4000,7 +4092,8 @@ loginForm.addEventListener("submit", async (event) => {
       activatedAt: new Date().toISOString(),
     };
     saveMemberRecord(updatedMember);
-    saveSharedSession(updatedMember, email);
+    const session = saveSharedSession(updatedMember, email);
+    await syncBackendLogin(session);
     writeAudit("Changed temporary password", email, "Authentication", email, "First login password change");
   } else if (member && !member.hasLoggedIn) {
     const updatedMember = {
@@ -4010,9 +4103,11 @@ loginForm.addEventListener("submit", async (event) => {
       activatedAt: new Date().toISOString(),
     };
     saveMemberRecord(updatedMember);
-    saveSharedSession(updatedMember, email);
+    const session = saveSharedSession(updatedMember, email);
+    await syncBackendLogin(session);
   } else {
-    saveSharedSession(member, email);
+    const session = saveSharedSession(member, email);
+    await syncBackendLogin(session);
   }
   loginScreen.hidden = true;
   writeAudit("Signed in", email);
@@ -4039,6 +4134,7 @@ Object.values(fields).forEach((field) => {
 });
 
 function showSection(sectionName) {
+  if (isQuotationHubSsoRoute()) return;
   const activeSection = sectionName === "approval" ? "approvals" : sectionName;
   if (!isSignedIn()) {
     loginScreen.hidden = false;
@@ -4083,21 +4179,64 @@ document.querySelectorAll(".nav-item").forEach((button) => {
   });
 });
 
-portalHubGrid.addEventListener("click", (event) => {
-  const slug = event.target.dataset.openHub;
-  if (!slug) return;
+async function openHub(hubSlug) {
   if (!isSignedIn()) {
     loginScreen.hidden = false;
     window.location.hash = "portal";
     return;
   }
-  const hub = storageList(hubsStorageKey).find((item) => item.slug === slug);
+  const hub = storageList(hubsStorageKey).find((item) => item.slug === hubSlug);
   if (!hasHubAccess(hub)) {
     alert("Access denied");
     return;
   }
-  writeAudit("Opened hub", hub.name, "Portal", hub.slug, "Opened from company portal");
-  window.open(urlWithSso(hub.url), hub.opensInNewTab ? "_blank" : "_self");
+
+  if (window.location.protocol === "file:") {
+    alert("SSO requires the local server. Please open http://localhost:3100 and try again.");
+    return;
+  }
+
+  const hubWindow = window.open("about:blank", "_blank");
+  const targetWindow = hubWindow || window;
+  if (hubWindow) {
+    hubWindow.document.write("<p style=\"font-family: Arial, sans-serif; padding: 24px;\">Opening secure hub...</p>");
+  } else {
+    console.warn("Hub popup was blocked; opening secure hub in the current tab instead.");
+  }
+
+  try {
+    console.log("Requesting SSO token", { userId: currentMember().id, hubSlug });
+    const response = await fetch("/api/sso/create-token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ hubSlug }),
+    });
+
+    if (!response.ok) {
+      console.warn("SSO token not created", { hubSlug, status: response.status, response: await response.text().catch(() => "") });
+      if (hubWindow) hubWindow.close();
+      alert("You do not have access to this hub.");
+      return;
+    }
+
+    const data = await response.json();
+    console.log("SSO redirect URL generated", data.redirectUrl);
+    writeAudit("Opened hub", hub.name, "Portal", hub.slug, "Opened from company portal with one-time SSO token");
+    targetWindow.location.href = data.redirectUrl;
+  } catch (error) {
+    console.error("SSO handoff failed", error);
+    if (hubWindow) hubWindow.close();
+    alert("The secure hub login could not be created. Please try again.");
+  }
+}
+
+portalHubGrid.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-open-hub]");
+  const slug = button?.dataset.openHub;
+  if (!slug) return;
+  console.log("Hub card clicked", { hubSlug: slug });
+  openHub(slug);
 });
 
 seedPortalTables();
@@ -4132,11 +4271,14 @@ const routeSection = window.location.hash.slice(1) === "approval" ? "approvals" 
 const initialSection = ["portal", "dashboard", "builder", "approvals", "library", "settings", "audit"].includes(routeSection)
   ? routeSection
   : "portal";
-if (isSignedIn()) {
-  loginScreen.hidden = true;
-  applyPermissions();
-  showSection(canAccess(initialSection) ? initialSection : "portal");
-} else {
-  loginScreen.hidden = false;
-  window.location.hash = "portal";
-}
+consumeHubSsoTokenIfPresent().then((handledSso) => {
+  if (handledSso) return;
+  if (isSignedIn()) {
+    loginScreen.hidden = true;
+    applyPermissions();
+    showSection(canAccess(initialSection) ? initialSection : "portal");
+  } else {
+    loginScreen.hidden = false;
+    window.location.hash = "portal";
+  }
+});
