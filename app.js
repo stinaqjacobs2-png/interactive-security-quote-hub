@@ -941,6 +941,68 @@ function saveSharedSession(member, email) {
   return session;
 }
 
+function saveSharedSessionObject(session) {
+  if (!session?.email) return null;
+  const normalizedEmail = normalizeEmail(session.email);
+  const normalizedSession = {
+    userId: session.userId || slugify(normalizedEmail),
+    email: normalizedEmail,
+    name: session.name || displayNameFromUser(normalizedEmail),
+    role: session.role || session.access || "Admin",
+    signedInAt: session.signedInAt || new Date().toISOString(),
+  };
+  localStorage.setItem(sharedSessionStorageKey, normalizedEmail);
+  localStorage.setItem(sharedSessionDetailsKey, JSON.stringify(normalizedSession));
+  sessionStorage.setItem(sessionStorageKey, normalizedEmail);
+  return normalizedSession;
+}
+
+function encodeSessionForHub() {
+  const session = currentSession();
+  if (!session?.email) return "";
+  return btoa(unescape(encodeURIComponent(JSON.stringify(session))));
+}
+
+function decodeSessionFromHub(value) {
+  try {
+    return JSON.parse(decodeURIComponent(escape(atob(value))));
+  } catch {
+    return null;
+  }
+}
+
+function urlWithSso(url) {
+  const token = encodeSessionForHub();
+  if (!token) return url;
+  const hashIndex = url.indexOf("#");
+  const beforeHash = hashIndex >= 0 ? url.slice(0, hashIndex) : url;
+  const hash = hashIndex >= 0 ? url.slice(hashIndex) : "";
+  const separator = beforeHash.includes("?") ? "&" : "?";
+  return `${beforeHash}${separator}sso=${encodeURIComponent(token)}${hash}`;
+}
+
+function hydrateSharedSessionFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get("sso");
+  if (token) {
+    const session = decodeSessionFromHub(token);
+    if (session?.email) {
+      saveSharedSessionObject(session);
+    }
+    params.delete("sso");
+    const query = params.toString();
+    const cleanedUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+    window.history.replaceState({}, document.title, cleanedUrl);
+    return;
+  }
+
+  const legacyUser = sessionStorage.getItem(sessionStorageKey);
+  if (legacyUser && !currentSession()) {
+    const member = memberByEmail(legacyUser);
+    saveSharedSession(member, legacyUser);
+  }
+}
+
 function clearSharedSession() {
   localStorage.removeItem(sharedSessionStorageKey);
   localStorage.removeItem(sharedSessionDetailsKey);
@@ -4035,10 +4097,11 @@ portalHubGrid.addEventListener("click", (event) => {
     return;
   }
   writeAudit("Opened hub", hub.name, "Portal", hub.slug, "Opened from company portal");
-  window.open(hub.url, hub.opensInNewTab ? "_blank" : "_self");
+  window.open(urlWithSso(hub.url), hub.opensInNewTab ? "_blank" : "_self");
 });
 
 seedPortalTables();
+hydrateSharedSessionFromUrl();
 loadSalesRepsFromStorage();
 renderSalesRepOptions();
 const restoredDraft = loadSavedQuote();
