@@ -5251,3 +5251,59 @@ consumeHubSsoTokenIfPresent().then((handledSso) => {
     window.location.hash = "portal";
   }
 });
+(function patchBarChart() {
+  if (typeof renderBarChart !== "function") return;
+  window.renderBarChart = function (target, rows, valueKey, labelKey, formatter) {
+    target.innerHTML = "";
+    if (!rows || !rows.length) {
+      target.innerHTML = '<p style="padding:20px 0;text-align:center;color:#6b7a8d;font-size:13px;">No data for the selected period.</p>';
+      return;
+    }
+    const max = Math.max(...rows.map((r) => Number(r[valueKey] || 0)), 1);
+    rows.forEach((row, i) => {
+      const value = Number(row[valueKey] || 0);
+      const pct = value > 0 ? Math.max((value / max) * 100, 3) : 0;
+      const bar = document.createElement("div");
+      bar.className = "dashboard-bar-row";
+      bar.innerHTML = `
+        <span title="${String(row[labelKey] || "").replace(/"/g, "&quot;")}">${String(row[labelKey] || "")}</span>
+        <div role="progressbar" aria-valuenow="${value}" aria-valuemax="${max}">
+          <i style="width:0%;transition:width .5s cubic-bezier(.4,0,.2,1) ${i * 40}ms" data-w="${pct}"></i>
+        </div>
+        <strong>${formatter ? formatter(value) : String(value)}</strong>
+      `;
+      target.appendChild(bar);
+    });
+    requestAnimationFrame(() => {
+      target.querySelectorAll(".dashboard-bar-row i[data-w]").forEach((el) => {
+        el.style.width = el.dataset.w + "%";
+      });
+    });
+  };
+})();
+
+(function patchSectionTransitions() {
+  if (typeof showSection !== "function") return;
+  const _orig = showSection;
+  window.showSection = function (sectionName) {
+    _orig(sectionName);
+    const activeEl = document.querySelector("#" + sectionName + "-section");
+    if (activeEl && !activeEl.hidden) {
+      activeEl.style.opacity = "0";
+      activeEl.style.transform = "translateY(6px)";
+      requestAnimationFrame(() => {
+        activeEl.style.transition = "opacity .2s ease, transform .2s ease";
+        activeEl.style.opacity = "1";
+        activeEl.style.transform = "translateY(0)";
+      });
+    }
+  };
+})();
+
+document.addEventListener("keydown", function(e) {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+  if (e.key === "n" || e.key === "N") {
+    var btn = document.querySelector('[data-section="builder"]');
+    if (btn && !btn.hidden) btn.click();
+  }
+});
