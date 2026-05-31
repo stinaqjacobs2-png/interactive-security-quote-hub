@@ -44,6 +44,7 @@
           <button class="nav-item active" type="button" data-section="portal"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"></path><path d="M5 10.5V20h14v-9.5"></path><path d="M9 20v-6h6v6"></path></svg><span class="nav-label">Portal Dashboard</span></button>
           <button class="nav-item" type="button" data-section="dashboard"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"></path><path d="M4 19h16"></path><path d="M8 16v-5"></path><path d="M12 16V8"></path><path d="M16 16v-3"></path></svg><span class="nav-label">Dashboard</span></button>
           <button class="nav-item" type="button" data-section="builder"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"></path><path d="M14 3v5h5"></path><path d="M9.5 13h5"></path><path d="M9.5 17h5"></path></svg><span class="nav-label">Building Technical Quotation</span></button>
+          <button class="nav-item" type="button" data-section="guardingBuilder"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 3 8.5 7 10 4-1.5 7-5.5 7-10V6z"></path><path d="M9 12l2 2 4-5"></path></svg><span class="nav-label">Building Guarding Quotation</span></button>
           <button class="nav-item" type="button" data-section="salesRequests"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"></path><path d="m8 7 4-4 4 4"></path><path d="M5 15v4h14v-4"></path></svg><span class="nav-label">Sales Quotation Requests</span></button>
           <button class="nav-item approval-nav" type="button" data-section="approvals">
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path><path d="M12 3a9 9 0 1 1-8.4 5.8"></path></svg>
@@ -85,6 +86,18 @@
               <label>
                 To date
                 <input id="dashboardToDate" type="date" />
+              </label>
+              <label>
+                Quotation Type
+                <select id="dashboardTypeFilter">
+                  <option value="">All</option>
+                  <option value="Technical Quotation">Technical</option>
+                  <option value="Guarding Quotation">Guarding</option>
+                </select>
+              </label>
+              <label>
+                Sales Representative
+                <input id="dashboardSalesRepFilter" type="search" placeholder="All sales reps" />
               </label>
             </div>
             <div class="dashboard-actions">
@@ -523,6 +536,183 @@
           </aside>
         </section>
 
+        <section class="hidden-state builder-layout" id="guardingBuilder-section" hidden>
+          <form class="builder-form" id="guardingQuoteForm">
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Guarding quotation</p>
+                  <h2>Project details</h2>
+                </div>
+                <button class="secondary-btn" id="guardingNewQuote" type="button">New guarding quotation</button>
+              </div>
+              <div class="form-grid">
+                <label>Quoting company<select id="guardingCompany"></select></label>
+                <label>Client name<input id="guardingClientName" type="text" spellcheck="true" /></label>
+                <label>Contact person<input id="guardingContactPerson" type="text" spellcheck="true" /></label>
+                <label>Contact number<input id="guardingContactNumber" type="tel" /></label>
+                <label>Email address<input id="guardingEmail" type="email" /></label>
+                <label>Site name<input id="guardingSiteName" type="text" spellcheck="true" /></label>
+                <label>Site address<input id="guardingSiteAddress" type="text" spellcheck="true" /></label>
+                <label>Province<input id="guardingProvince" type="text" spellcheck="true" /></label>
+                <label>Industry type<input id="guardingIndustry" type="text" spellcheck="true" /></label>
+                <label>Sales rep<select id="guardingSalesRep"></select></label>
+                <label>Quote number<input id="guardingQuoteNumber" type="text" readonly /></label>
+                <label>Quotation date<input id="guardingQuoteDate" type="date" readonly /></label>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Guarding requirement</p>
+                  <h2>Service details</h2>
+                </div>
+              </div>
+              <div class="form-grid">
+                <label>Required service type<input id="guardingServiceType" type="text" spellcheck="true" /></label>
+                <label>Contract start date<input id="guardingStartDate" type="date" /></label>
+                <label>Contract duration<input id="guardingDuration" type="text" placeholder="Example: 12 months" /></label>
+                <label>Day shift required<select id="guardingDayShift"><option value="Yes">Yes</option><option value="No">No</option></select></label>
+                <label>Night shift required<select id="guardingNightShift"><option value="Yes">Yes</option><option value="No">No</option></select></label>
+                <label>Number of guards required<input id="guardingGuardCount" type="number" min="0" step="1" /></label>
+                <label>Supervisor required<select id="guardingSupervisor"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                <label>Armed guards required<select id="guardingArmed"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                <label>Control room required<select id="guardingControlRoom"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                <label>Patrols required<select id="guardingPatrols"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+              </div>
+              <label>Equipment required<textarea id="guardingEquipmentRequired" rows="3" spellcheck="true"></textarea></label>
+              <label>Special site instructions<textarea id="guardingSpecialInstructions" rows="3" spellcheck="true"></textarea></label>
+              <label>Notes to quotation builder<textarea id="guardingBuilderNotes" rows="3" spellcheck="true"></textarea></label>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Staffing</p>
+                  <h2>Staffing structure</h2>
+                </div>
+                <button class="primary-btn" id="addGuardingStaff" type="button">Add staffing row</button>
+              </div>
+              <div class="guarding-table">
+                <div class="guarding-row guarding-header">
+                  <span>Position</span><span>Grade</span><span>Qty</span><span>Day</span><span>Night</span><span>Hours</span><span>Days</span><span>Monthly cost</span><span>Monthly selling</span><span></span>
+                </div>
+                <div id="guardingStaffRows"></div>
+              </div>
+              <datalist id="guardingPositionOptions">
+                <option value="Grade A Guard"></option>
+                <option value="Grade B Guard"></option>
+                <option value="Grade C Guard"></option>
+                <option value="Supervisor"></option>
+                <option value="Site Manager"></option>
+                <option value="Control Room Operator"></option>
+                <option value="Armed Guard"></option>
+              </datalist>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Equipment</p>
+                  <h2>Equipment included</h2>
+                </div>
+                <button class="primary-btn" id="addGuardingEquipment" type="button">Add equipment row</button>
+              </div>
+              <div id="guardingEquipmentRows" class="guarding-simple-list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Additional costs</p>
+                  <h2>Other monthly costs</h2>
+                </div>
+                <button class="primary-btn" id="addGuardingCost" type="button">Add cost row</button>
+              </div>
+              <div id="guardingCostRows" class="guarding-simple-list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Pricing summary</p>
+                  <h2>Guarding quotation totals</h2>
+                </div>
+              </div>
+              <div class="approval-review-metrics">
+                <div><small>Total monthly cost</small><strong id="guardingTotalCost">R0.00</strong></div>
+                <div><small>Markup %</small><strong id="guardingMarkup">0.00%</strong></div>
+                <div><small>Total monthly selling</small><strong id="guardingTotalSelling">R0.00</strong></div>
+                <div><small>Gross profit %</small><strong id="guardingGrossProfit">0.00%</strong></div>
+                <div><small>Annual contract value</small><strong id="guardingAnnualValue">R0.00</strong></div>
+              </div>
+            </section>
+
+            <section class="panel" id="guardingRequestDocumentsPanel" hidden>
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Request documents</p>
+                  <h2>Sales Request Documents</h2>
+                </div>
+              </div>
+              <div id="guardingRequestDocumentsList" class="document-access-row"></div>
+            </section>
+          </form>
+
+          <aside class="preview-panel">
+            <div class="quote-preview" id="guardingPreview" spellcheck="false">
+              <div class="company-strip quotation-brand">
+                <img class="quotation-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+                <div>
+                  <h2 id="guardingPreviewCompany">Interactive Security</h2>
+                  <p id="guardingPreviewReg">Reg no: - | VAT No: -</p>
+                </div>
+              </div>
+              <div class="preview-header">
+                <div>
+                  <p>Guarding Quotation</p>
+                  <h2 id="guardingPreviewQuoteNumber">Draft</h2>
+                </div>
+                <span>Draft</span>
+              </div>
+              <div class="preview-meta">
+                <div><small>Client</small><strong id="guardingPreviewClient">No client yet</strong></div>
+                <div><small>Site</small><strong id="guardingPreviewSite">No site yet</strong></div>
+                <div><small>Sales Rep</small><strong id="guardingPreviewRep">No sales rep yet</strong></div>
+                <div><small>Date</small><strong id="guardingPreviewDate">Set date</strong></div>
+              </div>
+              <div class="equipment-description">
+                <h3>Scope of Guarding Services</h3>
+                <p id="guardingPreviewScope">Add guarding requirements to shape the proposal.</p>
+              </div>
+              <div class="quotation-table guarding-preview-table" id="guardingPreviewStaff"></div>
+              <div class="quotation-table guarding-preview-table" id="guardingPreviewEquipment"></div>
+              <div class="totals">
+                <div><span>Monthly selling price</span><strong id="guardingPreviewMonthly">R0.00</strong></div>
+                <div class="grand-total"><span>Annual contract value</span><strong id="guardingPreviewAnnual">R0.00</strong></div>
+              </div>
+              <div class="preview-copy">
+                <h3>Assumptions and Exclusions</h3>
+                <p id="guardingPreviewNotes">Final guarding deployment is subject to site access, confirmed shift requirements, and client approval of the agreed scope.</p>
+              </div>
+            </div>
+            <div class="preview-actions">
+              <button class="secondary-btn" id="saveGuardingDraft" type="button">Save draft</button>
+              <button class="primary-btn" id="submitGuardingQuote" type="button">Submit for approval</button>
+            </div>
+            <section class="panel linked-request-summary" id="guardingRequestSummaryPanel" hidden>
+              <div class="panel-heading compact-heading">
+                <div>
+                  <p class="eyebrow">Linked request</p>
+                  <h2>Sales Quotation Request Information</h2>
+                </div>
+              </div>
+              <div id="guardingRequestSummary"></div>
+            </section>
+          </aside>
+        </section>
+
         <section class="hidden-state" id="salesRequests-section" hidden>
           <h2>Sales Quotation Requests</h2>
           <p>Submit supplier quotations and supporting information for quotation builders.</p>
@@ -530,6 +720,14 @@
             <section class="panel">
               <h3>New request</h3>
               <form class="setup-form request-form" id="salesRequestForm">
+                <label>
+                  Quotation Type
+                  <select id="requestQuotationType" required>
+                    <option value="">Select quotation type</option>
+                    <option value="Technical Quotation">Technical Quotation</option>
+                    <option value="Guarding Quotation">Guarding Quotation</option>
+                  </select>
+                </label>
                 <input id="requestClientName" type="text" placeholder="Client name" />
                 <input id="requestContactPerson" type="text" placeholder="Client contact person" />
                 <input id="requestClientEmail" type="email" placeholder="Client email" />
@@ -545,6 +743,22 @@
                 <input id="requestSalesRepPhone" type="tel" placeholder="Sales rep phone number" />
                 <label>Required quotation due date<input id="requestDueDate" type="date" /></label>
                 <textarea id="requestDescription" rows="4" placeholder="Description of work required" spellcheck="true"></textarea>
+                <div id="guardingRequestFields" class="guarding-request-fields" hidden>
+                  <input id="requestProvince" type="text" placeholder="Province" />
+                  <input id="requestIndustryType" type="text" placeholder="Industry type" />
+                  <input id="requestServiceType" type="text" placeholder="Required service type" />
+                  <label>Contract start date<input id="requestContractStartDate" type="date" /></label>
+                  <input id="requestContractDuration" type="text" placeholder="Contract duration" />
+                  <label>Day shift required<select id="requestDayShiftRequired"><option value="Yes">Yes</option><option value="No">No</option></select></label>
+                  <label>Night shift required<select id="requestNightShiftRequired"><option value="Yes">Yes</option><option value="No">No</option></select></label>
+                  <input id="requestNumberOfGuards" type="number" min="0" step="1" placeholder="Number of guards required" />
+                  <label>Supervisor required<select id="requestSupervisorRequired"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                  <label>Armed guards required<select id="requestArmedGuardsRequired"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                  <label>Control room required<select id="requestControlRoomRequired"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                  <label>Patrols required<select id="requestPatrolsRequired"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                  <textarea id="requestEquipmentRequired" rows="3" placeholder="Equipment required" spellcheck="true"></textarea>
+                  <textarea id="requestSpecialInstructions" rows="3" placeholder="Special site instructions" spellcheck="true"></textarea>
+                </div>
                 <textarea id="requestNotes" rows="3" placeholder="Notes for quotation builder" spellcheck="true"></textarea>
                 <label class="upload-control">
                   Upload supporting documents

@@ -20,6 +20,12 @@ const state = {
   selectedRequestSalesRepId: "",
   items: [{ stockCode: "", description: "", quantity: 1, supplierCost: 0 }],
   costing: { stockCost: 0, consumablesCost: 0, labourCost: 0 },
+  guarding: {
+    activeSalesRequestId: "",
+    staffing: [],
+    equipment: [],
+    additionalCosts: [],
+  },
 };
 
 const fixedScopeText = "We will provide a structured delivery of the requested services with progress updates and a final handover once the agreed scope has been completed.";
@@ -256,6 +262,8 @@ const exportAuditReport = document.querySelector("#exportAuditReport");
 const dashboardMonth = document.querySelector("#dashboardMonth");
 const dashboardFromDate = document.querySelector("#dashboardFromDate");
 const dashboardToDate = document.querySelector("#dashboardToDate");
+const dashboardTypeFilter = document.querySelector("#dashboardTypeFilter");
+const dashboardSalesRepFilter = document.querySelector("#dashboardSalesRepFilter");
 const dashboardPrevMonth = document.querySelector("#dashboardPrevMonth");
 const dashboardNextMonth = document.querySelector("#dashboardNextMonth");
 const dashboardApplyFilters = document.querySelector("#dashboardApplyFilters");
@@ -289,10 +297,48 @@ const salesRequestDocumentsPanel = document.querySelector("#salesRequestDocument
 const salesRequestDocumentsList = document.querySelector("#salesRequestDocumentsList");
 const salesRequestSummaryPanel = document.querySelector("#salesRequestSummaryPanel");
 const salesRequestSummary = document.querySelector("#salesRequestSummary");
+const requestQuotationType = document.querySelector("#requestQuotationType");
+const guardingRequestFields = document.querySelector("#guardingRequestFields");
+const guardingStaffRows = document.querySelector("#guardingStaffRows");
+const guardingEquipmentRows = document.querySelector("#guardingEquipmentRows");
+const guardingCostRows = document.querySelector("#guardingCostRows");
+const guardingRequestDocumentsPanel = document.querySelector("#guardingRequestDocumentsPanel");
+const guardingRequestDocumentsList = document.querySelector("#guardingRequestDocumentsList");
+const guardingRequestSummaryPanel = document.querySelector("#guardingRequestSummaryPanel");
+const guardingRequestSummary = document.querySelector("#guardingRequestSummary");
+
+const guardingFields = {
+  company: document.querySelector("#guardingCompany"),
+  clientName: document.querySelector("#guardingClientName"),
+  contactPerson: document.querySelector("#guardingContactPerson"),
+  contactNumber: document.querySelector("#guardingContactNumber"),
+  email: document.querySelector("#guardingEmail"),
+  siteName: document.querySelector("#guardingSiteName"),
+  siteAddress: document.querySelector("#guardingSiteAddress"),
+  province: document.querySelector("#guardingProvince"),
+  industry: document.querySelector("#guardingIndustry"),
+  salesRep: document.querySelector("#guardingSalesRep"),
+  quoteNumber: document.querySelector("#guardingQuoteNumber"),
+  quoteDate: document.querySelector("#guardingQuoteDate"),
+  serviceType: document.querySelector("#guardingServiceType"),
+  startDate: document.querySelector("#guardingStartDate"),
+  duration: document.querySelector("#guardingDuration"),
+  dayShift: document.querySelector("#guardingDayShift"),
+  nightShift: document.querySelector("#guardingNightShift"),
+  guardCount: document.querySelector("#guardingGuardCount"),
+  supervisor: document.querySelector("#guardingSupervisor"),
+  armed: document.querySelector("#guardingArmed"),
+  controlRoom: document.querySelector("#guardingControlRoom"),
+  patrols: document.querySelector("#guardingPatrols"),
+  equipmentRequired: document.querySelector("#guardingEquipmentRequired"),
+  specialInstructions: document.querySelector("#guardingSpecialInstructions"),
+  builderNotes: document.querySelector("#guardingBuilderNotes"),
+};
 
 const permissionDefinitions = [
   { key: "dashboard", label: "Dashboard", section: "dashboard" },
   { key: "build_quotation", label: "Building Technical Quotation", section: "builder" },
+  { key: "build_guarding_quotation", label: "Building Guarding Quotation", section: "guardingBuilder" },
   { key: "quote_library", label: "Quote Library", section: "library" },
   { key: "approval", label: "Approval", section: "approvals" },
   { key: "reports", label: "Reports", section: "dashboard" },
@@ -307,8 +353,8 @@ const permissionDefinitions = [
 const roleDefaultPermissions = {
   "Super Admin": permissionDefinitions.map((permission) => permission.key),
   Admin: permissionDefinitions.map((permission) => permission.key),
-  "Full Access Member": ["dashboard", "reports", "build_quotation", "quote_library", "approval", "quotation_hub", "sales_quotation_requests"],
-  "Quotation Builder Only": ["build_quotation", "quotation_hub", "sales_quotation_requests"],
+  "Full Access Member": ["dashboard", "reports", "build_quotation", "build_guarding_quotation", "quote_library", "approval", "quotation_hub", "sales_quotation_requests"],
+  "Quotation Builder Only": ["build_quotation", "build_guarding_quotation", "quotation_hub", "sales_quotation_requests"],
 };
 
 const sectionHeadings = {
@@ -325,6 +371,11 @@ const sectionHeadings = {
   builder: {
     eyebrow: "AI quotation workspace",
     title: "Building Technical Quotation",
+    status: "Draft",
+  },
+  guardingBuilder: {
+    eyebrow: "Guarding quotation workspace",
+    title: "Building Guarding Quotation",
     status: "Draft",
   },
   approvals: {
@@ -397,7 +448,13 @@ function quoteItemTotal(quote, item) {
 }
 
 function quoteSubtotal(quote) {
+  if (quote.quotationType === "Guarding Quotation") return Number(quote.guardingPricing?.monthlySelling || quote.monthlyValue || 0);
   return (quote.items || []).reduce((sum, item) => sum + quoteItemTotal(quote, item), 0);
+}
+
+function quoteAnnualValue(quote) {
+  if (quote.quotationType === "Guarding Quotation") return Number(quote.guardingPricing?.annualValue || quote.annualValue || quoteSubtotal(quote) * 12);
+  return quoteSubtotal(quote) * (1 + state.taxRate);
 }
 
 function quoteSupplierSubtotal(quote) {
@@ -1457,11 +1514,13 @@ function salesRepsList() {
 
 function renderSalesRepOptions() {
   fields.salesRep.innerHTML = `<option value="">Select sales rep</option>`;
+  if (guardingFields.salesRep) guardingFields.salesRep.innerHTML = `<option value="">Select sales rep</option>`;
   salesRepsList().forEach((rep) => {
     const option = document.createElement("option");
     option.value = rep.id;
     option.textContent = rep.name;
     fields.salesRep.appendChild(option);
+    if (guardingFields.salesRep) guardingFields.salesRep.appendChild(option.cloneNode(true));
   });
 }
 
@@ -1490,6 +1549,7 @@ function permissionKeyForSection(section) {
     portal: "quotation_hub",
     dashboard: "dashboard",
     builder: "build_quotation",
+    guardingBuilder: "build_guarding_quotation",
     approvals: "approval",
     approval: "approval",
     library: "quote_library",
@@ -1512,7 +1572,9 @@ function memberPermissions(member = currentMember()) {
 function hasPermission(permissionKey, member = currentMember()) {
   if (!isSignedIn()) return false;
   if (["Super Admin"].includes(member.access)) return true;
-  return memberPermissions(member).has(permissionKey);
+  const permissions = memberPermissions(member);
+  if (permissionKey === "build_guarding_quotation" && permissions.has("build_quotation")) return true;
+  return permissions.has(permissionKey);
 }
 
 function canAccess(section) {
@@ -1558,6 +1620,7 @@ function moduleFromAction(action = "") {
   if (normalized.includes("sales rep")) return "Setup - Sales reps";
   if (normalized.includes("supplier")) return "Setup - Supplier prices";
   if (normalized.includes("client")) return "Setup - Client information";
+  if (normalized.includes("guarding")) return "Building Guarding Quotation";
   if (normalized.includes("quotation")) return "Building Technical Quotation";
   return "System";
 }
@@ -1713,14 +1776,20 @@ function quoteReportDate(quote) {
 }
 
 function quoteTotalValue(quote) {
+  if (quote.quotationType === "Guarding Quotation") return quoteAnnualValue(quote);
   return quoteSubtotal(quote) * (1 + state.taxRate);
 }
 
 function dashboardQuotes() {
   const { from, to } = dashboardRange();
+  const type = dashboardTypeFilter?.value || "";
+  const salesRepQuery = (dashboardSalesRepFilter?.value || "").trim().toLowerCase();
   return loadApprovals().filter((quote) => {
     const date = quoteReportDate(quote);
-    return date && date >= from && date <= to;
+    const rep = salesRepNameForQuote(quote).toLowerCase();
+    const typeMatch = !type || (quote.quotationType || "Technical Quotation") === type;
+    const salesRepMatch = !salesRepQuery || rep.includes(salesRepQuery);
+    return date && date >= from && date <= to && typeMatch && salesRepMatch;
   });
 }
 
@@ -1770,6 +1839,9 @@ function dashboardData() {
     approved,
     accepted,
     outstanding,
+    technical: quotes.filter((quote) => (quote.quotationType || "Technical Quotation") === "Technical Quotation"),
+    guarding: quotes.filter((quote) => quote.quotationType === "Guarding Quotation"),
+    lost: quotes.filter((quote) => ["client_declined", "lost"].includes(normalizedStatus(quote.status)) || quote.clientOutcome === "Rejected by client"),
     bySalesRep: Array.from(bySalesRep.values()).sort((a, b) => a.salesRep.localeCompare(b.salesRep)),
     totalValue: quotes.reduce((sum, quote) => sum + quoteTotalValue(quote), 0),
     acceptedValue: accepted.reduce((sum, quote) => sum + quoteTotalValue(quote), 0),
@@ -1822,8 +1894,11 @@ function renderDashboard() {
   const data = dashboardData();
   dashboardSummary.innerHTML = [
     renderSummaryCard("Total quotations created", String(data.quotes.length)),
+    renderSummaryCard("Technical quotations", String(data.technical.length)),
+    renderSummaryCard("Guarding quotations", String(data.guarding.length)),
     renderSummaryCard("Approved internally", String(data.approved.length)),
     renderSummaryCard("Accepted by clients", String(data.accepted.length)),
+    renderSummaryCard("Lost quotations", String(data.lost.length)),
     renderSummaryCard("Outstanding client approval", String(data.outstanding.length)),
     renderSummaryCard("Total quoted value", money.format(data.totalValue)),
     renderSummaryCard("Accepted income/value", money.format(data.acceptedValue)),
@@ -1990,9 +2065,12 @@ function exportDashboardCsv(type = "all") {
     headers = ["Metric", "Value"];
     rows = [
       ["Total quotations created", data.quotes.length],
+      ["Total technical quotations", data.technical.length],
+      ["Total guarding quotations", data.guarding.length],
       ["Total quotations approved internally", data.approved.length],
       ["Total quotations accepted by clients", data.accepted.length],
       ["Total quotations outstanding for client approval", data.outstanding.length],
+      ["Lost quotations", data.lost.length],
       ["Total quoted value", data.totalValue],
       ["Total accepted income/value", data.acceptedValue],
       [],
@@ -2442,12 +2520,14 @@ function migrateSalesRequestStatuses() {
   let changed = false;
   const migrated = requests.map((request) => {
     const mappedStatus = salesRequestStatusLabel(request.status);
-    if (request.status === mappedStatus) return request;
+    const quotationType = request.quotation_type || "Technical Quotation";
+    if (request.status === mappedStatus && request.quotation_type) return request;
     changed = true;
     return {
       ...request,
       legacy_status: request.legacy_status || request.status || "",
       status: mappedStatus,
+      quotation_type: quotationType,
       updated_at: request.updated_at || new Date().toISOString(),
     };
   });
@@ -2625,15 +2705,11 @@ function renderSalesRequestDocuments(request) {
   `).join("");
 }
 
-function renderSalesRequestSummary(request) {
-  salesRequestSummaryPanel.hidden = !request;
-  if (!request) {
-    salesRequestSummary.innerHTML = "";
-    return;
-  }
-  salesRequestSummary.innerHTML = `
+function salesRequestSummaryHtml(request) {
+  return `
     <div class="internal-costing-grid request-summary-grid">
       <div><small>Request number</small><strong>${escapeHtml(request.request_number || "-")}</strong></div>
+      <div><small>Quotation type</small><strong>${escapeHtml(request.quotation_type || "Technical Quotation")}</strong></div>
       <div><small>Client</small><strong>${escapeHtml(request.client_name || "-")}</strong></div>
       <div><small>Contact</small><strong>${escapeHtml([request.client_contact_person, request.client_email, request.client_phone].filter(Boolean).join(" / ") || "-")}</strong></div>
       <div><small>Site / project</small><strong>${escapeHtml(request.site_project_name || "-")}</strong></div>
@@ -2642,9 +2718,23 @@ function renderSalesRequestSummary(request) {
       <div><small>Due date</small><strong>${escapeHtml(formatDate(request.required_due_date))}</strong></div>
       <div><small>Status</small><strong>${escapeHtml(salesRequestStatusLabel(request.status))}</strong></div>
       <div><small>Description of work</small><strong>${escapeHtml(request.description_of_work || "-")}</strong></div>
+      ${request.quotation_type === "Guarding Quotation" ? `
+        <div><small>Guarding service</small><strong>${escapeHtml(request.required_service_type || "-")}</strong></div>
+        <div><small>Shift structure</small><strong>${escapeHtml(`Day: ${request.day_shift_required || "-"} / Night: ${request.night_shift_required || "-"}`)}</strong></div>
+        <div><small>Guarding notes</small><strong>${escapeHtml([request.equipment_required, request.special_site_instructions].filter(Boolean).join(" / ") || "-")}</strong></div>
+      ` : ""}
       <div><small>Notes to quotation builder</small><strong>${escapeHtml(request.notes_for_builder || "-")}</strong></div>
     </div>
   `;
+}
+
+function renderSalesRequestSummary(request) {
+  salesRequestSummaryPanel.hidden = !request;
+  if (!request) {
+    salesRequestSummary.innerHTML = "";
+    return;
+  }
+  salesRequestSummary.innerHTML = salesRequestSummaryHtml(request);
 }
 
 function openRequestDocument(fileId, mode = "view") {
@@ -2687,6 +2777,286 @@ function openRequestDocument(fileId, mode = "view") {
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
+function populateGuardingCompanyOptions() {
+  if (!guardingFields.company) return;
+  guardingFields.company.innerHTML = `<option value="">Select quoting company</option>`;
+  Object.entries(companies).forEach(([id, company]) => {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = company.name;
+    guardingFields.company.appendChild(option);
+  });
+}
+
+function defaultGuardingStaffRow() {
+  return {
+    position: "Grade C Guard",
+    grade: "C",
+    quantity: 1,
+    dayShiftQuantity: 1,
+    nightShiftQuantity: 0,
+    hoursPerShift: 12,
+    daysPerMonth: 30,
+    monthlyCost: 0,
+    monthlySellingPrice: 0,
+  };
+}
+
+function guardingPricingValues() {
+  const staffingCost = state.guarding.staffing.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.monthlyCost || 0), 0);
+  const staffingSelling = state.guarding.staffing.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0), 0);
+  const equipmentCost = state.guarding.equipment.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.monthlyCost || 0), 0);
+  const equipmentSelling = state.guarding.equipment.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0), 0);
+  const additionalCost = state.guarding.additionalCosts.reduce((sum, row) => sum + Number(row.monthlyCost || 0), 0);
+  const additionalSelling = state.guarding.additionalCosts.reduce((sum, row) => sum + Number(row.monthlySellingPrice || 0), 0);
+  const monthlyCost = roundCurrency(staffingCost + equipmentCost + additionalCost);
+  const monthlySelling = roundCurrency(staffingSelling + equipmentSelling + additionalSelling);
+  const grossProfit = roundCurrency(monthlySelling - monthlyCost);
+  const grossProfitPercent = monthlySelling ? roundCurrency((grossProfit / monthlySelling) * 100) : 0;
+  const markupPercent = monthlyCost ? roundCurrency(((monthlySelling - monthlyCost) / monthlyCost) * 100) : 0;
+  return {
+    monthlyCost,
+    monthlySelling,
+    grossProfit,
+    grossProfitPercent,
+    markupPercent,
+    annualValue: roundCurrency(monthlySelling * 12),
+  };
+}
+
+function renderGuardingStaffRows() {
+  if (!guardingStaffRows) return;
+  guardingStaffRows.innerHTML = state.guarding.staffing.map((row, index) => `
+    <div class="guarding-row" data-guarding-staff-row="${index}">
+      <input data-guarding-staff="${index}" data-field="position" value="${escapeHtml(row.position || "")}" placeholder="Position" list="guardingPositionOptions" />
+      <input data-guarding-staff="${index}" data-field="grade" value="${escapeHtml(row.grade || "")}" placeholder="Grade" />
+      <input data-guarding-staff="${index}" data-field="quantity" type="number" min="0" step="1" value="${escapeHtml(row.quantity || 0)}" />
+      <input data-guarding-staff="${index}" data-field="dayShiftQuantity" type="number" min="0" step="1" value="${escapeHtml(row.dayShiftQuantity || 0)}" />
+      <input data-guarding-staff="${index}" data-field="nightShiftQuantity" type="number" min="0" step="1" value="${escapeHtml(row.nightShiftQuantity || 0)}" />
+      <input data-guarding-staff="${index}" data-field="hoursPerShift" type="number" min="0" step="0.5" value="${escapeHtml(row.hoursPerShift || 0)}" />
+      <input data-guarding-staff="${index}" data-field="daysPerMonth" type="number" min="0" step="1" value="${escapeHtml(row.daysPerMonth || 0)}" />
+      <input data-guarding-staff="${index}" data-field="monthlyCost" type="number" min="0" step="0.01" value="${escapeHtml(row.monthlyCost || 0)}" />
+      <input data-guarding-staff="${index}" data-field="monthlySellingPrice" type="number" min="0" step="0.01" value="${escapeHtml(row.monthlySellingPrice || 0)}" />
+      <button class="danger-btn" type="button" data-remove-guarding-staff="${index}">x</button>
+    </div>
+  `).join("");
+}
+
+function renderGuardingSimpleRows(target, rows, type, firstPlaceholder) {
+  if (!target) return;
+  target.innerHTML = rows.map((row, index) => `
+    <div class="guarding-simple-row" data-guarding-${type}-row="${index}">
+      <input data-guarding-${type}="${index}" data-field="${type === "equipment" ? "item" : "description"}" value="${escapeHtml(row.item || row.description || "")}" placeholder="${firstPlaceholder}" />
+      ${type === "equipment" ? `<input data-guarding-${type}="${index}" data-field="quantity" type="number" min="0" step="1" value="${escapeHtml(row.quantity || 1)}" />` : `<span></span>`}
+      <input data-guarding-${type}="${index}" data-field="monthlyCost" type="number" min="0" step="0.01" value="${escapeHtml(row.monthlyCost || 0)}" placeholder="Monthly cost" />
+      <input data-guarding-${type}="${index}" data-field="monthlySellingPrice" type="number" min="0" step="0.01" value="${escapeHtml(row.monthlySellingPrice || 0)}" placeholder="Monthly selling" />
+      <button class="danger-btn" type="button" data-remove-guarding-${type}="${index}">x</button>
+    </div>
+  `).join("");
+}
+
+function renderGuardingRequestDocuments(request) {
+  const files = request?.files || [];
+  if (!guardingRequestDocumentsPanel || !guardingRequestDocumentsList) return;
+  guardingRequestDocumentsPanel.hidden = !request || !files.length;
+  guardingRequestDocumentsList.innerHTML = files.map((file) => `
+    <span>
+      <strong>${escapeHtml(file.file_name || file.name || "Document")}</strong>
+      <small>${escapeHtml(file.file_type || file.mime_type || file.type || "Unknown file type")} | ${escapeHtml(formatFileSize(file.file_size || file.size || 0))}</small>
+    </span>
+    <div>
+      <button class="secondary-btn" type="button" data-view-request-file="${escapeHtml(file.id || file.fileId || "")}">View</button>
+      <button class="secondary-btn" type="button" data-download-request-file="${escapeHtml(file.id || file.fileId || "")}">Download</button>
+    </div>
+  `).join("");
+}
+
+function renderGuardingPreview() {
+  if (!guardingFields.company) return;
+  const company = companies[guardingFields.company.value];
+  const salesRep = salesReps[guardingFields.salesRep.value];
+  const pricing = guardingPricingValues();
+  document.querySelector("#guardingPreviewCompany").textContent = company?.name || "Select quoting company";
+  document.querySelector("#guardingPreviewReg").textContent = company ? `Reg no: ${company.registration} | VAT No: ${company.vat}` : "Reg no: - | VAT No: -";
+  document.querySelector("#guardingPreviewQuoteNumber").textContent = guardingFields.quoteNumber.value || "Draft";
+  document.querySelector("#guardingPreviewClient").textContent = [guardingFields.clientName.value || "No client yet", guardingFields.email.value].filter(Boolean).join("\n");
+  document.querySelector("#guardingPreviewSite").textContent = [guardingFields.siteName.value || "No site yet", guardingFields.siteAddress.value, guardingFields.province.value].filter(Boolean).join("\n");
+  document.querySelector("#guardingPreviewRep").textContent = [salesRep?.name || "No sales rep selected", salesRep?.email, salesRep?.phone].filter(Boolean).join("\n");
+  document.querySelector("#guardingPreviewDate").textContent = formatDate(guardingFields.quoteDate.value);
+  document.querySelector("#guardingPreviewScope").textContent = [
+    guardingFields.serviceType.value || "Guarding services",
+    `Day shift: ${guardingFields.dayShift.value}`,
+    `Night shift: ${guardingFields.nightShift.value}`,
+    `Supervisor: ${guardingFields.supervisor.value}`,
+    `Armed guards: ${guardingFields.armed.value}`,
+    guardingFields.specialInstructions.value,
+  ].filter(Boolean).join(" | ");
+  document.querySelector("#guardingPreviewStaff").innerHTML = `
+    <div class="quotation-table-header"><span>Position</span><span>Qty</span><span>Shift</span><span>Monthly Selling</span></div>
+    ${state.guarding.staffing.map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.position || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>${escapeHtml(`Day ${row.dayShiftQuantity || 0} / Night ${row.nightShiftQuantity || 0}`)}</span><strong>${money.format(Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>-</span><span>No staffing rows</span><span>-</span><strong>-</strong></div>`}
+  `;
+  document.querySelector("#guardingPreviewEquipment").innerHTML = `
+    <div class="quotation-table-header"><span>Equipment</span><span>Qty</span><span>Included</span><span>Monthly Selling</span></div>
+    ${state.guarding.equipment.map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.item || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>Yes</span><strong>${money.format(Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>-</span><span>No equipment rows</span><span>-</span><strong>-</strong></div>`}
+  `;
+  document.querySelector("#guardingTotalCost").textContent = money.format(pricing.monthlyCost);
+  document.querySelector("#guardingMarkup").textContent = `${pricing.markupPercent.toFixed(2)}%`;
+  document.querySelector("#guardingTotalSelling").textContent = money.format(pricing.monthlySelling);
+  document.querySelector("#guardingGrossProfit").textContent = `${pricing.grossProfitPercent.toFixed(2)}%`;
+  document.querySelector("#guardingAnnualValue").textContent = money.format(pricing.annualValue);
+  document.querySelector("#guardingPreviewMonthly").textContent = money.format(pricing.monthlySelling);
+  document.querySelector("#guardingPreviewAnnual").textContent = money.format(pricing.annualValue);
+}
+
+function renderGuardingBuilder() {
+  renderGuardingStaffRows();
+  renderGuardingSimpleRows(guardingEquipmentRows, state.guarding.equipment, "equipment", "Equipment item");
+  renderGuardingSimpleRows(guardingCostRows, state.guarding.additionalCosts, "cost", "Description");
+  renderGuardingPreview();
+}
+
+function resetGuardingQuote(reserveNumber = true) {
+  Object.values(guardingFields).forEach((field) => {
+    if (!field) return;
+    if (field.tagName === "SELECT") field.value = "";
+    else field.value = "";
+  });
+  guardingFields.quoteDate.value = todayInputValue();
+  guardingFields.quoteNumber.value = reserveNumber ? reserveQuoteNumber(todayInputValue()) : "";
+  state.guarding.activeSalesRequestId = "";
+  state.guarding.staffing = [defaultGuardingStaffRow()];
+  state.guarding.equipment = [];
+  state.guarding.additionalCosts = [];
+  renderGuardingRequestDocuments(null);
+  if (guardingRequestSummaryPanel) guardingRequestSummaryPanel.hidden = true;
+  renderGuardingBuilder();
+}
+
+function guardingPayload(status = "Submitted for approval") {
+  const pricing = guardingPricingValues();
+  return {
+    id: `${guardingFields.quoteNumber.value || "guarding"}-${Date.now()}`,
+    quotationType: "Guarding Quotation",
+    status,
+    approvalStatus: status,
+    workflowStatus: status,
+    submittedAt: new Date().toISOString(),
+    createdBy: currentUser(),
+    createdByName: currentUserName(),
+    submittedBy: currentUser(),
+    submittedByName: currentUserName(),
+    sales_request_id: state.guarding.activeSalesRequestId || "",
+    selectedCompany: guardingFields.company.value,
+    clientName: guardingFields.clientName.value,
+    clientAddress: guardingFields.siteAddress.value,
+    contactPerson: guardingFields.contactPerson.value,
+    contactEmail: guardingFields.email.value,
+    contactNumber: guardingFields.contactNumber.value,
+    quoteNumber: guardingFields.quoteNumber.value,
+    quoteDate: guardingFields.quoteDate.value,
+    salesRep: guardingFields.salesRep.value,
+    guardingDetails: Object.fromEntries(Object.entries(guardingFields).map(([key, field]) => [key, field?.value || ""])),
+    guardingStaffing: state.guarding.staffing.map((row) => ({ ...row })),
+    guardingEquipment: state.guarding.equipment.map((row) => ({ ...row })),
+    guardingAdditionalCosts: state.guarding.additionalCosts.map((row) => ({ ...row })),
+    guardingPricing: pricing,
+    monthlyValue: pricing.monthlySelling,
+    annualValue: pricing.annualValue,
+    supplierQuotes: [],
+    items: [],
+    revisionHistory: [],
+  };
+}
+
+function validateGuardingQuote() {
+  const required = [
+    [guardingFields.company, "Quoting company"],
+    [guardingFields.clientName, "Client name"],
+    [guardingFields.contactPerson, "Contact person"],
+    [guardingFields.contactNumber, "Contact number"],
+    [guardingFields.email, "Email address"],
+    [guardingFields.siteAddress, "Site address"],
+    [guardingFields.province, "Province"],
+    [guardingFields.industry, "Industry type"],
+    [guardingFields.serviceType, "Required service type"],
+    [guardingFields.startDate, "Contract start date"],
+    [guardingFields.duration, "Contract duration"],
+    [guardingFields.salesRep, "Sales rep"],
+  ];
+  const missing = required.filter(([field]) => !String(field?.value || "").trim());
+  if (missing.length) {
+    alert(`Please complete: ${missing.map(([, label]) => label).join(", ")}`);
+    missing[0][0]?.focus();
+    return false;
+  }
+  if (!state.guarding.staffing.length || guardingPricingValues().monthlySelling <= 0) {
+    alert("Please add staffing and monthly selling values before submitting the guarding quotation.");
+    return false;
+  }
+  return true;
+}
+
+function submitGuardingQuoteForApproval() {
+  if (!enforceAccess("guardingBuilder") || !validateGuardingQuote()) return;
+  const payload = guardingPayload("Submitted for Approval");
+  saveApprovals([payload, ...loadApprovals()]);
+  if (state.guarding.activeSalesRequestId) {
+    updateSalesRequest(state.guarding.activeSalesRequestId, {
+      status: "Submitted for Approval",
+      linked_quotation_id: payload.id,
+      submitted_for_approval_at: new Date().toISOString(),
+    });
+  }
+  writeAudit("Guarding quotation built", payload.quoteNumber, "Building Guarding Quotation", payload.quoteNumber, payload.clientName);
+  writeAudit("Submitted for approval", `${payload.quoteNumber} for ${payload.clientName}`, "Building Guarding Quotation", payload.quoteNumber, "Guarding Quotation");
+  alert("Guarding quotation submitted for approval.");
+  resetGuardingQuote();
+  renderApprovals();
+}
+
+function createGuardingQuotationFromRequest(id) {
+  const request = loadSalesRequests().find((item) => item.id === id);
+  if (!request) return;
+  resetGuardingQuote();
+  state.guarding.activeSalesRequestId = request.id;
+  state.activeSalesRequestId = request.id;
+  guardingFields.clientName.value = request.client_name || "";
+  guardingFields.contactPerson.value = request.client_contact_person || "";
+  guardingFields.email.value = request.client_email || "";
+  guardingFields.contactNumber.value = request.client_phone || "";
+  guardingFields.siteName.value = request.site_project_name || "";
+  guardingFields.siteAddress.value = request.site_address || "";
+  guardingFields.province.value = request.province || "";
+  guardingFields.industry.value = request.industry_type || "";
+  guardingFields.serviceType.value = request.required_service_type || request.description_of_work || "";
+  guardingFields.startDate.value = request.contract_start_date || "";
+  guardingFields.duration.value = request.contract_duration || "";
+  guardingFields.dayShift.value = request.day_shift_required || "Yes";
+  guardingFields.nightShift.value = request.night_shift_required || "No";
+  guardingFields.guardCount.value = request.number_of_guards_required || "";
+  guardingFields.supervisor.value = request.supervisor_required || "No";
+  guardingFields.armed.value = request.armed_guards_required || "No";
+  guardingFields.controlRoom.value = request.control_room_required || "No";
+  guardingFields.patrols.value = request.patrols_required || "No";
+  guardingFields.equipmentRequired.value = request.equipment_required || "";
+  guardingFields.specialInstructions.value = request.special_site_instructions || "";
+  guardingFields.builderNotes.value = request.notes_for_builder || "";
+  const rep = salesRepsList().find((item) => normalizeEmail(item.email) === normalizeEmail(request.sales_rep_email));
+  if (rep) guardingFields.salesRep.value = rep.id;
+  updateSalesRequest(id, { linked_quotation_id: guardingFields.quoteNumber.value });
+  renderGuardingRequestDocuments(request);
+  if (guardingRequestSummaryPanel && guardingRequestSummary) {
+    guardingRequestSummaryPanel.hidden = false;
+    guardingRequestSummary.innerHTML = salesRequestSummaryHtml(request);
+  }
+  renderGuardingBuilder();
+  writeAudit("User redirected to guarding quotation builder", request.request_number, "Sales Quotation Requests", request.request_number, currentUserName());
+  showSection("guardingBuilder");
+  const params = new URLSearchParams(window.location.search);
+  params.set("salesRequestId", id);
+  window.history.pushState({}, document.title, `${window.location.pathname}?${params.toString()}#guardingBuilder`);
+}
+
 function canProcessSalesRequest(request) {
   if (!hasPermission("build_quotation") && !hasPermission("approval")) return false;
   if (salesRequestStatusLabel(request.status) !== "Accepted for Processing") return false;
@@ -2725,7 +3095,7 @@ function renderSalesRequests() {
       </div>
       ${requests.map((request) => `
         <div class="approval-table-row" role="row">
-          <span><strong>${escapeHtml(request.request_number)}</strong><small>${escapeHtml(request.supplier_name || "-")}</small></span>
+          <span><strong>${escapeHtml(request.request_number)}</strong><small>${escapeHtml(request.quotation_type || "Technical Quotation")}</small></span>
           <span>${escapeHtml(request.client_name)}</span>
           <span>${escapeHtml(request.site_project_name || "-")}</span>
           <span><strong>${escapeHtml(request.sales_rep_name)}</strong><small>${escapeHtml([request.sales_rep_email, request.sales_rep_phone].filter(Boolean).join(" | "))}</small></span>
@@ -2774,6 +3144,10 @@ function updateSalesRequest(id, updates) {
 function createQuotationFromRequest(id) {
   const request = loadSalesRequests().find((item) => item.id === id);
   if (!request) return;
+  if (request.quotation_type === "Guarding Quotation") {
+    createGuardingQuotationFromRequest(id);
+    return;
+  }
   resetQuoteForm();
   state.activeSalesRequestId = request.id;
   fields.clientName.value = request.client_name || "";
@@ -2897,6 +3271,32 @@ function loadQuoteIntoBuilder(quote) {
   renderAll();
 }
 
+function loadGuardingQuoteIntoBuilder(quote) {
+  resetGuardingQuote();
+  state.revisingQuoteId = quote.id;
+  state.revisionSourceId = quote.id;
+  state.revisionNumber = Number(quote.revisionNumber || 0) + 1;
+  state.guarding.activeSalesRequestId = quote.sales_request_id || "";
+  const details = quote.guardingDetails || {};
+  Object.entries(guardingFields).forEach(([key, field]) => {
+    if (!field) return;
+    field.value = details[key] || "";
+  });
+  guardingFields.company.value = quote.selectedCompany || "";
+  guardingFields.clientName.value = quote.clientName || "";
+  guardingFields.contactPerson.value = quote.contactPerson || "";
+  guardingFields.email.value = quote.contactEmail || "";
+  guardingFields.contactNumber.value = quote.contactNumber || "";
+  guardingFields.siteAddress.value = quote.clientAddress || "";
+  guardingFields.quoteNumber.value = quote.quoteNumber || reserveQuoteNumber(todayInputValue());
+  guardingFields.quoteDate.value = todayInputValue();
+  guardingFields.salesRep.value = quote.salesRep || "";
+  state.guarding.staffing = quote.guardingStaffing?.length ? quote.guardingStaffing.map((row) => ({ ...row })) : [defaultGuardingStaffRow()];
+  state.guarding.equipment = quote.guardingEquipment?.map((row) => ({ ...row })) || [];
+  state.guarding.additionalCosts = quote.guardingAdditionalCosts?.map((row) => ({ ...row })) || [];
+  renderGuardingBuilder();
+}
+
 function reviseRejectedQuote(id) {
   const quote = loadApprovals().find((item) => item.id === id);
   if (!quote) return;
@@ -2905,6 +3305,15 @@ function reviseRejectedQuote(id) {
     return;
   }
 
+  if (quote.quotationType === "Guarding Quotation") {
+    loadGuardingQuoteIntoBuilder(quote);
+    writeAudit("Rejected quotation opened for revision", quote.quoteNumber, "Building Guarding Quotation", quote.quoteNumber, `Revision ${state.revisionNumber}`);
+    state.selectedLibraryId = "";
+    state.selectedApprovalId = "";
+    showSection("guardingBuilder");
+    window.location.hash = "guardingBuilder";
+    return;
+  }
   loadQuoteIntoBuilder(quote);
   writeAudit("Rejected quotation opened for revision", quote.quoteNumber, "Building Technical Quotation", quote.quoteNumber, `Revision ${state.revisionNumber}`);
   state.selectedLibraryId = "";
@@ -3067,6 +3476,7 @@ function currentQuotePayload(status = "Submitted for approval") {
     submittedBy: currentUser(),
     submittedByName: currentUserName(),
     sales_request_id: state.activeSalesRequestId || "",
+    quotationType: "Technical Quotation",
     status,
     approvalStatus: status,
     workflowStatus: status,
@@ -3174,7 +3584,7 @@ async function submitCurrentQuoteForApproval() {
 function decideQuote(id, status, rejectionReason = "") {
   if (normalizedStatus(status) === "approved") {
     const quoteToApprove = loadApprovals().find((quote) => quote.id === id);
-    if (quoteToApprove && quoteCostingValues(quoteToApprove).totalQuotationProfit <= 0) {
+    if (quoteToApprove?.quotationType !== "Guarding Quotation" && quoteToApprove && quoteCostingValues(quoteToApprove).totalQuotationProfit <= 0) {
       alert("This quotation does not make a profit and cannot be approved.");
       return;
     }
@@ -3257,9 +3667,79 @@ function sendQuoteToClient(id) {
   openClientQuotation(id);
 }
 
+function renderGuardingApprovalDetail(quote) {
+  const company = companies[quote.selectedCompany];
+  const salesRep = salesReps[quote.salesRep];
+  const pricing = quote.guardingPricing || {};
+  const staffing = quote.guardingStaffing || [];
+  const equipment = quote.guardingEquipment || [];
+  const canDecide = isApprovalPendingQuote(quote);
+  approvalDetail.innerHTML = `
+    <div class="approval-detail-header">
+      <div>
+        <p class="eyebrow">Guarding Quotation Approval</p>
+        <h3>${escapeHtml(quote.quoteNumber || quote.id)}</h3>
+      </div>
+      <span class="status-badge status-info">Guarding Quotation</span>
+    </div>
+    <div class="approval-review-metrics">
+      <div><small>Client</small><strong>${escapeHtml(quote.clientName || "-")}</strong></div>
+      <div><small>Site</small><strong>${escapeHtml(quote.guardingDetails?.siteName || quote.clientAddress || "-")}</strong></div>
+      <div><small>Sales rep</small><strong>${escapeHtml(salesRep?.name || "-")}</strong></div>
+      <div><small>Monthly value</small><strong>${money.format(Number(pricing.monthlySelling || 0))}</strong></div>
+      <div><small>Annual value</small><strong>${money.format(Number(pricing.annualValue || 0))}</strong></div>
+      <div><small>Gross profit %</small><strong>${Number(pricing.grossProfitPercent || 0).toFixed(2)}%</strong></div>
+    </div>
+    <div class="quote-preview approval-quote">
+      <div class="company-strip quotation-brand">
+        <img class="quotation-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+        <div>
+          <h2>${escapeHtml(company?.name || "No company selected")}</h2>
+          <p>Reg no: ${escapeHtml(company?.registration || "-")} | VAT No: ${escapeHtml(company?.vat || "-")}</p>
+        </div>
+      </div>
+      <div class="preview-meta">
+        <div><small>Client</small><strong>${escapeHtml(quote.clientName || "-")}</strong></div>
+        <div><small>Site</small><strong>${escapeHtml([quote.guardingDetails?.siteName, quote.clientAddress].filter(Boolean).join("\n") || "-")}</strong></div>
+        <div><small>Service</small><strong>${escapeHtml(quote.guardingDetails?.serviceType || "-")}</strong></div>
+        <div><small>Date</small><strong>${escapeHtml(formatDate(quote.quoteDate))}</strong></div>
+      </div>
+      <div class="equipment-description">
+        <h3>Scope of Guarding Services</h3>
+        <p>${escapeHtml([quote.guardingDetails?.serviceType, quote.guardingDetails?.specialInstructions].filter(Boolean).join(" | ") || "Guarding services as requested.")}</p>
+      </div>
+      <div class="quotation-table guarding-preview-table">
+        <div class="quotation-table-header"><span>Position</span><span>Qty</span><span>Shift</span><span>Monthly Selling</span></div>
+        ${staffing.map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.position || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>${escapeHtml(`Day ${row.dayShiftQuantity || 0} / Night ${row.nightShiftQuantity || 0}`)}</span><strong>${money.format(Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>-</span><span>No staffing</span><span>-</span><strong>-</strong></div>`}
+      </div>
+      <div class="quotation-table guarding-preview-table">
+        <div class="quotation-table-header"><span>Equipment</span><span>Qty</span><span>Included</span><span>Monthly Selling</span></div>
+        ${equipment.map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.item || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>Yes</span><strong>${money.format(Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>-</span><span>No equipment</span><span>-</span><strong>-</strong></div>`}
+      </div>
+      <div class="totals">
+        <div><span>Monthly selling price</span><strong>${money.format(Number(pricing.monthlySelling || 0))}</strong></div>
+        <div class="grand-total"><span>Annual contract value</span><strong>${money.format(Number(pricing.annualValue || 0))}</strong></div>
+      </div>
+    </div>
+    <div class="approval-detail-actions">
+      <button class="secondary-btn" type="button" data-back-approvals="true">Back to approval list</button>
+      ${canDecide ? `<button class="primary-btn" type="button" data-approve="${quote.id}">Approve</button>` : ""}
+      ${canDecide ? `<button class="danger-btn" type="button" data-start-reject="${quote.id}">Reject</button>` : ""}
+    </div>
+    <div class="rejection-panel">
+      <label>Reason for rejection<textarea id="rejectionReason" rows="3" placeholder="Add the reason before rejecting this quotation..." spellcheck="false"></textarea></label>
+      ${canDecide ? `<button class="danger-btn" type="button" data-reject="${quote.id}">Reject quotation</button>` : ""}
+    </div>
+  `;
+}
+
 function renderApprovalDetail(quote) {
   if (!quote) {
     approvalDetail.innerHTML = `<p class="empty-state">Select a quotation to view the full approval details.</p>`;
+    return;
+  }
+  if (quote.quotationType === "Guarding Quotation") {
+    renderGuardingApprovalDetail(quote);
     return;
   }
 
@@ -3439,6 +3919,14 @@ function renderApprovals() {
         </select>
       </label>
       <label>
+        Quotation Type
+        <select id="approvalTypeFilter">
+          <option value="">All</option>
+          <option value="Technical Quotation">Technical</option>
+          <option value="Guarding Quotation">Guarding</option>
+        </select>
+      </label>
+      <label>
         Search
         <input id="approvalSearch" type="search" placeholder="Search by client, quote number, requester..." />
       </label>
@@ -3487,7 +3975,7 @@ function renderApprovals() {
     row.innerHTML = `
       <span>
         <strong>${escapeHtml(quote.quoteNumber || quote.id)}</strong>
-        <small>${escapeHtml(companies[quote.selectedCompany]?.name || "No company selected")}</small>
+        <small>${escapeHtml(quote.quotationType || "Technical Quotation")} | ${escapeHtml(companies[quote.selectedCompany]?.name || "No company selected")}</small>
       </span>
       <span>
         <strong>${escapeHtml(quote.clientName || "-")}</strong>
@@ -3512,25 +4000,67 @@ function renderApprovals() {
 
   renderRows(pending);
 
-  approvalList.querySelector("#approvalSearch").addEventListener("input", (event) => {
-    const query = event.target.value.trim().toLowerCase();
+  const applyApprovalFilters = () => {
+    const query = approvalList.querySelector("#approvalSearch").value.trim().toLowerCase();
+    const type = approvalList.querySelector("#approvalTypeFilter").value;
     const filtered = pending.filter((quote) => {
       const salesRep = salesReps[quote.salesRep];
-      return [
+      const typeMatch = !type || (quote.quotationType || "Technical Quotation") === type;
+      return typeMatch && [
         quote.clientName,
         quote.quoteNumber,
+        quote.quotationType || "Technical Quotation",
         companies[quote.selectedCompany]?.name,
         salesRep?.name,
         salesRep?.email,
       ].filter(Boolean).join(" ").toLowerCase().includes(query);
     });
     renderRows(filtered);
-  });
+  };
+  approvalList.querySelector("#approvalSearch").addEventListener("input", applyApprovalFilters);
+  approvalList.querySelector("#approvalTypeFilter").addEventListener("change", applyApprovalFilters);
 }
 
 function renderQuoteLibraryDetail(quote) {
   if (!quote) {
     quoteLibraryDetail.innerHTML = `<p class="empty-state">Select a quotation to view library details.</p>`;
+    return;
+  }
+  if (quote.quotationType === "Guarding Quotation") {
+    const salesRep = salesReps[quote.salesRep];
+    const internalBadge = internalStatusBadge(quote);
+    const statusBadge = libraryStatusBadge(quote);
+    quoteLibraryDetail.innerHTML = `
+      <div class="approval-detail-header">
+        <div>
+          <p class="eyebrow">Quote Library</p>
+          <h3>${escapeHtml(quote.quoteNumber)}</h3>
+        </div>
+        <span class="${internalBadge.className}">${escapeHtml(internalBadge.label)}</span>
+      </div>
+      <div class="approval-review-metrics">
+        <div><small>Quotation type</small><strong>Guarding Quotation</strong></div>
+        <div><small>Client</small><strong>${escapeHtml(quote.clientName || "-")}</strong></div>
+        <div><small>Sales rep</small><strong>${escapeHtml(salesRep?.name || "-")}</strong></div>
+        <div><small>Monthly value</small><strong>${money.format(Number(quote.guardingPricing?.monthlySelling || 0))}</strong></div>
+        <div><small>Annual value</small><strong>${money.format(quoteAnnualValue(quote))}</strong></div>
+        <div><small>Client outcome</small><strong><span class="${statusBadge.className}">${escapeHtml(libraryClientOutcomeLabel(quote))}</span></strong></div>
+      </div>
+      <div class="quote-preview approval-quote">
+        <div class="equipment-description">
+          <h3>Scope of Guarding Services</h3>
+          <p>${escapeHtml([quote.guardingDetails?.serviceType, quote.guardingDetails?.specialInstructions].filter(Boolean).join(" | ") || "Guarding services as requested.")}</p>
+        </div>
+        <div class="quotation-table guarding-preview-table">
+          <div class="quotation-table-header"><span>Position</span><span>Qty</span><span>Shift</span><span>Monthly Selling</span></div>
+          ${(quote.guardingStaffing || []).map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.position || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>${escapeHtml(`Day ${row.dayShiftQuantity || 0} / Night ${row.nightShiftQuantity || 0}`)}</span><strong>${money.format(Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>-</span><span>No staffing</span><span>-</span><strong>-</strong></div>`}
+        </div>
+      </div>
+      <div class="approval-detail-actions">
+        <button class="secondary-btn" type="button" data-back-library="true">Back to quote library</button>
+        ${canReviseQuote(quote) ? `<button class="primary-btn" type="button" data-revise-quote="${quote.id}">Edit / Revise Quotation</button>` : ""}
+      </div>
+    `;
     return;
   }
 
@@ -3732,6 +4262,14 @@ function renderQuoteLibrary() {
         </select>
       </label>
       <label>
+        Quotation Type
+        <select id="libraryTypeFilter">
+          <option value="">All</option>
+          <option value="Technical Quotation">Technical</option>
+          <option value="Guarding Quotation">Guarding</option>
+        </select>
+      </label>
+      <label>
         Client outcome
         <select id="libraryClientOutcomeFilter">
           <option value="">All</option>
@@ -3780,6 +4318,7 @@ function renderQuoteLibrary() {
     <div class="approval-table library-table" role="table" aria-label="Quote library">
       <div class="approval-table-header" role="row">
         <span>Description</span>
+        <span>Type</span>
         <span>Requester</span>
         <span>Amount</span>
         <span>Internal Status</span>
@@ -3814,11 +4353,12 @@ function renderQuoteLibrary() {
           <strong>${escapeHtml(quote.clientName || quote.quoteNumber)}</strong>
           <small>${escapeHtml(quote.quoteNumber)} | ${escapeHtml(companies[quote.selectedCompany]?.name || "No company selected")}</small>
         </span>
+        <span>${escapeHtml(quote.quotationType || "Technical Quotation")}</span>
         <span>
           <strong>${escapeHtml(salesRep?.name || "Unknown")}</strong>
           <small>${escapeHtml(salesRep?.email || currentUser())}</small>
         </span>
-        <span>${money.format(quoteSubtotal(quote) * (1 + state.taxRate))}</span>
+        <span>${money.format(quoteTotalValue(quote))}</span>
         <span><mark class="${internalBadge.className}">${escapeHtml(internalBadge.label)}</mark></span>
         <span><mark class="${statusBadge.className}">${escapeHtml(libraryClientOutcomeLabel(quote))}</mark></span>
         <span>${showPayment ? `<mark class="${paymentBadge.className}">${escapeHtml(paymentBadge.label)}</mark>` : "-"}</span>
@@ -3835,6 +4375,7 @@ function renderQuoteLibrary() {
 
   const applyFilters = () => {
     const internalStatus = quoteLibraryList.querySelector("#libraryInternalStatusFilter").value;
+    const type = quoteLibraryList.querySelector("#libraryTypeFilter").value;
     const clientOutcome = quoteLibraryList.querySelector("#libraryClientOutcomeFilter").value;
     const query = quoteLibraryList.querySelector("#librarySearch").value.trim().toLowerCase();
     const quoteNumberQuery = quoteLibraryList.querySelector("#libraryQuoteNumberFilter").value.trim().toLowerCase();
@@ -3848,8 +4389,9 @@ function renderQuoteLibrary() {
     const filtered = quotes.filter((quote) => {
       const salesRep = salesReps[quote.salesRep];
       const quoteDate = (quote.quoteDate || quote.submittedAt || "").slice(0, 10);
-      const total = quoteSubtotal(quote) * (1 + state.taxRate);
+      const total = quoteTotalValue(quote);
       const internalStatusMatch = !internalStatus || normalizedStatus(quote.status) === normalizedStatus(internalStatus);
+      const typeMatch = !type || (quote.quotationType || "Technical Quotation") === type;
       const clientOutcomeLabel = libraryClientOutcomeLabel(quote);
       const clientOutcomeMatch = !clientOutcome || (
         clientOutcome === "awaiting"
@@ -3859,6 +4401,7 @@ function renderQuoteLibrary() {
       const searchMatch = [
         quote.clientName,
         quote.quoteNumber,
+        quote.quotationType || "Technical Quotation",
         companies[quote.selectedCompany]?.name,
         salesRep?.name,
         salesRep?.email,
@@ -3868,7 +4411,7 @@ function renderQuoteLibrary() {
       const salesRepMatch = !salesRepQuery || [salesRep?.name, salesRep?.email, quote.createdByName, quote.submittedByName].filter(Boolean).join(" ").toLowerCase().includes(salesRepQuery);
       const dateMatch = (!dateFrom || quoteDate >= dateFrom) && (!dateTo || quoteDate <= dateTo);
       const totalMatch = total >= minTotal && total <= maxTotal;
-      return internalStatusMatch && clientOutcomeMatch && searchMatch && quoteNumberMatch && clientMatch && salesRepMatch && dateMatch && totalMatch;
+      return internalStatusMatch && typeMatch && clientOutcomeMatch && searchMatch && quoteNumberMatch && clientMatch && salesRepMatch && dateMatch && totalMatch;
     });
     renderRows(filtered);
     quoteLibraryList.dataset.filteredIds = JSON.stringify(filtered.map((quote) => quote.id));
@@ -3877,6 +4420,7 @@ function renderQuoteLibrary() {
   renderRows(quotes);
   quoteLibraryList.dataset.filteredIds = JSON.stringify(quotes.map((quote) => quote.id));
   quoteLibraryList.querySelector("#libraryInternalStatusFilter").addEventListener("change", applyFilters);
+  quoteLibraryList.querySelector("#libraryTypeFilter").addEventListener("change", applyFilters);
   quoteLibraryList.querySelector("#libraryClientOutcomeFilter").addEventListener("change", applyFilters);
   quoteLibraryList.querySelector("#librarySearch").addEventListener("input", applyFilters);
   ["libraryQuoteNumberFilter", "libraryClientFilter", "librarySalesRepFilter", "libraryDateFromFilter", "libraryDateToFilter", "libraryMinTotalFilter", "libraryMaxTotalFilter"].forEach((id) => {
@@ -3890,13 +4434,14 @@ function renderQuoteLibrary() {
     const ids = JSON.parse(quoteLibraryList.dataset.filteredIds || "[]");
     const rows = quotes.filter((quote) => ids.includes(quote.id)).map((quote) => [
       quote.quoteNumber,
+      quote.quotationType || "Technical Quotation",
       quote.clientName,
       salesRepNameForQuote(quote),
       quote.status,
       libraryClientOutcomeLabel(quote),
-      quoteSubtotal(quote) * (1 + state.taxRate),
+      quoteTotalValue(quote),
     ]);
-    const csv = [["Quote number", "Client", "Sales rep", "Status", "Client outcome", "Total"], ...rows].map((row) => row.map(csvEscape).join(",")).join("\n");
+    const csv = [["Quote number", "Quotation type", "Client", "Sales rep", "Status", "Client outcome", "Total"], ...rows].map((row) => row.map(csvEscape).join(",")).join("\n");
     downloadBlobFile(new Blob([csv], { type: "text/csv;charset=utf-8" }), `quote-library-filtered-${todayInputValue()}.csv`);
   });
 }
@@ -4756,6 +5301,8 @@ dashboardMonth.addEventListener("change", () => {
 });
 dashboardFromDate.addEventListener("change", renderDashboard);
 dashboardToDate.addEventListener("change", renderDashboard);
+dashboardTypeFilter?.addEventListener("change", renderDashboard);
+dashboardSalesRepFilter?.addEventListener("input", renderDashboard);
 dashboardPrevMonth.addEventListener("click", () => {
   const [year, month] = (dashboardMonth.value || monthInputValue()).split("-").map(Number);
   dashboardMonth.value = monthInputValue(new Date(year, month - 2, 1));
@@ -4812,10 +5359,16 @@ requestSalesRepName.addEventListener("change", () => {
   if (rep) applyRequestSalesRep(rep);
 });
 
+requestQuotationType.addEventListener("change", () => {
+  guardingRequestFields.hidden = requestQuotationType.value !== "Guarding Quotation";
+});
+
 salesRequestForm.addEventListener("submit", (event) => {
   event.preventDefault();
   if (!enforceAccess("salesRequests")) return;
+  const quotationType = requestQuotationType.value;
   const required = [
+    ["requestQuotationType", "Quotation type"],
     ["requestClientName", "Client name"],
     ["requestContactPerson", "Client contact person"],
     ["requestClientEmail", "Client email"],
@@ -4826,6 +5379,16 @@ salesRequestForm.addEventListener("submit", (event) => {
     ["requestDueDate", "Required quotation due date"],
     ["requestDescription", "Description of work required"],
   ];
+  if (quotationType === "Guarding Quotation") {
+    required.push(
+      ["requestProvince", "Province"],
+      ["requestIndustryType", "Industry type"],
+      ["requestServiceType", "Required service type"],
+      ["requestContractStartDate", "Contract start date"],
+      ["requestContractDuration", "Contract duration"],
+      ["requestNumberOfGuards", "Number of guards required"]
+    );
+  }
   const missing = required.filter(([id]) => !document.querySelector(`#${id}`)?.value.trim());
   if (missing.length) {
     alert(`Please complete: ${missing.map(([, label]) => label).join(", ")}`);
@@ -4834,6 +5397,7 @@ salesRequestForm.addEventListener("submit", (event) => {
   const request = {
     id: `sqr-${Date.now()}`,
     request_number: reserveRequestNumber(),
+    quotation_type: quotationType,
     client_name: document.querySelector("#requestClientName").value.trim(),
     client_contact_person: document.querySelector("#requestContactPerson").value.trim(),
     client_email: document.querySelector("#requestClientEmail").value.trim(),
@@ -4846,6 +5410,20 @@ salesRequestForm.addEventListener("submit", (event) => {
     sales_rep_phone: requestSalesRepPhone.value.trim(),
     required_due_date: document.querySelector("#requestDueDate").value,
     description_of_work: document.querySelector("#requestDescription").value.trim(),
+    province: document.querySelector("#requestProvince")?.value.trim() || "",
+    industry_type: document.querySelector("#requestIndustryType")?.value.trim() || "",
+    required_service_type: document.querySelector("#requestServiceType")?.value.trim() || "",
+    contract_start_date: document.querySelector("#requestContractStartDate")?.value || "",
+    contract_duration: document.querySelector("#requestContractDuration")?.value.trim() || "",
+    day_shift_required: document.querySelector("#requestDayShiftRequired")?.value || "",
+    night_shift_required: document.querySelector("#requestNightShiftRequired")?.value || "",
+    number_of_guards_required: document.querySelector("#requestNumberOfGuards")?.value || "",
+    supervisor_required: document.querySelector("#requestSupervisorRequired")?.value || "",
+    armed_guards_required: document.querySelector("#requestArmedGuardsRequired")?.value || "",
+    control_room_required: document.querySelector("#requestControlRoomRequired")?.value || "",
+    patrols_required: document.querySelector("#requestPatrolsRequired")?.value || "",
+    equipment_required: document.querySelector("#requestEquipmentRequired")?.value.trim() || "",
+    special_site_instructions: document.querySelector("#requestSpecialInstructions")?.value.trim() || "",
     notes_for_builder: document.querySelector("#requestNotes").value.trim(),
     status: "Accepted for Processing",
     submitted_by_user_id: currentUser(),
@@ -4854,10 +5432,11 @@ salesRequestForm.addEventListener("submit", (event) => {
     updated_at: new Date().toISOString(),
   };
   saveSalesRequests([request, ...loadSalesRequests()]);
-  writeAudit("Request submitted", request.request_number, "Sales Quotation Requests", request.request_number, request.client_name);
+  writeAudit("Request submitted", request.request_number, "Sales Quotation Requests", request.request_number, `${request.quotation_type}: ${request.client_name}`);
   state.salesRequestFiles = [];
   state.selectedRequestSalesRepId = "";
   salesRequestForm.reset();
+  guardingRequestFields.hidden = true;
   renderRequestSalesRepOptions();
   autoPopulateRequestSalesRep(true);
   renderRequestFileList();
@@ -4890,6 +5469,55 @@ salesRequestList.addEventListener("click", (event) => {
     const request = loadSalesRequests().find((item) => item.id === docsId);
     alert((request?.files || []).map((file) => `${file.file_name} (${formatFileSize(file.file_size)})`).join("\n") || "No documents uploaded.");
   }
+});
+
+document.querySelector("#addGuardingStaff")?.addEventListener("click", () => {
+  state.guarding.staffing.push(defaultGuardingStaffRow());
+  renderGuardingBuilder();
+});
+
+document.querySelector("#addGuardingEquipment")?.addEventListener("click", () => {
+  state.guarding.equipment.push({ item: "", quantity: 1, monthlyCost: 0, monthlySellingPrice: 0 });
+  renderGuardingBuilder();
+});
+
+document.querySelector("#addGuardingCost")?.addEventListener("click", () => {
+  state.guarding.additionalCosts.push({ description: "", monthlyCost: 0, monthlySellingPrice: 0 });
+  renderGuardingBuilder();
+});
+
+document.querySelector("#guardingNewQuote")?.addEventListener("click", resetGuardingQuote);
+document.querySelector("#submitGuardingQuote")?.addEventListener("click", submitGuardingQuoteForApproval);
+document.querySelector("#saveGuardingDraft")?.addEventListener("click", () => {
+  localStorage.setItem("interactiveSecurityGuardingDraft", JSON.stringify(guardingPayload("Draft")));
+  alert("Guarding quotation draft saved.");
+});
+
+document.querySelector("#guardingQuoteForm")?.addEventListener("input", (event) => {
+  const staffIndex = event.target.dataset.guardingStaff;
+  const equipmentIndex = event.target.dataset.guardingEquipment;
+  const costIndex = event.target.dataset.guardingCost;
+  const field = event.target.dataset.field;
+  if (staffIndex !== undefined && field) {
+    state.guarding.staffing[Number(staffIndex)][field] = ["position", "grade"].includes(field) ? event.target.value : Number(event.target.value || 0);
+  } else if (equipmentIndex !== undefined && field) {
+    state.guarding.equipment[Number(equipmentIndex)][field] = field === "item" ? event.target.value : Number(event.target.value || 0);
+  } else if (costIndex !== undefined && field) {
+    state.guarding.additionalCosts[Number(costIndex)][field] = field === "description" ? event.target.value : Number(event.target.value || 0);
+  }
+  renderGuardingPreview();
+});
+
+document.querySelector("#guardingQuoteForm")?.addEventListener("change", renderGuardingPreview);
+
+document.querySelector("#guardingQuoteForm")?.addEventListener("click", (event) => {
+  const removeStaff = event.target.dataset.removeGuardingStaff;
+  const removeEquipment = event.target.dataset.removeGuardingEquipment;
+  const removeCost = event.target.dataset.removeGuardingCost;
+  if (removeStaff !== undefined) state.guarding.staffing.splice(Number(removeStaff), 1);
+  if (removeEquipment !== undefined) state.guarding.equipment.splice(Number(removeEquipment), 1);
+  if (removeCost !== undefined) state.guarding.additionalCosts.splice(Number(removeCost), 1);
+  if (removeStaff !== undefined || removeEquipment !== undefined || removeCost !== undefined) renderGuardingBuilder();
 });
 
 generateTempPassword.addEventListener("click", () => {
@@ -4990,6 +5618,13 @@ supplierQuoteName.addEventListener("click", (event) => {
 });
 
 salesRequestDocumentsList.addEventListener("click", (event) => {
+  const viewId = event.target.dataset.viewRequestFile;
+  const downloadId = event.target.dataset.downloadRequestFile;
+  if (viewId) openRequestDocument(viewId, "view");
+  if (downloadId) openRequestDocument(downloadId, "download");
+});
+
+guardingRequestDocumentsList?.addEventListener("click", (event) => {
   const viewId = event.target.dataset.viewRequestFile;
   const downloadId = event.target.dataset.downloadRequestFile;
   if (viewId) openRequestDocument(viewId, "view");
@@ -5117,16 +5752,21 @@ function showSection(sectionName) {
     item.classList.toggle("active", item.dataset.section === activeSection);
   });
 
-  ["portal", "dashboard", "builder", "salesRequests", "approvals", "library", "settings", "audit"].forEach((section) => {
+  ["portal", "dashboard", "builder", "guardingBuilder", "salesRequests", "approvals", "library", "settings", "audit"].forEach((section) => {
     const sectionElement = document.querySelector(`#${section}-section`);
     const isActive = section === activeSection;
+    if (!sectionElement) return;
     sectionElement.hidden = !isActive;
-    sectionElement.style.display = isActive ? (section === "builder" ? "grid" : "block") : "none";
+    sectionElement.style.display = isActive ? (["builder", "guardingBuilder"].includes(section) ? "grid" : "block") : "none";
     sectionElement.setAttribute("aria-hidden", String(!isActive));
   });
 
   if (activeSection === "portal") renderPortal();
   if (activeSection === "dashboard") renderDashboard();
+  if (activeSection === "guardingBuilder") {
+    if (!guardingFields.quoteNumber.value) guardingFields.quoteNumber.value = reserveQuoteNumber(todayInputValue());
+    renderGuardingBuilder();
+  }
   if (activeSection === "salesRequests") renderSalesRequests();
   if (activeSection === "approvals") renderApprovals();
   if (activeSection === "library") renderQuoteLibrary();
@@ -5209,6 +5849,8 @@ autoPopulateRequestSalesRep(true);
 hydrateSharedSessionFromUrl();
 loadSalesRepsFromStorage();
 renderSalesRepOptions();
+populateGuardingCompanyOptions();
+resetGuardingQuote(false);
 const restoredDraft = loadSavedQuote();
 fields.selectedCompany.value = "";
 fields.salesRep.value = "";
@@ -5236,7 +5878,7 @@ updateSupplierQuoteDisplay();
 renderAll();
 applyPermissions();
 const routeSection = window.location.hash.slice(1) === "approval" ? "approvals" : window.location.hash.slice(1);
-const initialSection = ["portal", "dashboard", "builder", "salesRequests", "approvals", "library", "settings", "audit"].includes(routeSection)
+const initialSection = ["portal", "dashboard", "builder", "guardingBuilder", "salesRequests", "approvals", "library", "settings", "audit"].includes(routeSection)
   ? routeSection
   : "portal";
 consumeHubSsoTokenIfPresent().then((handledSso) => {
@@ -5244,7 +5886,7 @@ consumeHubSsoTokenIfPresent().then((handledSso) => {
   if (isSignedIn()) {
     loginScreen.hidden = true;
     applyPermissions();
-    if (initialSection === "builder" && loadSalesRequestFromUrl()) return;
+    if ((initialSection === "builder" || initialSection === "guardingBuilder") && loadSalesRequestFromUrl()) return;
     showSection(canAccess(initialSection) ? initialSection : "portal");
   } else {
     loginScreen.hidden = false;
