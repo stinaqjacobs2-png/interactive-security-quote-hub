@@ -471,7 +471,7 @@ async function handleSaveQuotation(req, res) {
   const approvers = all("SELECT m.email, m.name FROM members m JOIN member_permissions mp ON mp.member_id = m.id WHERE mp.permission_key = 'approval' AND mp.can_access = 1 AND m.invite_status != 'Disabled'");
   approvers.forEach((a) => sendApprovalNotification({ ...quote, quoteNumber, submittedByName: session.name }, a.email, a.name).catch(() => {}));
 
-  writeAudit(session, "Submitted quotation for approval", `${quoteNumber} for ${data.clientName}`, "Build Quotation", quoteNumber);
+  writeAudit(session, "Submitted quotation for approval", `${quoteNumber} for ${data.clientName}`, "Building Technical Quotation", quoteNumber);
   return json(res, 200, { quotation: quote });
 }
 

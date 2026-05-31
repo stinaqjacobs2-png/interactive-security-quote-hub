@@ -292,7 +292,7 @@ const salesRequestSummary = document.querySelector("#salesRequestSummary");
 
 const permissionDefinitions = [
   { key: "dashboard", label: "Dashboard", section: "dashboard" },
-  { key: "build_quotation", label: "Build Quotation", section: "builder" },
+  { key: "build_quotation", label: "Building Technical Quotation", section: "builder" },
   { key: "quote_library", label: "Quote Library", section: "library" },
   { key: "approval", label: "Approval", section: "approvals" },
   { key: "reports", label: "Reports", section: "dashboard" },
@@ -324,7 +324,7 @@ const sectionHeadings = {
   },
   builder: {
     eyebrow: "AI quotation workspace",
-    title: "Build a professional quotation",
+    title: "Building Technical Quotation",
     status: "Draft",
   },
   approvals: {
@@ -1558,7 +1558,7 @@ function moduleFromAction(action = "") {
   if (normalized.includes("sales rep")) return "Setup - Sales reps";
   if (normalized.includes("supplier")) return "Setup - Supplier prices";
   if (normalized.includes("client")) return "Setup - Client information";
-  if (normalized.includes("quotation")) return "Build Quotation";
+  if (normalized.includes("quotation")) return "Building Technical Quotation";
   return "System";
 }
 
@@ -2906,7 +2906,7 @@ function reviseRejectedQuote(id) {
   }
 
   loadQuoteIntoBuilder(quote);
-  writeAudit("Rejected quotation opened for revision", quote.quoteNumber, "Build Quotation", quote.quoteNumber, `Revision ${state.revisionNumber}`);
+  writeAudit("Rejected quotation opened for revision", quote.quoteNumber, "Building Technical Quotation", quote.quoteNumber, `Revision ${state.revisionNumber}`);
   state.selectedLibraryId = "";
   state.selectedApprovalId = "";
   showSection("builder");
@@ -3159,11 +3159,11 @@ async function submitCurrentQuoteForApproval() {
       linked_quotation_id: payload.id,
       submitted_for_approval_at: new Date().toISOString(),
     });
-    writeAudit("Quotation created from sales request", payload.quoteNumber, "Build Quotation", payload.quoteNumber, request?.request_number || state.activeSalesRequestId);
+    writeAudit("Quotation created from sales request", payload.quoteNumber, "Building Technical Quotation", payload.quoteNumber, request?.request_number || state.activeSalesRequestId);
     writeAudit("Sales request submitted for approval", request?.request_number || state.activeSalesRequestId, "Sales Quotation Requests", request?.request_number || state.activeSalesRequestId, payload.quoteNumber);
   }
   if (state.revisingQuoteId) {
-    writeAudit("Revised quotation saved", payload.quoteNumber, "Build Quotation", payload.quoteNumber, `Revision ${payload.revisionNumber}`);
+    writeAudit("Revised quotation saved", payload.quoteNumber, "Building Technical Quotation", payload.quoteNumber, `Revision ${payload.revisionNumber}`);
     writeAudit("Revised quotation resubmitted for approval", payload.quoteNumber, "Approval", payload.quoteNumber, `Revision ${payload.revisionNumber}`);
   } else {
     writeAudit("Submitted for approval", `${payload.quoteNumber} for ${payload.clientName}`);
