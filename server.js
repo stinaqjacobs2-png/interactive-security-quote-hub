@@ -417,6 +417,123 @@ function serveStatic(req, res) {
   res.end(fs.readFileSync(filePath));
 }
 
+// ── First-time setup page ────────────────────────────────────────────────────
+// Serves a browser form to create the first Super Admin.
+// Automatically redirects to / once any user with a password exists.
+
+function serveSetup(res) {
+  const db = readDb();
+  const hasUsers = db.members && db.members.some((m) => m.password_hash);
+  if (hasUsers) {
+    res.writeHead(302, { Location: "/" });
+    res.end();
+    return;
+  }
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>First-time Setup – Interactive Security Portal</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:system-ui,sans-serif;background:#f4f5f7;display:flex;
+         align-items:center;justify-content:center;min-height:100vh;padding:1rem}
+    .card{background:#fff;border-radius:10px;box-shadow:0 2px 16px rgba(0,0,0,.12);
+          padding:2.5rem;width:100%;max-width:420px}
+    h1{font-size:1.25rem;margin-bottom:.25rem}
+    p.sub{color:#555;font-size:.9rem;margin-bottom:1.5rem}
+    label{display:block;font-size:.85rem;font-weight:600;margin-bottom:.9rem}
+    label span{display:block;margin-bottom:.3rem}
+    input{width:100%;padding:.55rem .75rem;border:1px solid #ccc;border-radius:6px;font-size:.95rem}
+    input:focus{outline:none;border-color:#2563eb}
+    .hint{font-size:.78rem;color:#666;margin-top:.3rem}
+    button{width:100%;margin-top:1.25rem;padding:.65rem;background:#1d4ed8;
+           color:#fff;border:none;border-radius:6px;font-size:1rem;font-weight:600;cursor:pointer}
+    button:hover{background:#1e40af}
+    button:disabled{background:#93c5fd;cursor:not-allowed}
+    .msg{margin-top:1rem;padding:.75rem;border-radius:6px;font-size:.9rem;display:none}
+    .msg.error{background:#fee2e2;color:#b91c1c;display:block}
+    .msg.success{background:#dcfce7;color:#15803d;display:block}
+    .badge{display:inline-block;background:#fef9c3;color:#854d0e;border-radius:4px;
+           padding:.15rem .5rem;font-size:.78rem;font-weight:600;margin-bottom:1.25rem}
+  </style>
+</head>
+<body>
+<div class="card">
+  <span class="badge">First-time setup</span>
+  <h1>Create Super Admin</h1>
+  <p class="sub">This page is only accessible while no users exist in the database.
+  It permanently disables itself as soon as the first account is created.</p>
+  <form id="form">
+    <label><span>Full name</span>
+      <input id="name" type="text" placeholder="Jane Smith" required autocomplete="name"/>
+    </label>
+    <label><span>Email address</span>
+      <input id="email" type="email" placeholder="admin@yourcompany.com" required autocomplete="email"/>
+    </label>
+    <label><span>Password</span>
+      <input id="password" type="password" required autocomplete="new-password"/>
+      <div class="hint">Min 12 chars &middot; uppercase &middot; lowercase &middot; number &middot; special character</div>
+    </label>
+    <label><span>Confirm password</span>
+      <input id="confirm" type="password" required autocomplete="new-password"/>
+    </label>
+    <button type="submit" id="btn">Create Super Admin account</button>
+  </form>
+  <div class="msg" id="msg"></div>
+</div>
+<script>
+document.getElementById('form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const msg = document.getElementById('msg');
+  const btn = document.getElementById('btn');
+  msg.className = 'msg'; msg.textContent = '';
+  const name     = document.getElementById('name').value.trim();
+  const email    = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  const confirm  = document.getElementById('confirm').value;
+  if (password !== confirm) {
+    msg.className = 'msg error';
+    msg.textContent = 'Passwords do not match.';
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Creating account…';
+  try {
+    const res = await fetch('/api/setup/create-admin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      msg.className = 'msg error';
+      msg.textContent = data.error || 'Setup failed.';
+      btn.disabled = false;
+      btn.textContent = 'Create Super Admin account';
+      return;
+    }
+    msg.className = 'msg success';
+    msg.textContent = 'Super Admin created! Redirecting to login…';
+    document.getElementById('form').style.display = 'none';
+    setTimeout(() => { window.location.href = '/'; }, 2000);
+  } catch (err) {
+    msg.className = 'msg error';
+    msg.textContent = 'Network error – please try again.';
+    btn.disabled = false;
+    btn.textContent = 'Create Super Admin account';
+  }
+});
+</script>
+</body>
+</html>`;
+  res.writeHead(200, { "Content-Type": mimeTypes[".html"], "Cache-Control": "no-store" });
+  res.end(html);
+}
+
+// ── API handlers ─────────────────────────────────────────────────────────────
+
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
@@ -777,6 +894,61 @@ async function handleApi(req, res) {
     return json(res, 200, { ok: true });
   }
 
+  // ── First-time setup routes ───────────────────────────────────────────────
+  // These routes are permanently disabled once any user with a password exists.
+
+  if (req.method === "GET" && url.pathname === "/api/setup/status") {
+    const db = readDb();
+    const hasUsers = db.members && db.members.some((m) => m.password_hash);
+    return json(res, 200, { setupRequired: !hasUsers });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/setup/create-admin") {
+    const db = readDb();
+    const hasUsers = db.members && db.members.some((m) => m.password_hash);
+    if (hasUsers) {
+      return json(res, 403, { error: "Setup has already been completed." });
+    }
+    const body = await readBody(req);
+    const email = normalizeEmail(body.email);
+    const name  = String(body.name || "").trim();
+    const password = String(body.password || "");
+    if (!email || !name || !password) {
+      return json(res, 400, { error: "Name, email and password are required." });
+    }
+    let password_hash;
+    try {
+      password_hash = hashPassword(password);
+    } catch (error) {
+      return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
+    }
+    const now = new Date().toISOString();
+    const id  = email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const member = {
+      id,
+      name,
+      email,
+      role: "Super Admin",
+      access: "Super Admin",
+      permissions: permissionKeys,
+      permissionsExplicit: true,
+      inviteStatus: "Active",
+      password_hash,
+      passwordAlgorithm: "bcrypt",
+      mustChangePassword: false,
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+      mfaEnabled: false,
+      mfaRequired: false,
+      created_at: now,
+      updated_at: now,
+    };
+    db.members.push(member);
+    writeAudit(db, "Created first Super Admin via setup route", member, "Authentication", email, "One-time production setup");
+    writeDb(db);
+    return json(res, 200, { ok: true, email });
+  }
+
   return json(res, 404, { error: "API route not found" });
 }
 
@@ -785,6 +957,7 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res);
     if (url.pathname.startsWith("/hubs/")) return serveIndex(res);
+    if (url.pathname === "/setup") return serveSetup(res);
     return serveStatic(req, res);
   } catch (error) {
     console.error(error);
