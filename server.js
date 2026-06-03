@@ -64,18 +64,20 @@ function defaultPermissionsForRole(role) {
 
 function sanitizePermissions(permissions = []) {
   return Array.from(new Set((Array.isArray(permissions) ? permissions : [])
-    .filter((permission) => permissionKeys.includes(permission))));
+    .filter((p) => permissionKeys.includes(p))));
 }
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".jpg": "image/jpeg",
+  ".js":   "text/javascript; charset=utf-8",
+  ".css":  "text/css; charset=utf-8",
+  ".jpg":  "image/jpeg",
   ".jpeg": "image/jpeg",
-  ".png": "image/png",
+  ".png":  "image/png",
   ".json": "application/json; charset=utf-8",
 };
+
+// ── Database ─────────────────────────────────────────────────────────────────
 
 function ensureDb() {
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
@@ -83,6 +85,7 @@ function ensureDb() {
     fs.writeFileSync(dbPath, JSON.stringify({
       sessions: [],
       sso_tokens: [],
+      members: [],
       user_permissions: [],
       sales_quotation_requests: [],
       sales_quotation_request_files: [],
@@ -102,11 +105,9 @@ function ensureDb() {
   }
   const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
   let changed = false;
-  ["sessions", "sso_tokens", "members", "user_permissions", "sales_quotation_requests", "sales_quotation_request_files", "email_logs", "audit_trail", "password_reset_tokens"].forEach((table) => {
-    if (!Array.isArray(db[table])) {
-      db[table] = [];
-      changed = true;
-    }
+  ["sessions", "sso_tokens", "members", "user_permissions", "sales_quotation_requests",
+   "sales_quotation_request_files", "email_logs", "audit_trail", "password_reset_tokens"].forEach((table) => {
+    if (!Array.isArray(db[table])) { db[table] = []; changed = true; }
   });
   if (!db.security_settings) {
     db.security_settings = {
@@ -132,6 +133,7 @@ function ensureDb() {
       };
       changed = true;
     }
+    // Migrate legacy camelCase passwordHash to snake_case password_hash
     if (updated.passwordHash && !updated.legacyPasswordHash) {
       updated = {
         ...updated,
@@ -146,11 +148,8 @@ function ensureDb() {
     return updated;
   });
   db.sales_quotation_requests = db.sales_quotation_requests.map((request) => {
-    const normalized = String(request.status || "")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "");
+    const normalized = String(request.status || "").trim().toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
     let status = "Accepted for Processing";
     if (normalized === "approved") status = "Approved";
     if (["submitted_for_approval", "pending_approval", "awaiting_approval", "completed"].includes(normalized)) {
@@ -158,12 +157,7 @@ function ensureDb() {
     }
     if (request.status === status) return request;
     changed = true;
-    return {
-      ...request,
-      legacy_status: request.legacy_status || request.status || "",
-      status,
-      updated_at: request.updated_at || new Date().toISOString(),
-    };
+    return { ...request, legacy_status: request.legacy_status || request.status || "", status, updated_at: request.updated_at || new Date().toISOString() };
   });
   if (changed) fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
 }
@@ -177,6 +171,8 @@ function writeDb(db) {
   ensureDb();
   fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function normalizeEmail(value = "") {
   return String(value).trim().toLowerCase();
@@ -202,11 +198,11 @@ function publicUser(member) {
 
 function passwordPolicyErrors(password = "") {
   const errors = [];
-  if (password.length < 12) errors.push("at least 12 characters");
-  if (!/[A-Z]/.test(password)) errors.push("one uppercase letter");
-  if (!/[a-z]/.test(password)) errors.push("one lowercase letter");
-  if (!/[0-9]/.test(password)) errors.push("one number");
-  if (!/[^A-Za-z0-9]/.test(password)) errors.push("one special character");
+  if (password.length < 12)            errors.push("at least 12 characters");
+  if (!/[A-Z]/.test(password))         errors.push("one uppercase letter");
+  if (!/[a-z]/.test(password))         errors.push("one lowercase letter");
+  if (!/[0-9]/.test(password))         errors.push("one number");
+  if (!/[^A-Za-z0-9]/.test(password))  errors.push("one special character");
   return errors;
 }
 
@@ -222,12 +218,23 @@ function assertStrongPassword(password) {
 
 function hashPassword(password) {
   assertStrongPassword(password);
-  return bcrypt.hashSync(password, BCRYPT_ROUNDS);
+  const hash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
+  // Paranoia: verify the hash we just created actually works before returning it
+  if (!bcrypt.compareSync(password, hash)) {
+    throw new Error("Password hash verification failed immediately after creation.");
+  }
+  return hash;
 }
 
 function verifyPassword(password, passwordHash) {
-  if (!passwordHash || !passwordHash.startsWith("$2")) return false;
-  return bcrypt.compareSync(password, passwordHash);
+  if (!passwordHash || typeof passwordHash !== "string") return false;
+  if (!passwordHash.startsWith("$2")) return false;
+  try {
+    return bcrypt.compareSync(password, passwordHash);
+  } catch (err) {
+    console.error("[verifyPassword] bcrypt.compareSync threw:", err.message);
+    return false;
+  }
 }
 
 function tokenHash(token) {
@@ -236,16 +243,17 @@ function tokenHash(token) {
 
 function securitySettings(db) {
   return {
-    maxFailedLogins: Number(db.security_settings?.maxFailedLogins || MAX_FAILED_LOGINS),
-    lockoutMinutes: Number(db.security_settings?.lockoutMinutes || LOCKOUT_MINUTES),
-    sessionIdleMinutes: Number(db.security_settings?.sessionIdleMinutes || SESSION_IDLE_MINUTES),
-    sessionAbsoluteHours: Number(db.security_settings?.sessionAbsoluteHours || SESSION_ABSOLUTE_HOURS),
-    passwordResetMinutes: Number(db.security_settings?.passwordResetMinutes || PASSWORD_RESET_MINUTES),
-    mfaEnabled: Boolean(db.security_settings?.mfaEnabled),
+    maxFailedLogins:      Number(db.security_settings?.maxFailedLogins      || MAX_FAILED_LOGINS),
+    lockoutMinutes:       Number(db.security_settings?.lockoutMinutes        || LOCKOUT_MINUTES),
+    sessionIdleMinutes:   Number(db.security_settings?.sessionIdleMinutes    || SESSION_IDLE_MINUTES),
+    sessionAbsoluteHours: Number(db.security_settings?.sessionAbsoluteHours  || SESSION_ABSOLUTE_HOURS),
+    passwordResetMinutes: Number(db.security_settings?.passwordResetMinutes  || PASSWORD_RESET_MINUTES),
+    mfaEnabled:           Boolean(db.security_settings?.mfaEnabled),
   };
 }
 
 function writeAudit(db, action, user, module = "Authentication", reference = user?.email || "", notes = "") {
+  if (!Array.isArray(db.audit_trail)) db.audit_trail = [];
   db.audit_trail.unshift({
     id: crypto.randomUUID(),
     action,
@@ -261,69 +269,84 @@ function writeAudit(db, action, user, module = "Authentication", reference = use
 }
 
 function json(res, status, payload) {
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
   res.end(JSON.stringify(payload));
 }
 
 function parseCookies(req) {
-  return Object.fromEntries((req.headers.cookie || "").split(";").filter(Boolean).map((cookie) => {
-    const index = cookie.indexOf("=");
-    return [
-      decodeURIComponent(cookie.slice(0, index).trim()),
-      decodeURIComponent(cookie.slice(index + 1).trim()),
-    ];
-  }));
+  return Object.fromEntries(
+    (req.headers.cookie || "").split(";").filter(Boolean).map((c) => {
+      const i = c.indexOf("=");
+      return [decodeURIComponent(c.slice(0, i).trim()), decodeURIComponent(c.slice(i + 1).trim())];
+    })
+  );
 }
 
 function setCookie(res, name, value, maxAgeSeconds = 60 * 60 * 8) {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `${encodeURIComponent(name)}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAgeSeconds}; SameSite=Lax; HttpOnly${secure}`);
+  res.setHeader("Set-Cookie",
+    `${encodeURIComponent(name)}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAgeSeconds}; SameSite=Lax; HttpOnly${secure}`);
+}
+
+function clearCookie(res, name) {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("Set-Cookie",
+    `${encodeURIComponent(name)}=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly${secure}`);
 }
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > 1024 * 1024) req.destroy();
-    });
-    req.on("end", () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch (error) {
-        reject(error);
-      }
-    });
+    req.on("data", (chunk) => { body += chunk; if (body.length > 1024 * 1024) req.destroy(); });
+    req.on("end", () => { try { resolve(body ? JSON.parse(body) : {}); } catch (e) { reject(e); } });
     req.on("error", reject);
   });
 }
 
+// ── Session management ────────────────────────────────────────────────────────
+//
+// getSession: reads session from cookie, validates expiry/idle, updates
+//   lastActivityAt in the sessions array only (does NOT touch member records).
+//
+// saveSession: creates a new session. Does NOT rewrite the member's security
+//   fields (password_hash, passwordAlgorithm, failedLoginAttempts, lockedUntil,
+//   mustChangePassword). Only refreshes non-sensitive profile fields.
+
 function getSession(req) {
   const sid = parseCookies(req).interactive_security_session;
   if (!sid) return null;
+
   const db = readDb();
   const settings = securitySettings(db);
   const now = new Date();
-  const session = db.sessions.find((item) => item.sid === sid);
-  if (!session) return null;
+  const sessionIndex = db.sessions.findIndex((s) => s.sid === sid);
+  if (sessionIndex === -1) return null;
+
+  const session = db.sessions[sessionIndex];
   const absoluteExpired = new Date(session.expiresAt) <= now;
   const lastActivity = session.lastActivityAt ? new Date(session.lastActivityAt) : new Date(session.createdAt || 0);
   const idleExpired = now.getTime() - lastActivity.getTime() > settings.sessionIdleMinutes * 60 * 1000;
+
   if (absoluteExpired || idleExpired) {
-    db.sessions = db.sessions.filter((item) => item.sid !== sid);
-    writeAudit(db, "Session expired", session, "Authentication", session.email, absoluteExpired ? "Absolute session expiry" : "Inactive session expiry");
+    db.sessions.splice(sessionIndex, 1);
+    writeAudit(db, "Session expired", session, "Authentication", session.email,
+      absoluteExpired ? "Absolute session expiry" : "Idle session expiry");
     writeDb(db);
     return null;
   }
-  session.role = normalizeRole(session.role || session.access || "Read Only");
-  const sanitizedSessionPermissions = sanitizePermissions(session.permissions);
-  session.permissions = session.permissionsExplicit ? sanitizedSessionPermissions : (sanitizedSessionPermissions.length ? sanitizedSessionPermissions : defaultPermissionsForRole(session.role));
-  session.lastActivityAt = now.toISOString();
+
+  // Normalize role/permissions from session (do not read from member record here)
+  const role = normalizeRole(session.role || session.access || "Read Only");
+  const sanitizedPermissions = sanitizePermissions(session.permissions);
+  const permissions = session.permissionsExplicit
+    ? sanitizedPermissions
+    : (sanitizedPermissions.length ? sanitizedPermissions : defaultPermissionsForRole(role));
+
+  // Update lastActivityAt on the session record only
+  db.sessions[sessionIndex] = { ...session, role, permissions, lastActivityAt: now.toISOString() };
   writeDb(db);
-  return session;
+
+  return db.sessions[sessionIndex];
 }
 
 function saveSession(user) {
@@ -334,6 +357,7 @@ function saveSession(user) {
   const role = normalizeRole(user.role || user.access || "Read Only");
   const userPermissions = sanitizePermissions(user.permissions);
   const hasExplicitPermissions = Boolean(user.permissionsExplicit) || userPermissions.length > 0;
+
   const session = {
     sid,
     userId: user.userId || user.id || user.email,
@@ -348,25 +372,68 @@ function saveSession(user) {
     lastActivityAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + settings.sessionAbsoluteHours * 60 * 60 * 1000).toISOString(),
   };
-  db.sessions = db.sessions.filter((item) => item.email !== session.email || new Date(item.expiresAt) > new Date());
+
+  // Remove expired/duplicate sessions for this user
+  db.sessions = db.sessions.filter(
+    (s) => s.email !== session.email || new Date(s.expiresAt) > now
+  );
   db.sessions.push(session);
-  const memberIndex = db.members.findIndex((member) => member.email === session.email || member.id === session.userId);
-  const memberRecord = {
-    id: session.userId,
-    name: session.name,
-    email: session.email,
-    phone: user.phone || user.phoneNumber || "",
-    branch: user.branch || "",
-    department: user.department || "",
-    inviteStatus: user.inviteStatus || "Active",
-    role: session.role,
-    permissions: session.permissions,
-    mfaEnabled: session.mfaEnabled,
-    mfaRequired: session.mfaRequired,
-    updated_at: new Date().toISOString(),
-  };
-  if (memberIndex >= 0) db.members[memberIndex] = { ...db.members[memberIndex], ...memberRecord };
-  else db.members.push({ ...memberRecord, created_at: new Date().toISOString() });
+
+  // Update ONLY non-security profile fields on the member record.
+  // NEVER touch: password_hash, passwordAlgorithm, mustChangePassword,
+  //              failedLoginAttempts, lockedUntil — those are managed
+  //              by the auth/password endpoints exclusively.
+  const memberIndex = db.members.findIndex(
+    (m) => normalizeEmail(m.email) === normalizeEmail(session.email) || m.id === session.userId
+  );
+  if (memberIndex >= 0) {
+    const existing = db.members[memberIndex];
+    db.members[memberIndex] = {
+      ...existing,
+      // Safe profile fields only
+      name: session.name || existing.name,
+      role: session.role,
+      access: session.role,
+      permissions: session.permissions,
+      permissionsExplicit: hasExplicitPermissions,
+      mfaEnabled: Boolean(user.mfaEnabled),
+      mfaRequired: Boolean(user.mfaRequired),
+      inviteStatus: user.inviteStatus || existing.inviteStatus || "Active",
+      updated_at: now.toISOString(),
+      // Explicitly preserve all security fields from the stored record
+      password_hash: existing.password_hash,
+      passwordAlgorithm: existing.passwordAlgorithm,
+      mustChangePassword: existing.mustChangePassword,
+      failedLoginAttempts: existing.failedLoginAttempts,
+      lockedUntil: existing.lockedUntil,
+      passwordChangedAt: existing.passwordChangedAt,
+    };
+  } else {
+    // New member record (SSO path or first-time). No password_hash here.
+    db.members.push({
+      id: session.userId,
+      name: session.name,
+      email: session.email,
+      phone: user.phone || user.phoneNumber || "",
+      branch: user.branch || "",
+      department: user.department || "",
+      inviteStatus: user.inviteStatus || "Active",
+      role: session.role,
+      access: session.role,
+      permissions: session.permissions,
+      permissionsExplicit: hasExplicitPermissions,
+      mfaEnabled: Boolean(user.mfaEnabled),
+      mfaRequired: Boolean(user.mfaRequired),
+      password_hash: "",
+      passwordAlgorithm: "",
+      mustChangePassword: false,
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    });
+  }
+
   writeDb(db);
   return session;
 }
@@ -385,6 +452,8 @@ function hasPermission(session, permissionKey) {
   return assigned.includes(permissionKey);
 }
 
+// ── Static file serving ───────────────────────────────────────────────────────
+
 function serveIndex(res) {
   const filePath = path.join(root, "index.html");
   res.writeHead(200, { "Content-Type": mimeTypes[".html"], "Cache-Control": "no-store" });
@@ -395,40 +464,24 @@ function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let cleanPath = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
   const hubAssetMatch = cleanPath.match(/^\/hubs\/[^/]+\/(.+)$/);
-  if (hubAssetMatch) {
-    cleanPath = `/${hubAssetMatch[1]}`;
-  }
+  if (hubAssetMatch) cleanPath = `/${hubAssetMatch[1]}`;
   const filePath = path.normalize(path.join(root, cleanPath));
-  if (!filePath.startsWith(root)) {
-    res.writeHead(403);
-    res.end("Forbidden");
-    return;
-  }
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-    res.writeHead(404);
-    res.end("Not found");
-    return;
-  }
+  if (!filePath.startsWith(root)) { res.writeHead(403); res.end("Forbidden"); return; }
+  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) { res.writeHead(404); res.end("Not found"); return; }
   const ext = path.extname(filePath).toLowerCase();
-  res.writeHead(200, {
-    "Content-Type": mimeTypes[ext] || "application/octet-stream",
-    "Cache-Control": "no-store",
-  });
+  res.writeHead(200, { "Content-Type": mimeTypes[ext] || "application/octet-stream", "Cache-Control": "no-store" });
   res.end(fs.readFileSync(filePath));
 }
 
-// ── First-time setup page ────────────────────────────────────────────────────
+// ── First-time setup page ─────────────────────────────────────────────────────
 // Serves a browser form to create the first Super Admin.
-// Automatically redirects to / once any user with a password exists.
+// Permanently redirects to / once any user with a password_hash exists.
 
 function serveSetup(res) {
   const db = readDb();
   const hasUsers = db.members && db.members.some((m) => m.password_hash);
-  if (hasUsers) {
-    res.writeHead(302, { Location: "/" });
-    res.end();
-    return;
-  }
+  if (hasUsers) { res.writeHead(302, { Location: "/" }); res.end(); return; }
+
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -494,12 +547,9 @@ document.getElementById('form').addEventListener('submit', async function(e) {
   const password = document.getElementById('password').value;
   const confirm  = document.getElementById('confirm').value;
   if (password !== confirm) {
-    msg.className = 'msg error';
-    msg.textContent = 'Passwords do not match.';
-    return;
+    msg.className = 'msg error'; msg.textContent = 'Passwords do not match.'; return;
   }
-  btn.disabled = true;
-  btn.textContent = 'Creating account…';
+  btn.disabled = true; btn.textContent = 'Creating account…';
   try {
     const res = await fetch('/api/setup/create-admin', {
       method: 'POST',
@@ -510,19 +560,15 @@ document.getElementById('form').addEventListener('submit', async function(e) {
     if (!res.ok) {
       msg.className = 'msg error';
       msg.textContent = data.error || 'Setup failed.';
-      btn.disabled = false;
-      btn.textContent = 'Create Super Admin account';
-      return;
+      btn.disabled = false; btn.textContent = 'Create Super Admin account'; return;
     }
     msg.className = 'msg success';
     msg.textContent = 'Super Admin created! Redirecting to login…';
     document.getElementById('form').style.display = 'none';
     setTimeout(() => { window.location.href = '/'; }, 2000);
   } catch (err) {
-    msg.className = 'msg error';
-    msg.textContent = 'Network error – please try again.';
-    btn.disabled = false;
-    btn.textContent = 'Create Super Admin account';
+    msg.className = 'msg error'; msg.textContent = 'Network error – please try again.';
+    btn.disabled = false; btn.textContent = 'Create Super Admin account';
   }
 });
 </script>
@@ -532,21 +578,25 @@ document.getElementById('form').addEventListener('submit', async function(e) {
   res.end(html);
 }
 
-// ── API handlers ─────────────────────────────────────────────────────────────
+// ── API handlers ──────────────────────────────────────────────────────────────
 
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
+  // ── Login ─────────────────────────────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
     const body = await readBody(req);
     const email = normalizeEmail(body.email);
     const password = String(body.password || "");
     if (!email || !password) return json(res, 400, { error: "Missing email or password" });
+
     const db = readDb();
     const settings = securitySettings(db);
-    let member = db.members.find((item) => normalizeEmail(item.email) === email);
+    let member = db.members.find((m) => normalizeEmail(m.email) === email);
     const now = new Date();
-    const hasPasswordUsers = db.members.some((item) => item.password_hash);
+    const hasPasswordUsers = db.members.some((m) => m.password_hash);
+
+    // Dev-only bootstrap: auto-create Super Admin on first login when no users exist
     if (!member && !hasPasswordUsers && process.env.NODE_ENV !== "production") {
       try {
         member = {
@@ -554,15 +604,19 @@ async function handleApi(req, res) {
           name: body.name || "System Admin",
           email,
           role: "Super Admin",
+          access: "Super Admin",
           permissions: permissionKeys,
+          permissionsExplicit: true,
           inviteStatus: "Active",
           password_hash: hashPassword(password),
           passwordAlgorithm: "bcrypt",
           mustChangePassword: false,
           failedLoginAttempts: 0,
+          lockedUntil: null,
+          mfaEnabled: false,
+          mfaRequired: false,
           created_at: now.toISOString(),
           updated_at: now.toISOString(),
-          mfaEnabled: false,
         };
         db.members.push(member);
         writeAudit(db, "Created bootstrap admin", member, "Authentication", email, "Development bootstrap only");
@@ -571,31 +625,52 @@ async function handleApi(req, res) {
         return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
       }
     }
-    if (!member || member.inviteStatus === "Disabled") return json(res, 401, { error: "The email address or password is incorrect." });
+
+    if (!member) {
+      console.log(`[login] FAIL – no member found for email: ${email}`);
+      return json(res, 401, { error: "The email address or password is incorrect." });
+    }
+    if (member.inviteStatus === "Disabled") {
+      console.log(`[login] FAIL – account disabled: ${email}`);
+      return json(res, 401, { error: "The email address or password is incorrect." });
+    }
     if (member.lockedUntil && new Date(member.lockedUntil) > now) {
+      console.log(`[login] FAIL – account locked until ${member.lockedUntil}: ${email}`);
       return json(res, 423, { error: `Account locked until ${member.lockedUntil}`, code: "ACCOUNT_LOCKED", lockedUntil: member.lockedUntil });
     }
     if (!member.password_hash) {
+      console.log(`[login] FAIL – no password_hash on member: ${email}`);
       return json(res, 403, { error: "Password reset required before this account can sign in.", code: "PASSWORD_RESET_REQUIRED" });
     }
-    if (!verifyPassword(password, member.password_hash)) {
+
+    const passwordOk = verifyPassword(password, member.password_hash);
+    if (!passwordOk) {
       member.failedLoginAttempts = Number(member.failedLoginAttempts || 0) + 1;
       member.lastFailedLoginAt = now.toISOString();
+      const reason = `bcrypt mismatch – attempt ${member.failedLoginAttempts}/${settings.maxFailedLogins}`;
+      console.log(`[login] FAIL – ${reason}: ${email}`);
       if (member.failedLoginAttempts >= settings.maxFailedLogins) {
         member.lockedUntil = new Date(now.getTime() + settings.lockoutMinutes * 60 * 1000).toISOString();
         writeAudit(db, "Account locked", member, "Authentication", email, `${member.failedLoginAttempts} failed login attempts`);
       } else {
-        writeAudit(db, "Failed login", member, "Authentication", email, `${member.failedLoginAttempts} failed login attempts`);
+        writeAudit(db, "Failed login", member, "Authentication", email, reason);
       }
       writeDb(db);
-      return json(res, 401, { error: "The email address or password is incorrect.", remainingAttempts: Math.max(0, settings.maxFailedLogins - member.failedLoginAttempts) });
+      return json(res, 401, {
+        error: "The email address or password is incorrect.",
+        remainingAttempts: Math.max(0, settings.maxFailedLogins - member.failedLoginAttempts),
+      });
     }
+
     member.failedLoginAttempts = 0;
     member.lockedUntil = null;
     member.lastLoginAt = now.toISOString();
     member.updated_at = now.toISOString();
-    writeAudit(db, "Signed in", member, "Authentication", email, member.mustChangePassword ? "Password change required" : "Successful login");
+    writeAudit(db, "Signed in", member, "Authentication", email,
+      member.mustChangePassword ? "Password change required" : "Successful login");
     writeDb(db);
+
+    console.log(`[login] OK: ${email} role=${member.role}`);
     const session = saveSession(publicUser(member));
     setCookie(res, "interactive_security_session", session.sid);
     return json(res, 200, {
@@ -613,41 +688,90 @@ async function handleApi(req, res) {
     });
   }
 
+  // ── Logout ────────────────────────────────────────────────────────────────
+  if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+    const sid = parseCookies(req).interactive_security_session;
+    if (sid) {
+      const db = readDb();
+      const session = db.sessions.find((s) => s.sid === sid);
+      if (session) {
+        db.sessions = db.sessions.filter((s) => s.sid !== sid);
+        writeAudit(db, "Signed out", session, "Authentication", session.email, "User initiated logout");
+        writeDb(db);
+        console.log(`[logout] OK: ${session.email}`);
+      }
+    }
+    clearCookie(res, "interactive_security_session");
+    return json(res, 200, { ok: true });
+  }
+
+  // ── Change password ───────────────────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/auth/change-password") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
+
     const body = await readBody(req);
     const currentPassword = String(body.currentPassword || "");
     const newPassword = String(body.newPassword || "");
+
+    if (!newPassword) return json(res, 400, { error: "New password is required." });
+
+    // Always do a fresh DB read for security operations — never rely on in-memory state
     const db = readDb();
-    const member = db.members.find((item) => normalizeEmail(item.email) === normalizeEmail(session.email));
-    if (!member) return json(res, 404, { error: "Member not found" });
-    if (member.password_hash && !verifyPassword(currentPassword, member.password_hash)) {
-      writeAudit(db, "Failed password change", member, "Authentication", member.email, "Current password incorrect");
-      writeDb(db);
-      return json(res, 401, { error: "Current password is incorrect." });
+
+    // Look up member by userId first (most reliable), then fall back to email
+    const member = db.members.find(
+      (m) => m.id === session.userId || normalizeEmail(m.email) === normalizeEmail(session.email)
+    );
+    if (!member) {
+      console.log(`[change-password] FAIL – member not found for session userId=${session.userId} email=${session.email}`);
+      return json(res, 404, { error: "Member not found." });
     }
+
+    // If a password_hash already exists, the current password must be verified
+    if (member.password_hash) {
+      if (!currentPassword) {
+        return json(res, 400, { error: "Current password is required." });
+      }
+      if (!verifyPassword(currentPassword, member.password_hash)) {
+        console.log(`[change-password] FAIL – current password incorrect for: ${member.email}`);
+        writeAudit(db, "Failed password change", member, "Authentication", member.email, "Current password incorrect");
+        writeDb(db);
+        return json(res, 401, { error: "Current password is incorrect." });
+      }
+    }
+
+    // Hash and verify the new password
+    let newHash;
     try {
-      member.password_hash = hashPassword(newPassword);
+      newHash = hashPassword(newPassword); // also does paranoia self-verify inside hashPassword
     } catch (error) {
+      console.log(`[change-password] FAIL – weak password for: ${member.email} – ${error.message}`);
       return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
     }
+
+    // Write ONLY the password fields – do not touch any other member data
+    member.password_hash = newHash;
     member.passwordAlgorithm = "bcrypt";
     member.mustChangePassword = false;
     member.passwordChangedAt = new Date().toISOString();
     member.failedLoginAttempts = 0;
     member.lockedUntil = null;
+    member.updated_at = new Date().toISOString();
+
     writeAudit(db, "Changed password", member, "Authentication", member.email, "Password changed successfully");
     writeDb(db);
+    console.log(`[change-password] OK: ${member.email}`);
     return json(res, 200, { ok: true });
   }
 
+  // ── Request password reset ────────────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/auth/request-password-reset") {
     const body = await readBody(req);
     const email = normalizeEmail(body.email);
     const db = readDb();
     const settings = securitySettings(db);
-    const member = db.members.find((item) => normalizeEmail(item.email) === email);
+    const member = db.members.find((m) => normalizeEmail(m.email) === email);
     let resetToken = "";
     if (member && member.inviteStatus !== "Disabled") {
       resetToken = crypto.randomBytes(32).toString("base64url");
@@ -674,130 +798,145 @@ async function handleApi(req, res) {
     return json(res, 200, {
       ok: true,
       message: "If the account exists, a password reset link will be sent.",
+      // Only expose the raw token in development to allow testing
       resetToken: process.env.NODE_ENV === "production" ? undefined : resetToken,
     });
   }
 
+  // ── Consume password reset token ──────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/auth/reset-password") {
     const body = await readBody(req);
     const resetToken = String(body.token || "");
     const newPassword = String(body.newPassword || "");
     const db = readDb();
-    const record = db.password_reset_tokens.find((item) => item.token_hash === tokenHash(resetToken));
+    const record = db.password_reset_tokens.find((r) => r.token_hash === tokenHash(resetToken));
     if (!record || record.used_at || new Date(record.expires_at) <= new Date()) {
       return json(res, 401, { error: "Password reset link is invalid or expired." });
     }
-    const member = db.members.find((item) => item.id === record.user_id || normalizeEmail(item.email) === normalizeEmail(record.email));
-    if (!member) return json(res, 404, { error: "Member not found" });
+    const member = db.members.find(
+      (m) => m.id === record.user_id || normalizeEmail(m.email) === normalizeEmail(record.email)
+    );
+    if (!member) return json(res, 404, { error: "Member not found." });
+
+    let newHash;
     try {
-      member.password_hash = hashPassword(newPassword);
+      newHash = hashPassword(newPassword);
     } catch (error) {
       return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
     }
+
     record.used_at = new Date().toISOString();
+    member.password_hash = newHash;
     member.passwordAlgorithm = "bcrypt";
     member.mustChangePassword = false;
     member.failedLoginAttempts = 0;
     member.lockedUntil = null;
     member.passwordChangedAt = new Date().toISOString();
     member.inviteStatus = "Active";
-    writeAudit(db, "Password reset completed", member, "Authentication", member.email, "Password reset token consumed");
+    member.updated_at = new Date().toISOString();
+
+    writeAudit(db, "Password reset completed", member, "Authentication", member.email, "Reset token consumed");
     writeDb(db);
+    console.log(`[reset-password] OK: ${member.email}`);
     return json(res, 200, { ok: true });
   }
 
+  // ── Session check ─────────────────────────────────────────────────────────
   if (req.method === "GET" && url.pathname === "/api/auth/session") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
     return json(res, 200, { user: session });
   }
 
+  // ── Member search ─────────────────────────────────────────────────────────
   if (req.method === "GET" && url.pathname === "/api/members/search") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
-    if (!["sales_quotation_requests", "build_quotation", "approval", "setup"].some((permission) => hasPermission(session, permission))) {
+    if (!["sales_quotation_requests", "build_quotation", "approval", "setup"].some((p) => hasPermission(session, p))) {
       return json(res, 403, { error: "Access denied" });
     }
     const query = (url.searchParams.get("query") || "").trim().toLowerCase();
     const db = readDb();
     const activeMembers = db.members
-      .filter((member) => (member.inviteStatus || "Active") !== "Disabled")
-      .filter((member) => !query || [member.name, member.email, member.phone, member.branch, member.department].filter(Boolean).join(" ").toLowerCase().includes(query))
+      .filter((m) => (m.inviteStatus || "Active") !== "Disabled")
+      .filter((m) => !query || [m.name, m.email, m.phone, m.branch, m.department].filter(Boolean).join(" ").toLowerCase().includes(query))
       .slice(0, 20)
-      .map((member) => ({
-        id: member.id,
-        name: member.name,
-        email: member.email,
-        phone: member.phone || "",
-        branch: member.branch || "",
-        department: member.department || "",
-      }));
+      .map((m) => ({ id: m.id, name: m.name, email: m.email, phone: m.phone || "", branch: m.branch || "", department: m.department || "" }));
     return json(res, 200, { members: activeMembers });
   }
 
+  // ── Save member ───────────────────────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/members") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
     if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
+
     const body = await readBody(req);
     const email = normalizeEmail(body.email);
     const tempPassword = String(body.temporaryPassword || "");
     if (!email || !body.name) return json(res, 400, { error: "Member name and email are required." });
+
     const db = readDb();
-    const existing = db.members.find((item) => normalizeEmail(item.email) === email && item.id !== body.id);
+    const existing = db.members.find((m) => normalizeEmail(m.email) === email && m.id !== body.id);
     if (existing) return json(res, 409, { error: "A member with this email address already exists." });
+
     let password_hash = "";
     if (tempPassword) {
-      try {
-        password_hash = hashPassword(tempPassword);
-      } catch (error) {
-        return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
-      }
+      try { password_hash = hashPassword(tempPassword); }
+      catch (error) { return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] }); }
     }
+
     const now = new Date().toISOString();
     const id = body.id || email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    const index = db.members.findIndex((item) => item.id === id || normalizeEmail(item.email) === email);
+    const index = db.members.findIndex((m) => m.id === id || normalizeEmail(m.email) === email);
     const previous = index >= 0 ? db.members[index] : {};
     const role = normalizeRole(body.role || body.access || previous.role || "Sales Representative");
     const permissions = sanitizePermissions(Array.isArray(body.permissions) ? body.permissions : (previous.permissions || defaultPermissionsForRole(role)));
+
     const member = {
       ...previous,
       id,
       name: String(body.name || previous.name || email),
       email,
-      phone: body.phone || previous.phone || "",
-      branch: body.branch || previous.branch || "",
-      department: body.department || previous.department || "",
+      phone: body.phone !== undefined ? body.phone : (previous.phone || ""),
+      branch: body.branch !== undefined ? body.branch : (previous.branch || ""),
+      department: body.department !== undefined ? body.department : (previous.department || ""),
       role,
       access: role,
       permissions,
       permissionsExplicit: true,
       inviteStatus: body.inviteStatus || previous.inviteStatus || "Invite Sent",
       mustChangePassword: password_hash ? true : Boolean(previous.mustChangePassword),
+      // Only update password_hash if a new one was provided; preserve existing otherwise
       password_hash: password_hash || previous.password_hash || "",
-      passwordAlgorithm: password_hash ? "bcrypt" : previous.passwordAlgorithm || "",
-      failedLoginAttempts: 0,
-      lockedUntil: null,
+      passwordAlgorithm: password_hash ? "bcrypt" : (previous.passwordAlgorithm || ""),
+      failedLoginAttempts: previous.failedLoginAttempts || 0,
+      lockedUntil: previous.lockedUntil || null,
       mfaEnabled: Boolean(previous.mfaEnabled),
       mfaRequired: Boolean(previous.mfaRequired),
       created_at: previous.created_at || now,
       updated_at: now,
     };
+
     if (index >= 0) db.members[index] = member;
     else db.members.push(member);
-    const previousSummary = previous.email ? `${normalizeRole(previous.role || previous.access)}: ${(previous.permissions || []).join(", ") || "role defaults"}` : "new member";
+
+    const previousSummary = previous.email
+      ? `${normalizeRole(previous.role || previous.access)}: ${(previous.permissions || []).join(", ") || "role defaults"}`
+      : "new member";
     const newSummary = `${role}: ${permissions.join(", ") || "no modules selected"}`;
     writeAudit(db, index >= 0 ? "Updated member access" : "Member invite sent", session, "Setup - Member access", email, `${previousSummary} -> ${newSummary}`);
     writeDb(db);
     return json(res, 200, { member: publicUser(member) });
   }
 
+  // ── SSO create token ──────────────────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/sso/create-token") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
     const body = await readBody(req);
     const hubSlug = body.hubSlug;
-    console.log("SSO create-token requested", { userId: session.userId, hubSlug });
+    console.log("[sso] create-token requested", { userId: session.userId, hubSlug });
     if (!canAccessHub(session, hubSlug)) return json(res, 403, { error: "Access denied" });
     const db = readDb();
     const token = crypto.randomBytes(48).toString("base64url");
@@ -821,26 +960,27 @@ async function handleApi(req, res) {
     db.sso_tokens.push(record);
     writeDb(db);
     const redirectUrl = `${url.origin}/hubs/${hubSlug}/sso-login?token=${encodeURIComponent(token)}`;
-    console.log("SSO token created", { userId: session.userId, hubSlug, redirectUrl });
+    console.log("[sso] token created", { userId: session.userId, hubSlug });
     return json(res, 200, { redirectUrl });
   }
 
+  // ── SSO consume token ─────────────────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/sso/consume-token") {
     const body = await readBody(req);
     const token = body.token;
     const hubSlug = body.hubSlug;
     const db = readDb();
-    const record = db.sso_tokens.find((item) => item.token === token);
-    console.log("SSO token received by hub", { hubSlug });
-    if (!record) return json(res, 401, { error: "token not found" });
-    if (record.hub_slug !== hubSlug) return json(res, 401, { error: "hub mismatch" });
-    if (record.used_at) return json(res, 401, { error: "token used already" });
-    if (new Date(record.expires_at) <= new Date()) return json(res, 401, { error: "token expired" });
+    const record = db.sso_tokens.find((r) => r.token === token);
+    console.log("[sso] consume-token", { hubSlug });
+    if (!record)                                         return json(res, 401, { error: "Token not found." });
+    if (record.hub_slug !== hubSlug)                     return json(res, 401, { error: "Hub mismatch." });
+    if (record.used_at)                                  return json(res, 401, { error: "Token already used." });
+    if (new Date(record.expires_at) <= new Date())       return json(res, 401, { error: "Token expired." });
     record.used_at = new Date().toISOString();
     writeDb(db);
     const session = saveSession(record.user);
     setCookie(res, "interactive_security_session", session.sid);
-    console.log("SSO validation passed and hub session created", { userId: session.userId, hubSlug });
+    console.log("[sso] session created", { userId: session.userId, hubSlug });
     return json(res, 200, {
       user: {
         userId: session.userId,
@@ -853,6 +993,7 @@ async function handleApi(req, res) {
     });
   }
 
+  // ── Permissions (get) ─────────────────────────────────────────────────────
   if (req.method === "GET" && url.pathname === "/api/permissions") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
@@ -864,6 +1005,7 @@ async function handleApi(req, res) {
     });
   }
 
+  // ── Permissions (set) ─────────────────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/permissions") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
@@ -872,30 +1014,26 @@ async function handleApi(req, res) {
     const db = readDb();
     const now = new Date().toISOString();
     const previous = db.user_permissions
-      .filter((item) => item.user_id === body.userId && item.can_access)
-      .map((item) => item.permission_key);
+      .filter((p) => p.user_id === body.userId && p.can_access)
+      .map((p) => p.permission_key);
     const requestedPermissions = sanitizePermissions(body.permissions || []);
-    db.user_permissions = db.user_permissions.filter((item) => item.user_id !== body.userId);
+    db.user_permissions = db.user_permissions.filter((p) => p.user_id !== body.userId);
     requestedPermissions.forEach((permissionKey) => {
-      db.user_permissions.push({
-        id: crypto.randomUUID(),
-        user_id: body.userId,
-        permission_key: permissionKey,
-        can_access: true,
-        created_at: now,
-        updated_at: now,
-      });
+      db.user_permissions.push({ id: crypto.randomUUID(), user_id: body.userId, permission_key: permissionKey, can_access: true, created_at: now, updated_at: now });
     });
-    const member = db.members.find((item) => item.id === body.userId || normalizeEmail(item.email) === normalizeEmail(body.userEmail || ""));
-    if (member) member.permissions = requestedPermissions;
-    if (member) member.permissionsExplicit = true;
-    writeAudit(db, "Changed member permissions", session, "Setup - Member access", body.userId || body.userEmail || "", `Previous: ${previous.join(", ") || "none"} | New: ${requestedPermissions.join(", ") || "none"}`);
+    const member = db.members.find(
+      (m) => m.id === body.userId || normalizeEmail(m.email) === normalizeEmail(body.userEmail || "")
+    );
+    if (member) { member.permissions = requestedPermissions; member.permissionsExplicit = true; }
+    writeAudit(db, "Changed member permissions", session, "Setup - Member access",
+      body.userId || body.userEmail || "",
+      `Previous: ${previous.join(", ") || "none"} | New: ${requestedPermissions.join(", ") || "none"}`);
     writeDb(db);
     return json(res, 200, { ok: true });
   }
 
   // ── First-time setup routes ───────────────────────────────────────────────
-  // These routes are permanently disabled once any user with a password exists.
+  // Permanently disabled once any member with a password_hash exists.
 
   if (req.method === "GET" && url.pathname === "/api/setup/status") {
     const db = readDb();
@@ -906,51 +1044,41 @@ async function handleApi(req, res) {
   if (req.method === "POST" && url.pathname === "/api/setup/create-admin") {
     const db = readDb();
     const hasUsers = db.members && db.members.some((m) => m.password_hash);
-    if (hasUsers) {
-      return json(res, 403, { error: "Setup has already been completed." });
-    }
+    if (hasUsers) return json(res, 403, { error: "Setup has already been completed." });
+
     const body = await readBody(req);
     const email = normalizeEmail(body.email);
     const name  = String(body.name || "").trim();
     const password = String(body.password || "");
-    if (!email || !name || !password) {
-      return json(res, 400, { error: "Name, email and password are required." });
-    }
+    if (!email || !name || !password) return json(res, 400, { error: "Name, email and password are required." });
+
     let password_hash;
-    try {
-      password_hash = hashPassword(password);
-    } catch (error) {
-      return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
-    }
+    try { password_hash = hashPassword(password); }
+    catch (error) { return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] }); }
+
     const now = new Date().toISOString();
     const id  = email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     const member = {
-      id,
-      name,
-      email,
-      role: "Super Admin",
-      access: "Super Admin",
-      permissions: permissionKeys,
-      permissionsExplicit: true,
+      id, name, email,
+      role: "Super Admin", access: "Super Admin",
+      permissions: permissionKeys, permissionsExplicit: true,
       inviteStatus: "Active",
-      password_hash,
-      passwordAlgorithm: "bcrypt",
-      mustChangePassword: false,
-      failedLoginAttempts: 0,
-      lockedUntil: null,
-      mfaEnabled: false,
-      mfaRequired: false,
-      created_at: now,
-      updated_at: now,
+      password_hash, passwordAlgorithm: "bcrypt",
+      mustChangePassword: false, failedLoginAttempts: 0, lockedUntil: null,
+      mfaEnabled: false, mfaRequired: false,
+      created_at: now, updated_at: now,
     };
     db.members.push(member);
     writeAudit(db, "Created first Super Admin via setup route", member, "Authentication", email, "One-time production setup");
     writeDb(db);
+    console.log(`[setup] Super Admin created: ${email}`);
     return json(res, 200, { ok: true, email });
   }
 
   return json(res, 404, { error: "API route not found" });
 }
+
+// ── HTTP server ───────────────────────────────────────────────────────────────
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -960,12 +1088,13 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/setup") return serveSetup(res);
     return serveStatic(req, res);
   } catch (error) {
-    console.error(error);
+    console.error("[server error]", error);
     json(res, 500, { error: "Server error" });
   }
 });
 
 server.listen(port, () => {
   ensureDb();
-  console.log(`Interactive Security Hub running at http://localhost:${port}`);
+  console.log(`\n✓ Interactive Security Hub running at http://localhost:${port}`);
+  console.log(`  NODE_ENV: ${process.env.NODE_ENV || "development"}`);
 });
