@@ -44,6 +44,7 @@
         </div>
         <nav>
           <button class="nav-item active" type="button" data-section="portal"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"></path><path d="M5 10.5V20h14v-9.5"></path><path d="M9 20v-6h6v6"></path></svg><span class="nav-label">Portal Dashboard</span></button>
+          <button class="nav-item" type="button" data-section="projections"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16"></path><path d="M4 19V5"></path><path d="m7 15 4-4 3 3 5-7"></path><path d="M17 7h2v2"></path></svg><span class="nav-label">Projections</span></button>
           <button class="nav-item" type="button" data-section="dashboard"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"></path><path d="M4 19h16"></path><path d="M8 16v-5"></path><path d="M12 16V8"></path><path d="M16 16v-3"></path></svg><span class="nav-label">Dashboard</span></button>
           <button class="nav-item" type="button" data-section="builder"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"></path><path d="M14 3v5h5"></path><path d="M9.5 13h5"></path><path d="M9.5 17h5"></path></svg><span class="nav-label">Building Technical Quotation</span></button>
           <button class="nav-item" type="button" data-section="guardingBuilder"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 3 8.5 7 10 4-1.5 7-5.5 7-10V6z"></path><path d="M9 12l2 2 4-5"></path></svg><span class="nav-label">Building Guarding Quotation</span></button>
@@ -72,6 +73,125 @@
             Workspace
           </div>
         </header>
+
+        <section class="hidden-state" id="projections-section" hidden>
+          <h2>Projections</h2>
+          <p>Management view for technical quotation sales, sales rep target progress, and outstanding client approval.</p>
+
+          <div class="dashboard-controls projections-controls">
+            <div class="dashboard-filter-grid">
+              <label>
+                Month
+                <input id="projectionsMonth" type="month" />
+              </label>
+              <label>
+                Date from
+                <input id="projectionsFromDate" type="date" />
+              </label>
+              <label>
+                Date to
+                <input id="projectionsToDate" type="date" />
+              </label>
+              <label>
+                Sales rep
+                <input id="projectionsSalesRepFilter" type="search" placeholder="All sales reps" />
+              </label>
+              <label>
+                Branch
+                <input id="projectionsBranchFilter" type="search" placeholder="All branches" />
+              </label>
+              <label>
+                Quotation type
+                <select id="projectionsQuotationType">
+                  <option value="">All quotation types</option>
+                  <option value="Technical Quotation">Technical quotations</option>
+                  <option value="Guarding Quotation">Guarding quotations</option>
+                  <option value="Monthly Armed Response Quotation">Monthly armed response</option>
+                </select>
+              </label>
+            </div>
+            <div class="dashboard-actions">
+              <button class="secondary-btn" id="projectionsPreviousMonth" type="button">Previous month</button>
+              <button class="secondary-btn" id="projectionsNextMonth" type="button">Next month</button>
+              <button class="secondary-btn" id="projectionsExportExcel" type="button">Export projections to Excel</button>
+              <button class="secondary-btn" id="projectionsExportPdf" type="button">Export projections to PDF</button>
+            </div>
+          </div>
+
+          <div class="dashboard-summary-grid" id="projectionsSummary"></div>
+
+          <section class="dashboard-panel projections-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Quotation Activity Summary</p>
+                <h2>Full quotation performance</h2>
+              </div>
+              <span class="status-badge status-info">Filtered reporting</span>
+            </div>
+            <div class="dashboard-summary-grid projection-activity-summary" id="projectionsActivitySummary"></div>
+            <div class="dashboard-chart-grid projections-chart-grid">
+              <section class="projection-chart-tile">
+                <div class="panel-heading"><div><p class="eyebrow">Pipeline</p><h2>Submitted vs approved vs rejected</h2></div></div>
+                <div id="projectionsSubmittedApprovedRejectedBar" class="dashboard-bar-chart"></div>
+              </section>
+              <section class="projection-chart-tile">
+                <div class="panel-heading"><div><p class="eyebrow">Status split</p><h2>Quotation status split</h2></div></div>
+                <div id="projectionsStatusPieChart" class="projection-pie-wrap"></div>
+              </section>
+              <section class="projection-chart-tile">
+                <div class="panel-heading"><div><p class="eyebrow">Submissions</p><h2>Quotations submitted per month</h2></div></div>
+                <div id="projectionsSubmittedLineChart" class="projection-line-chart"></div>
+              </section>
+              <section class="projection-chart-tile">
+                <div class="panel-heading"><div><p class="eyebrow">Internal approvals</p><h2>Approved per sales rep</h2></div></div>
+                <div id="projectionsApprovedRepBar" class="dashboard-bar-chart"></div>
+              </section>
+              <section class="projection-chart-tile">
+                <div class="panel-heading"><div><p class="eyebrow">Client acceptance</p><h2>Accepted by client per sales rep</h2></div></div>
+                <div id="projectionsAcceptedRepBar" class="dashboard-bar-chart"></div>
+              </section>
+              <section class="projection-chart-tile">
+                <div class="panel-heading"><div><p class="eyebrow">Quotation value</p><h2>Approved value vs accepted value</h2></div></div>
+                <div id="projectionsValueApprovedAcceptedBar" class="dashboard-bar-chart"></div>
+              </section>
+            </div>
+          </section>
+
+          <section class="dashboard-panel projections-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Sales Rep Target Performance</p>
+                <h2>Monthly technical work sold target</h2>
+              </div>
+              <span class="status-badge status-info">R100,000 excl. VAT per rep</span>
+            </div>
+            <div id="projectionsRepProgress" class="projection-progress-grid"></div>
+          </section>
+
+          <div class="dashboard-chart-grid projections-chart-grid">
+            <section class="dashboard-panel">
+              <div class="panel-heading"><div><p class="eyebrow">Technical sales</p><h2>Sold per sales rep</h2></div></div>
+              <div id="projectionsSalesRepBar" class="dashboard-bar-chart"></div>
+            </section>
+            <section class="dashboard-panel">
+              <div class="panel-heading"><div><p class="eyebrow">Target progress</p><h2>Achieved vs outstanding</h2></div></div>
+              <div id="projectionsPieChart" class="projection-pie-wrap"></div>
+            </section>
+            <section class="dashboard-panel">
+              <div class="panel-heading"><div><p class="eyebrow">Monthly trend</p><h2>Technical sales sold per month</h2></div></div>
+              <div id="projectionsLineChart" class="projection-line-chart"></div>
+            </section>
+            <section class="dashboard-panel">
+              <div class="panel-heading"><div><p class="eyebrow">Conversion</p><h2>Approved vs client accepted quotations</h2></div></div>
+              <div id="projectionsApprovedAcceptedBar" class="dashboard-bar-chart"></div>
+            </section>
+          </div>
+
+          <section class="dashboard-panel">
+            <div class="panel-heading"><div><p class="eyebrow">Target report</p><h2>Sales rep target detail</h2></div></div>
+            <div id="projectionsTargetTable"></div>
+          </section>
+        </section>
 
         <section class="hidden-state" id="dashboard-section" hidden>
           <h2>Dashboard</h2>

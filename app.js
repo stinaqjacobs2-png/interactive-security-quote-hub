@@ -23,6 +23,7 @@ const state = {
     submittedDate: "",
     quotationType: "All",
   },
+  lastSalesRequestBadgeCount: null,
   revisionSourceId: "",
   activeSalesRequestId: "",
   selectedRequestSalesRepId: "",
@@ -63,6 +64,7 @@ const quotationSettingsStorageKey = "interactiveSecurityQuotationSettings";
 const salesRequestsStorageKey = "interactiveSecuritySalesQuotationRequests";
 const projectTimelineStorageKey = "interactiveSecurityProjectTimelines";
 const guardingPriceListStorageKey = "interactiveSecurityGuardingPriceList";
+const financeStoragePrefix = "interactiveSecurityFinanceHub";
 const requestSequencePrefix = "interactiveSecuritySalesRequestSequence";
 const supplierQuoteDbName = "quotePilotSupplierQuotations";
 const supplierQuoteStoreName = "files";
@@ -304,6 +306,30 @@ const dashboardApplyFilters = document.querySelector("#dashboardApplyFilters");
 const dashboardExportCsv = document.querySelector("#dashboardExportCsv");
 const dashboardExportSalesCsv = document.querySelector("#dashboardExportSalesCsv");
 const dashboardExportOutstandingCsv = document.querySelector("#dashboardExportOutstandingCsv");
+const projectionsMonth = document.querySelector("#projectionsMonth");
+const projectionsFromDate = document.querySelector("#projectionsFromDate");
+const projectionsToDate = document.querySelector("#projectionsToDate");
+const projectionsSalesRepFilter = document.querySelector("#projectionsSalesRepFilter");
+const projectionsBranchFilter = document.querySelector("#projectionsBranchFilter");
+const projectionsQuotationType = document.querySelector("#projectionsQuotationType");
+const projectionsPreviousMonth = document.querySelector("#projectionsPreviousMonth");
+const projectionsNextMonth = document.querySelector("#projectionsNextMonth");
+const projectionsExportExcel = document.querySelector("#projectionsExportExcel");
+const projectionsExportPdf = document.querySelector("#projectionsExportPdf");
+const projectionsSummary = document.querySelector("#projectionsSummary");
+const projectionsActivitySummary = document.querySelector("#projectionsActivitySummary");
+const projectionsSubmittedApprovedRejectedBar = document.querySelector("#projectionsSubmittedApprovedRejectedBar");
+const projectionsStatusPieChart = document.querySelector("#projectionsStatusPieChart");
+const projectionsSubmittedLineChart = document.querySelector("#projectionsSubmittedLineChart");
+const projectionsApprovedRepBar = document.querySelector("#projectionsApprovedRepBar");
+const projectionsAcceptedRepBar = document.querySelector("#projectionsAcceptedRepBar");
+const projectionsValueApprovedAcceptedBar = document.querySelector("#projectionsValueApprovedAcceptedBar");
+const projectionsRepProgress = document.querySelector("#projectionsRepProgress");
+const projectionsSalesRepBar = document.querySelector("#projectionsSalesRepBar");
+const projectionsPieChart = document.querySelector("#projectionsPieChart");
+const projectionsLineChart = document.querySelector("#projectionsLineChart");
+const projectionsApprovedAcceptedBar = document.querySelector("#projectionsApprovedAcceptedBar");
+const projectionsTargetTable = document.querySelector("#projectionsTargetTable");
 const dashboardPrintReport = document.querySelector("#dashboardPrintReport");
 const dashboardSummary = document.querySelector("#dashboardSummary");
 const approvedAcceptedChart = document.querySelector("#approvedAcceptedChart");
@@ -409,6 +435,7 @@ const armedResponseFields = {
 };
 
 const permissionDefinitions = [
+  { key: "projections", label: "Projections", section: "projections" },
   { key: "dashboard", label: "Dashboard", section: "dashboard" },
   { key: "build_quotation", label: "Building Technical Quotation", section: "builder" },
   { key: "build_guarding_quotation", label: "Building Guarding Quotation", section: "guardingBuilder" },
@@ -422,6 +449,7 @@ const permissionDefinitions = [
   { key: "supplier_prices", label: "Supplier Prices", section: "settings" },
   { key: "member_access_management", label: "Member Access Management", section: "settings" },
   { key: "quotation_hub", label: "Quotation Hub", hubSlug: "quotation-hub" },
+  { key: "finance_age_analysis", label: "Finance Balances and Age Analysis", hubSlug: "finance-age-analysis" },
   { key: "sales_quotation_requests", label: "Sales Quotation Requests", section: "salesRequests" },
 ];
 
@@ -455,6 +483,11 @@ const sectionHeadings = {
     eyebrow: "Reporting",
     title: "Dashboard",
     status: "Reports",
+  },
+  projections: {
+    eyebrow: "Management projections",
+    title: "Projections",
+    status: "Targets",
   },
   builder: {
     eyebrow: "AI quotation workspace",
@@ -1606,16 +1639,22 @@ function hydrateSharedSessionFromUrl() {
   }
 }
 
-function isQuotationHubSsoRoute() {
-  return window.location.pathname === "/hubs/quotation-hub/sso-login";
+function hubSlugFromSsoRoute() {
+  const match = window.location.pathname.match(/^\/hubs\/([^/]+)\/sso-login$/);
+  return match ? match[1] : "";
+}
+
+function isHubSsoRoute() {
+  return Boolean(hubSlugFromSsoRoute());
 }
 
 async function consumeHubSsoTokenIfPresent() {
-  if (!isQuotationHubSsoRoute()) return false;
+  const hubSlug = hubSlugFromSsoRoute();
+  if (!hubSlug) return false;
   const params = new URLSearchParams(window.location.search);
   const token = params.get("token");
   const targetSection = params.get("section") || "dashboard";
-  console.log("Token received by Quote Hub", { token });
+  console.log("Token received by hub", { hubSlug, token });
   if (!token) {
     showSsoExpiredMessage("token not found");
     return true;
@@ -1625,7 +1664,7 @@ async function consumeHubSsoTokenIfPresent() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ hubSlug: "quotation-hub", token }),
+      body: JSON.stringify({ hubSlug, token }),
     });
     const data = await response.json().catch(() => ({}));
     console.log("SSO token validation result", { ok: response.ok, data });
@@ -1641,11 +1680,15 @@ async function consumeHubSsoTokenIfPresent() {
       permissions: data.user.permissions,
       permissionsExplicit: data.user.permissionsExplicit,
     });
-    console.log("Quote Hub session created", data.user);
-    const section = ["dashboard", "builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "approvals", "library", "projectTimeline", "settings", "audit"].includes(targetSection)
-      ? targetSection
-      : "dashboard";
-    window.location.replace(`/hubs/quotation-hub#${section}`);
+    console.log("Hub session created", { hubSlug, user: data.user });
+    if (hubSlug === "quotation-hub") {
+      const section = ["projections", "dashboard", "builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "approvals", "library", "projectTimeline", "settings", "audit"].includes(targetSection)
+        ? targetSection
+        : "dashboard";
+      window.location.replace(`/hubs/quotation-hub#${section}`);
+    } else {
+      window.location.replace(`/hubs/${hubSlug}`);
+    }
     return true;
   } catch (error) {
     console.warn("SSO token validation failed", error);
@@ -1773,11 +1816,11 @@ const companyHubs = [
   },
   {
     id: "finance-age-analysis",
-    name: "Finance - Age Analysis",
+    name: "Finance Balances and Age Analysis",
     slug: "finance-age-analysis",
     description: "Finance hub for debtor age analysis, outstanding balances, and collections oversight.",
     icon: "finance",
-    status: "placeholder",
+    status: "active",
     features: ["Ageing", "Debtors", "Balances"],
   },
   {
@@ -2112,6 +2155,7 @@ function currentMember() {
 function permissionKeyForSection(section) {
   return {
     portal: "quotation_hub",
+    projections: "projections",
     dashboard: "dashboard",
     builder: "build_quotation",
     guardingBuilder: "build_guarding_quotation",
@@ -2156,7 +2200,7 @@ function canAccess(section) {
 }
 
 function firstAccessibleQuotationSection() {
-  return ["builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "library", "projectTimeline", "approvals", "settings", "audit"]
+  return ["projections", "builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "library", "projectTimeline", "approvals", "settings", "audit"]
     .find((section) => canAccess(section)) || "portal";
 }
 
@@ -2501,6 +2545,454 @@ function renderDashboard() {
   );
 }
 
+const salesRepMonthlyTechnicalTarget = 100000;
+
+function projectionsRange() {
+  const monthRange = monthDateRange(projectionsMonth?.value || monthInputValue());
+  return {
+    from: projectionsFromDate?.value || monthRange.from,
+    to: projectionsToDate?.value || monthRange.to,
+  };
+}
+
+function projectionQuoteDate(quote, preferred = "any") {
+  if (preferred === "accepted") return (quote.clientAcceptedAt || quote.acceptedAt || quote.clientOutcomeDate || quote.updatedAt || quote.quoteDate || "").slice(0, 10);
+  if (preferred === "approved") return (quote.approvedDate || quote.decidedAt || quote.approvedAt || quote.updatedAt || quote.quoteDate || "").slice(0, 10);
+  return (quote.clientAcceptedAt || quote.approvedDate || quote.decidedAt || quote.submittedAt || quote.quoteDate || quote.updatedAt || "").slice(0, 10);
+}
+
+function isTechnicalQuote(quote = {}) {
+  return (quote.quotationType || "Technical Quotation") === "Technical Quotation";
+}
+
+function repRecordForQuote(quote = {}) {
+  const byId = salesReps[quote.salesRep];
+  const repName = byId?.name || salesRepNameForQuote(quote);
+  return salesRepsList().find((rep) => rep.id === quote.salesRep || rep.name === repName) || { id: slugify(repName), name: repName, branch: "", department: "" };
+}
+
+function projectionsBaseQuotes() {
+  const { from, to } = projectionsRange();
+  const selectedType = projectionsQuotationType?.value || "";
+  const repQuery = (projectionsSalesRepFilter?.value || "").trim().toLowerCase();
+  const branchQuery = (projectionsBranchFilter?.value || "").trim().toLowerCase();
+  return loadApprovals().filter((quote) => {
+    const rep = repRecordForQuote(quote);
+    const typeMatch = !selectedType || (quote.quotationType || "Technical Quotation") === selectedType;
+    const repMatch = !repQuery || String(rep.name || "").toLowerCase().includes(repQuery);
+    const branchMatch = !branchQuery || String(rep.branch || rep.department || "").toLowerCase().includes(branchQuery);
+    const date = projectionQuoteDate(quote);
+    return typeMatch && repMatch && branchMatch && date && date >= from && date <= to;
+  });
+}
+
+function projectionSalesReps() {
+  const repQuery = (projectionsSalesRepFilter?.value || "").trim().toLowerCase();
+  const branchQuery = (projectionsBranchFilter?.value || "").trim().toLowerCase();
+  const reps = new Map();
+  salesRepsList().forEach((rep) => {
+    const repMatch = !repQuery || String(rep.name || "").toLowerCase().includes(repQuery);
+    const branchMatch = !branchQuery || String(rep.branch || rep.department || "").toLowerCase().includes(branchQuery);
+    if (repMatch && branchMatch) reps.set(rep.id || slugify(rep.name), rep);
+  });
+  loadApprovals().forEach((quote) => {
+    const rep = repRecordForQuote(quote);
+    const repMatch = !repQuery || String(rep.name || "").toLowerCase().includes(repQuery);
+    const branchMatch = !branchQuery || String(rep.branch || rep.department || "").toLowerCase().includes(branchQuery);
+    if (rep.name && repMatch && branchMatch) reps.set(rep.id || slugify(rep.name), rep);
+  });
+  return Array.from(reps.values()).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+
+function projectionsData() {
+  const { from, to } = projectionsRange();
+  const baseQuotes = projectionsBaseQuotes();
+  const repQuery = (projectionsSalesRepFilter?.value || "").trim().toLowerCase();
+  const branchQuery = (projectionsBranchFilter?.value || "").trim().toLowerCase();
+  const reps = projectionSalesReps();
+  const soldTechnical = loadApprovals().filter((quote) => {
+    const rep = repRecordForQuote(quote);
+    const acceptedDate = projectionQuoteDate(quote, "accepted");
+    const repMatch = !repQuery || String(rep.name || "").toLowerCase().includes(repQuery);
+    const branchMatch = !branchQuery || String(rep.branch || rep.department || "").toLowerCase().includes(branchQuery);
+    return isTechnicalQuote(quote) && isClientAccepted(quote) && acceptedDate && acceptedDate >= from && acceptedDate <= to && repMatch && branchMatch;
+  });
+  const approved = baseQuotes.filter(isInternallyApproved);
+  const accepted = baseQuotes.filter(isClientAccepted);
+  const rejectedByClient = baseQuotes.filter((quote) => normalizedStatus(quote.status) === "client_declined" || quote.clientOutcome === "Rejected by client");
+  const outstanding = baseQuotes.filter(isOutstandingClientApproval);
+  const byRep = reps.map((rep) => {
+    const sold = soldTechnical.filter((quote) => {
+      const quoteRep = repRecordForQuote(quote);
+      return (quoteRep.id && quoteRep.id === rep.id) || quoteRep.name === rep.name;
+    });
+    const soldValue = roundCurrency(sold.reduce((sum, quote) => sum + quoteSubtotal(quote), 0));
+    return {
+      salesRep: rep.name || "Unknown",
+      branch: rep.branch || rep.department || "-",
+      target: salesRepMonthlyTechnicalTarget,
+      soldValue,
+      achievedPercent: roundCurrency((soldValue / salesRepMonthlyTechnicalTarget) * 100),
+      remaining: Math.max(0, roundCurrency(salesRepMonthlyTechnicalTarget - soldValue)),
+    };
+  });
+  const totalTarget = reps.length * salesRepMonthlyTechnicalTarget;
+  const totalSold = roundCurrency(soldTechnical.reduce((sum, quote) => sum + quoteSubtotal(quote), 0));
+  return {
+    from,
+    to,
+    soldTechnical,
+    approved,
+    accepted,
+    rejectedByClient,
+    outstanding,
+    byRep,
+    totalSold,
+    totalTarget,
+    achievedPercent: totalTarget ? roundCurrency((totalSold / totalTarget) * 100) : 0,
+    outstandingTarget: Math.max(0, roundCurrency(totalTarget - totalSold)),
+  };
+}
+
+function repRecordForSalesRequest(request = {}) {
+  const repName = request.sales_rep_name || "Unknown";
+  return salesRepsList().find((rep) => rep.id === request.sales_rep_user_id || normalizeEmail(rep.email) === normalizeEmail(request.sales_rep_email) || rep.name === repName)
+    || { id: request.sales_rep_user_id || slugify(repName), name: repName, branch: "", department: "" };
+}
+
+function projectionRequestDate(request = {}) {
+  return (request.created_at || request.submitted_at || request.updated_at || "").slice(0, 10);
+}
+
+function projectionFilterMatchesRecord({ date = "", type = "", rep = {}, repName = "" }) {
+  const { from, to } = projectionsRange();
+  const selectedType = projectionsQuotationType?.value || "";
+  const repQuery = (projectionsSalesRepFilter?.value || "").trim().toLowerCase();
+  const branchQuery = (projectionsBranchFilter?.value || "").trim().toLowerCase();
+  const typeMatch = !selectedType || (type || "Technical Quotation") === selectedType;
+  const resolvedRep = rep?.name ? rep : { name: repName, branch: "", department: "" };
+  const repMatch = !repQuery || String(resolvedRep.name || repName || "").toLowerCase().includes(repQuery);
+  const branchMatch = !branchQuery || String(resolvedRep.branch || resolvedRep.department || "").toLowerCase().includes(branchQuery);
+  return typeMatch && repMatch && branchMatch && date && date >= from && date <= to;
+}
+
+function projectionFilteredRequests() {
+  return loadSalesRequests().filter((request) => projectionFilterMatchesRecord({
+    date: projectionRequestDate(request),
+    type: request.quotation_type || "Technical Quotation",
+    rep: repRecordForSalesRequest(request),
+    repName: request.sales_rep_name,
+  }));
+}
+
+function isInternallyRejectedQuote(quote = {}) {
+  return normalizedStatus(quote.status) === "rejected" && quote.rejectionSource !== "client";
+}
+
+function isClientRejectedQuote(quote = {}) {
+  return normalizedStatus(quote.status) === "client_declined" || quote.clientOutcome === "Rejected by client" || quote.rejectionSource === "client";
+}
+
+function isSentToClientQuote(quote = {}) {
+  return normalizedStatus(quote.status) === "sent_to_client";
+}
+
+function projectionRepActivityRows(quotes, predicate, valueMode = "count") {
+  const rows = new Map();
+  projectionSalesReps().forEach((rep) => rows.set(rep.id || slugify(rep.name), {
+    key: rep.id || slugify(rep.name),
+    salesRep: rep.name || "Unknown",
+    value: 0,
+  }));
+  quotes.filter(predicate).forEach((quote) => {
+    const rep = repRecordForQuote(quote);
+    const key = rep.id || slugify(rep.name || "Unknown");
+    const row = rows.get(key) || { key, salesRep: rep.name || "Unknown", value: 0 };
+    row.value += valueMode === "value" ? quoteSubtotal(quote) : 1;
+    rows.set(key, row);
+  });
+  return Array.from(rows.values()).sort((a, b) => a.salesRep.localeCompare(b.salesRep));
+}
+
+function monthlySubmittedRequestRows() {
+  const now = new Date();
+  const rows = [];
+  const selectedType = projectionsQuotationType?.value || "";
+  const repQuery = (projectionsSalesRepFilter?.value || "").trim().toLowerCase();
+  const branchQuery = (projectionsBranchFilter?.value || "").trim().toLowerCase();
+  for (let index = 11; index >= 0; index -= 1) {
+    const date = new Date(now.getFullYear(), now.getMonth() - index, 1);
+    const month = monthInputValue(date);
+    const range = monthDateRange(month);
+    const value = loadSalesRequests().filter((request) => {
+      const requestDate = projectionRequestDate(request);
+      const rep = repRecordForSalesRequest(request);
+      const typeMatch = !selectedType || (request.quotation_type || "Technical Quotation") === selectedType;
+      const repMatch = !repQuery || String(rep.name || request.sales_rep_name || "").toLowerCase().includes(repQuery);
+      const branchMatch = !branchQuery || String(rep.branch || rep.department || "").toLowerCase().includes(branchQuery);
+      return typeMatch && repMatch && branchMatch && requestDate >= range.from && requestDate <= range.to;
+    }).length;
+    rows.push({ label: date.toLocaleDateString("en-ZA", { month: "short" }), value });
+  }
+  return rows;
+}
+
+function projectionActivityData() {
+  const requests = projectionFilteredRequests();
+  const quotes = projectionsBaseQuotes();
+  const submittedForApprovalQuotes = quotes.filter(isApprovalPendingQuote);
+  const approved = quotes.filter(isInternallyApproved);
+  const rejectedInternal = quotes.filter(isInternallyRejectedQuote);
+  const sentToClient = quotes.filter(isSentToClientQuote);
+  const acceptedClient = quotes.filter(isClientAccepted);
+  const rejectedClient = quotes.filter(isClientRejectedQuote);
+  const awaitingClient = quotes.filter(isOutstandingClientApproval);
+  const completedRequests = requests.filter((request) => salesRequestStatusLabel(request.status) === "Completed");
+  const acceptedProcessing = requests.filter((request) => salesRequestStatusLabel(request.status) === "Accepted for Processing");
+  const submittedApprovalRequests = requests.filter((request) => salesRequestStatusLabel(request.status) === "Submitted for Approval");
+  const statusRows = [
+    { label: "Submitted", value: requests.length, color: "#2563eb" },
+    { label: "In Progress", value: acceptedProcessing.length, color: "#f59e0b" },
+    { label: "Awaiting Approval", value: submittedForApprovalQuotes.length + submittedApprovalRequests.length, color: "#0ea5e9" },
+    { label: "Approved Internally", value: approved.length, color: "#16a34a" },
+    { label: "Rejected Internally", value: rejectedInternal.length, color: "#dc2626" },
+    { label: "Sent to Client", value: sentToClient.length, color: "#7c3aed" },
+    { label: "Accepted by Client", value: acceptedClient.length, color: "#15803d" },
+    { label: "Rejected by Client", value: rejectedClient.length, color: "#b91c1c" },
+    { label: "Completed", value: completedRequests.length, color: "#0f766e" },
+  ];
+  return {
+    requests,
+    quotes,
+    acceptedProcessing,
+    submittedApprovalRequests,
+    submittedForApprovalQuotes,
+    approved,
+    rejectedInternal,
+    sentToClient,
+    acceptedClient,
+    rejectedClient,
+    awaitingClient,
+    completedRequests,
+    statusRows,
+    approvedByRep: projectionRepActivityRows(quotes, isInternallyApproved),
+    acceptedByRep: projectionRepActivityRows(quotes, isClientAccepted),
+    valueRows: [
+      { label: "Approved value", value: roundCurrency(approved.reduce((sum, quote) => sum + quoteSubtotal(quote), 0)) },
+      { label: "Accepted value", value: roundCurrency(acceptedClient.reduce((sum, quote) => sum + quoteSubtotal(quote), 0)) },
+    ],
+  };
+}
+
+function renderProjectionStatusPie(rows = []) {
+  const total = rows.reduce((sum, row) => sum + Number(row.value || 0), 0);
+  if (!total) return `<p class="empty-state">No status data for selected range.</p>`;
+  let cursor = 0;
+  const stops = rows.filter((row) => row.value > 0).map((row) => {
+    const start = cursor;
+    cursor += (row.value / total) * 100;
+    return `${row.color} ${start}% ${cursor}%`;
+  }).join(", ");
+  return `
+    <div class="projection-pie projection-status-pie" style="background: conic-gradient(${stops});"></div>
+    <div class="projection-pie-legend projection-status-legend">
+      ${rows.map((row) => `<span><i style="background:${escapeHtml(row.color)}"></i>${escapeHtml(row.label)} ${row.value}</span>`).join("")}
+    </div>
+  `;
+}
+
+function renderProjectionProgressRows(rows) {
+  if (!rows.length) return `<p class="empty-state">No sales reps match the selected filters.</p>`;
+  return rows.map((row) => `
+    <article class="projection-rep-card">
+      <div>
+        <strong>${escapeHtml(row.salesRep)}</strong>
+        <small>${escapeHtml(row.branch)}</small>
+      </div>
+      <div class="projection-progressbar"><span style="width:${Math.min(row.achievedPercent, 100)}%"></span></div>
+      <div class="projection-rep-metrics">
+        <span><small>Target</small><strong>${money.format(row.target)}</strong></span>
+        <span><small>Sold</small><strong>${money.format(row.soldValue)}</strong></span>
+        <span><small>Achieved</small><strong>${row.achievedPercent.toFixed(2)}%</strong></span>
+        <span><small>Remaining</small><strong>${money.format(row.remaining)}</strong></span>
+      </div>
+    </article>
+  `).join("");
+}
+
+function monthlyTechnicalSalesRows() {
+  const now = new Date();
+  const rows = [];
+  for (let index = 11; index >= 0; index -= 1) {
+    const date = new Date(now.getFullYear(), now.getMonth() - index, 1);
+    const month = monthInputValue(date);
+    const range = monthDateRange(month);
+    const value = loadApprovals()
+      .filter((quote) => isTechnicalQuote(quote) && isClientAccepted(quote))
+      .filter((quote) => {
+        const acceptedDate = projectionQuoteDate(quote, "accepted");
+        return acceptedDate >= range.from && acceptedDate <= range.to;
+      })
+      .reduce((sum, quote) => sum + quoteSubtotal(quote), 0);
+    rows.push({ label: date.toLocaleDateString("en-ZA", { month: "short" }), value: roundCurrency(value) });
+  }
+  return rows;
+}
+
+function renderProjectionLineChart(rows) {
+  if (!rows.length) return `<p class="empty-state">No monthly sales data available.</p>`;
+  const max = Math.max(...rows.map((row) => row.value), 1);
+  const points = rows.map((row, index) => `${(index / Math.max(rows.length - 1, 1)) * 100},${100 - ((row.value / max) * 88 + 6)}`).join(" ");
+  return `
+    <svg viewBox="0 0 100 112" preserveAspectRatio="none" aria-label="Technical sales sold per month">
+      <polyline points="${points}" fill="none" stroke="currentColor" stroke-width="2.8" vector-effect="non-scaling-stroke"></polyline>
+      ${rows.map((row, index) => `<circle cx="${(index / Math.max(rows.length - 1, 1)) * 100}" cy="${100 - ((row.value / max) * 88 + 6)}" r="1.8" vector-effect="non-scaling-stroke"></circle>`).join("")}
+    </svg>
+    <div class="projection-line-labels">${rows.map((row) => `<span>${escapeHtml(row.label)}</span>`).join("")}</div>
+  `;
+}
+
+function renderProjections() {
+  if (!canAccess("projections")) return;
+  if (!projectionsMonth.value) projectionsMonth.value = monthInputValue();
+  const data = projectionsData();
+  const activity = projectionActivityData();
+  projectionsSummary.innerHTML = [
+    renderSummaryCard("Submitted", String(activity.requests.length)),
+    renderSummaryCard("In Progress", String(activity.acceptedProcessing.length)),
+    renderSummaryCard("Awaiting Approval", String(activity.submittedForApprovalQuotes.length + activity.submittedApprovalRequests.length)),
+    renderSummaryCard("Approved Internally", String(activity.approved.length)),
+    renderSummaryCard("Rejected Internally", String(activity.rejectedInternal.length)),
+    renderSummaryCard("Sent to Client", String(activity.sentToClient.length)),
+    renderSummaryCard("Accepted by Client", String(activity.acceptedClient.length)),
+    renderSummaryCard("Rejected by Client", String(activity.rejectedClient.length)),
+    renderSummaryCard("Completed", String(activity.completedRequests.length)),
+  ].join("");
+  projectionsActivitySummary.innerHTML = [
+    renderSummaryCard("Total quotation requests submitted", String(activity.requests.length)),
+    renderSummaryCard("Total quotations accepted for processing", String(activity.acceptedProcessing.length)),
+    renderSummaryCard("Total quotations submitted for approval", String(activity.submittedForApprovalQuotes.length + activity.submittedApprovalRequests.length)),
+    renderSummaryCard("Total quotations approved internally", String(activity.approved.length)),
+    renderSummaryCard("Total quotations rejected internally", String(activity.rejectedInternal.length)),
+    renderSummaryCard("Total quotations sent to client", String(activity.sentToClient.length)),
+    renderSummaryCard("Total quotations accepted by client", String(activity.acceptedClient.length)),
+    renderSummaryCard("Total quotations rejected by client", String(activity.rejectedClient.length)),
+    renderSummaryCard("Still awaiting client response", String(activity.awaitingClient.length)),
+    renderSummaryCard("Total completed quotations", String(activity.completedRequests.length)),
+  ].join("");
+  renderBarChart(projectionsSubmittedApprovedRejectedBar, [
+    { label: "Submitted", value: activity.requests.length },
+    { label: "Approved", value: activity.approved.length },
+    { label: "Rejected", value: activity.rejectedInternal.length + activity.rejectedClient.length },
+  ], "value", "label", (value) => String(value));
+  projectionsStatusPieChart.innerHTML = renderProjectionStatusPie(activity.statusRows);
+  projectionsSubmittedLineChart.innerHTML = renderProjectionLineChart(monthlySubmittedRequestRows());
+  renderBarChart(projectionsApprovedRepBar, activity.approvedByRep, "value", "salesRep", (value) => String(value));
+  renderBarChart(projectionsAcceptedRepBar, activity.acceptedByRep, "value", "salesRep", (value) => String(value));
+  renderBarChart(projectionsValueApprovedAcceptedBar, activity.valueRows, "value", "label", (value) => money.format(value));
+  projectionsRepProgress.innerHTML = renderProjectionProgressRows(data.byRep);
+  renderBarChart(projectionsSalesRepBar, data.byRep, "soldValue", "salesRep", (value) => money.format(value));
+  projectionsPieChart.innerHTML = `
+    <div class="projection-pie" style="--achieved:${Math.min(data.achievedPercent, 100)}"></div>
+    <div class="projection-pie-legend">
+      <span><i class="legend-achieved"></i> Achieved ${money.format(data.totalSold)}</span>
+      <span><i class="legend-outstanding"></i> Outstanding ${money.format(data.outstandingTarget)}</span>
+    </div>
+  `;
+  projectionsLineChart.innerHTML = renderProjectionLineChart(monthlyTechnicalSalesRows());
+  renderBarChart(projectionsApprovedAcceptedBar, [
+    { label: "Approved internally", value: data.approved.length },
+    { label: "Accepted by clients", value: data.accepted.length },
+  ], "value", "label", (value) => String(value));
+  projectionsTargetTable.innerHTML = tableHtml(["Sales rep", "Branch", "Monthly target", "Sold excl. VAT", "Achieved", "Remaining"], data.byRep.map((row) => [
+    row.salesRep,
+    row.branch,
+    money.format(row.target),
+    money.format(row.soldValue),
+    `${row.achievedPercent.toFixed(2)}%`,
+    money.format(row.remaining),
+  ]));
+}
+
+function projectionsCsvRows() {
+  const data = projectionsData();
+  const activity = projectionActivityData();
+  const rows = [
+    ["Projection report", `${data.from} to ${data.to}`],
+    [],
+    ["Quotation Activity Summary"],
+    ["Submitted", activity.requests.length],
+    ["In Progress", activity.acceptedProcessing.length],
+    ["Awaiting Approval", activity.submittedForApprovalQuotes.length + activity.submittedApprovalRequests.length],
+    ["Approved Internally", activity.approved.length],
+    ["Rejected Internally", activity.rejectedInternal.length],
+    ["Sent to Client", activity.sentToClient.length],
+    ["Accepted by Client", activity.acceptedClient.length],
+    ["Rejected by Client", activity.rejectedClient.length],
+    ["Awaiting Client Response", activity.awaitingClient.length],
+    ["Completed", activity.completedRequests.length],
+    [],
+    ["Sales Rep Target Performance"],
+    ["Total technical sold excl. VAT", data.totalSold],
+    ["Total target", data.totalTarget],
+    ["Target achieved %", data.achievedPercent],
+    [],
+    ["Sales rep", "Branch", "Monthly target", "Sold excl. VAT", "Achieved %", "Remaining"],
+    ...data.byRep.map((row) => [row.salesRep, row.branch, row.target, row.soldValue, row.achievedPercent, row.remaining]),
+  ];
+  return rows.map((row) => row.map(csvEscape).join(",")).join("\n");
+}
+
+function exportProjectionsCsv() {
+  if (!enforceAccess("projections")) return;
+  downloadBlobFile(new Blob([projectionsCsvRows()], { type: "text/csv;charset=utf-8" }), `projections-report-${todayInputValue()}.csv`);
+  writeAudit("Exported projections report", "Excel/CSV", "Projections", "Projections", "Export projections to Excel");
+}
+
+function exportProjectionsPdf() {
+  if (!enforceAccess("projections")) return;
+  const data = projectionsData();
+  const activity = projectionActivityData();
+  const rows = data.byRep.map((row) => `
+    <tr><td>${escapeHtml(row.salesRep)}</td><td>${escapeHtml(row.branch)}</td><td>${money.format(row.target)}</td><td>${money.format(row.soldValue)}</td><td>${row.achievedPercent.toFixed(2)}%</td><td>${money.format(row.remaining)}</td></tr>
+  `).join("");
+  const activityRows = [
+    ["Submitted", activity.requests.length],
+    ["In Progress", activity.acceptedProcessing.length],
+    ["Awaiting Approval", activity.submittedForApprovalQuotes.length + activity.submittedApprovalRequests.length],
+    ["Approved Internally", activity.approved.length],
+    ["Rejected Internally", activity.rejectedInternal.length],
+    ["Sent to Client", activity.sentToClient.length],
+    ["Accepted by Client", activity.acceptedClient.length],
+    ["Rejected by Client", activity.rejectedClient.length],
+    ["Awaiting Client Response", activity.awaitingClient.length],
+    ["Completed", activity.completedRequests.length],
+  ].map(([label, value]) => `<tr><td>${escapeHtml(label)}</td><td>${escapeHtml(value)}</td></tr>`).join("");
+  const report = window.open("", "_blank", "noopener");
+  if (!report) return;
+  report.document.write(`
+    <html><head><title>Projections Report</title><style>
+      body{font-family:Arial,Helvetica,sans-serif;margin:24px;color:#17212b}h1{margin:0 0 6px}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{border:1px solid #d8e0e6;padding:8px;text-align:left}th{background:#f2f5f7}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0}.summary div{border:1px solid #d8e0e6;padding:10px}.summary small{display:block;color:#687585;font-weight:700}.summary strong{display:block;font-size:16px;margin-top:4px}
+    </style></head><body>
+      <h1>Interactive Security Projections Report</h1>
+      <p>${escapeHtml(data.from)} to ${escapeHtml(data.to)}</p>
+      <div class="summary">
+        <div><small>Submitted</small><strong>${activity.requests.length}</strong></div>
+        <div><small>Approved internally</small><strong>${activity.approved.length}</strong></div>
+        <div><small>Accepted by clients</small><strong>${activity.acceptedClient.length}</strong></div>
+        <div><small>Target outstanding</small><strong>${money.format(data.outstandingTarget)}</strong></div>
+      </div>
+      <h2>Quotation Activity Summary</h2>
+      <table><thead><tr><th>Status</th><th>Total</th></tr></thead><tbody>${activityRows}</tbody></table>
+      <h2>Sales Rep Target Performance</h2>
+      <table><thead><tr><th>Sales rep</th><th>Branch</th><th>Monthly target</th><th>Sold excl. VAT</th><th>Achieved</th><th>Remaining</th></tr></thead><tbody>${rows}</tbody></table>
+      <script>window.onload=()=>window.print();</script>
+    </body></html>
+  `);
+  report.document.close();
+  writeAudit("Exported projections report", "PDF", "Projections", "Projections", "Export projections to PDF");
+}
+
 function isManagementPortalUser() {
   return ["Admin", "Super Admin"].includes(currentMember().access) || hasPermission("reports");
 }
@@ -2517,6 +3009,11 @@ function hasHubAccess(hub) {
   if (explicitAccess) return explicitAccess.status === "active";
 
   if (hub.slug === "quotation-hub") return hasPermission("quotation_hub", member);
+  if (hub.slug === "finance-age-analysis") {
+    return hasPermission("finance_age_analysis", member) || storageList(hubPermissionsStorageKey).some((permission) => (
+      permission.hubSlug === hub.slug && permission.accessLevel === member.access
+    ));
+  }
   return storageList(hubPermissionsStorageKey).some((permission) => (
     permission.hubSlug === hub.slug && permission.accessLevel === member.access
   ));
@@ -2569,9 +3066,629 @@ function moduleIcon(type) {
   return icons[type] || icons.file;
 }
 
+const financeTabs = [
+  { key: "dashboard", label: "Dashboard" },
+  { key: "opening", label: "Opening Balances" },
+  { key: "closing", label: "Closing Balances" },
+  { key: "monthly", label: "Monthly Balances" },
+  { key: "age", label: "Age Analysis" },
+  { key: "outstanding30", label: "30+ Days Outstanding" },
+  { key: "bank", label: "Bank Balances" },
+  { key: "setup", label: "Setup" },
+  { key: "audit", label: "Audit Trail" },
+];
+
+const financeStorageKeys = {
+  opening: `${financeStoragePrefix}:openingBalances`,
+  closing: `${financeStoragePrefix}:closingBalances`,
+  monthly: `${financeStoragePrefix}:monthlyBalances`,
+  age: `${financeStoragePrefix}:ageAnalysis`,
+  bank: `${financeStoragePrefix}:bankBalances`,
+  setup: `${financeStoragePrefix}:setup`,
+  openingMeta: `${financeStoragePrefix}:openingMeta`,
+};
+
+let activeFinanceTab = "dashboard";
+let financeOpeningView = { mode: "current", from: "", to: "" };
+
+const financeOpeningTemplateRows = [
+  { name: "OPERATING COMPANIES", type: "section" },
+  { name: "CC", type: "account" },
+  { name: "PTY", type: "account" },
+  { name: "LIMPOPO", type: "account" },
+  { name: "UPLIFTMENT TRUST", type: "account" },
+  { name: "GAUTENG", type: "account" },
+  { name: "TRUCK & AUTO", type: "account" },
+  { name: "SUB TOTAL", type: "total" },
+  { name: "PROPERTY COMPANIES", type: "section" },
+  { name: "MPUMALANGA", type: "account" },
+  { name: "ETERNITY STAR", type: "account" },
+  { name: "ANRONOX", type: "account" },
+  { name: "FONZOMART", type: "account" },
+  { name: "LE LENANLIZE", type: "account" },
+  { name: "SUB TOTAL", type: "total" },
+  { name: "LOAN COMPANIES", type: "section" },
+  { name: "PROVIDENT FUND", type: "account" },
+  { name: "SUB TOTAL", type: "total" },
+  { name: "BONDS", type: "section" },
+  { name: "LE LENANLIZE BOND", type: "account" },
+  { name: "MPUMALANGA BOND", type: "account" },
+  { name: "SUB TOTAL", type: "total" },
+  { name: "NEDBANK PRIVATE", type: "section" },
+  { name: "F RYKAART", type: "account" },
+  { name: "N RYKAART", type: "account" },
+  { name: "CC CREDIT CARD", type: "account" },
+  { name: "SUB TOTAL", type: "total" },
+  { name: "TOTAL AVAILABLE", type: "total" },
+  { name: "DISCOVERY CURRENT", type: "section" },
+  { name: "DISCOVERY CREDIT", type: "account" },
+  { name: "TOTAL AVAILABLE", type: "total" },
+  { name: "FNB CURRENT", type: "section" },
+  { name: "FNB CURRENT", type: "account" },
+  { name: "FNB CREDIT", type: "account" },
+  { name: "FNB BUSINESS", type: "account" },
+  { name: "TOTAL AVAILABLE", type: "total" },
+  { name: "ABSA BUSINESS", type: "section" },
+  { name: "ABSA 1", type: "account" },
+  { name: "ABSA 2", type: "account" },
+  { name: "CC", type: "account" },
+  { name: "TRUCK & AUTO", type: "account" },
+  { name: "GAUTENG", type: "account" },
+  { name: "LIMPOPO", type: "account" },
+  { name: "INTERACTIVE CURRENT", type: "account" },
+  { name: "MPUMALANGA", type: "account" },
+  { name: "HILUGEN (WILGE)", type: "account" },
+  { name: "ZECASCORE (24)", type: "account" },
+  { name: "OXFOCRAFT", type: "account" },
+  { name: "SUB TOTAL", type: "total" },
+  { name: "ABSA PRIVATE", type: "section" },
+  { name: "ABSA CURRENT", type: "account" },
+  { name: "ABSA CREDIT", type: "account" },
+  { name: "SUB TOTAL", type: "total" },
+  { name: "TOTAL AVAILABLE", type: "total" },
+  { name: "ASCOGYSTIX", type: "section" },
+  { name: "PLATOSOL", type: "account" },
+  { name: "ASCOPAX", type: "account" },
+  { name: "TOTAL AVAILABLE", type: "total" },
+  { name: "GRAND TOTAL AVAILABLE", type: "grand-total" },
+];
+
+function financeRows(type) {
+  return storageList(financeStorageKeys[type], []);
+}
+
+function saveFinanceRows(type, rows) {
+  saveStorageList(financeStorageKeys[type], rows);
+}
+
+function financeNumber(value) {
+  return Number(String(value ?? "").replace(/[^\d,.-]/g, "").replace(",", ".")) || 0;
+}
+
+function financeAudit(action, reference = "-", notes = "") {
+  writeAudit(action, reference, "Finance Balances and Age Analysis", reference, notes || `Action by ${currentUserName()}`);
+}
+
+function financeOpeningDateLabel(dateValue) {
+  const date = new Date(`${dateValue || todayInputValue()}T00:00:00`);
+  return date.toLocaleDateString("en-ZA", { day: "2-digit", month: "long", year: "numeric" }).toUpperCase();
+}
+
+function financeOpeningRowKey(row = {}) {
+  return `${row.accountCode || ""}|${row.accountName || row.partyName || ""}|${row.rowOrder ?? ""}`;
+}
+
+function financeOpeningBaseRows() {
+  const saved = financeRows("opening");
+  const base = financeOpeningTemplateRows.map((row, index) => ({
+    ...row,
+    accountCode: row.type === "account" ? slugify(row.name).toUpperCase() : "",
+    branch: "",
+    rowOrder: index,
+  }));
+  const known = new Set(base.map((row) => row.name.toLowerCase()));
+  saved
+    .slice()
+    .sort((a, b) => Number(a.rowOrder ?? 9999) - Number(b.rowOrder ?? 9999))
+    .forEach((row) => {
+      const name = row.accountName || row.partyName || row.accountCode || "";
+      if (!name || known.has(name.toLowerCase())) return;
+      known.add(name.toLowerCase());
+      base.push({
+        name,
+        type: row.rowType || "account",
+        accountCode: row.accountCode || slugify(name).toUpperCase(),
+        branch: row.branch || "",
+        rowOrder: Number(row.rowOrder ?? base.length),
+      });
+    });
+  return base;
+}
+
+function latestFinanceOpeningDateBefore(dateValue) {
+  return financeRows("opening")
+    .map((row) => row.openingDate)
+    .filter((date) => date && date < dateValue)
+    .sort()
+    .pop() || "";
+}
+
+function ensureFinanceDailyOpeningBalances() {
+  const today = todayInputValue();
+  const rows = financeRows("opening");
+  if (rows.some((row) => row.openingDate === today)) return;
+
+  const previousDate = latestFinanceOpeningDateBefore(today);
+  const previousRows = rows.filter((row) => row.openingDate === previousDate);
+  const previousByKey = Object.fromEntries(previousRows.map((row) => [financeOpeningRowKey(row), row]));
+  const createdAt = new Date().toISOString();
+  const generated = financeOpeningBaseRows().map((base) => {
+    const previous = previousByKey[`${base.accountCode || ""}|${base.name}|${base.rowOrder ?? ""}`]
+      || previousRows.find((row) => (row.accountName || row.partyName) === base.name)
+      || {};
+    return {
+      id: `finance-opening-${today}-${base.rowOrder}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      accountCode: base.accountCode,
+      accountName: base.name,
+      partyName: base.name,
+      branch: base.branch,
+      rowType: base.type,
+      rowOrder: base.rowOrder,
+      openingDate: today,
+      openingBalance: financeNumber(previous.closingBalance ?? previous.availableBalance ?? previous.openingBalance ?? 0),
+      availableBalance: financeNumber(previous.availableBalance ?? previous.openingBalance ?? 0),
+      source: previousDate ? "Previous day closing balance" : "BALANSE template",
+      importedBy: currentUserName(),
+      importedAt: createdAt,
+    };
+  });
+  saveFinanceRows("opening", [...rows, ...generated]);
+  const meta = JSON.parse(localStorage.getItem(financeStorageKeys.openingMeta) || "{}");
+  if (meta.lastDailyDate !== today) {
+    financeAudit("New daily opening balance created", financeOpeningDateLabel(today), previousDate ? `Created from ${financeOpeningDateLabel(previousDate)} closing/available balances` : "Created from BALANSE template layout");
+    if (previousDate) financeAudit("Previous day hidden", financeOpeningDateLabel(previousDate), "Default Opening Balances view now shows current day only");
+    localStorage.setItem(financeStorageKeys.openingMeta, JSON.stringify({ ...meta, lastDailyDate: today }));
+  }
+}
+
+function financeOpeningVisibleDates() {
+  ensureFinanceDailyOpeningBalances();
+  const dates = Array.from(new Set(financeRows("opening").map((row) => row.openingDate).filter(Boolean))).sort();
+  const today = todayInputValue();
+  if (financeOpeningView.mode === "previous") return dates.slice(-12).reverse();
+  if (financeOpeningView.mode === "range") {
+    const from = financeOpeningView.from || dates[0] || today;
+    const to = financeOpeningView.to || today;
+    return dates.filter((date) => date >= from && date <= to);
+  }
+  return dates.includes(today) ? [today] : [today];
+}
+
+function renderFinanceOpeningBalances() {
+  ensureFinanceDailyOpeningBalances();
+  const dates = financeOpeningVisibleDates();
+  const allRows = financeRows("opening");
+  const byDateAndRow = new Map(allRows.map((row) => [`${row.openingDate}|${financeOpeningRowKey(row)}`, row]));
+  const templateRows = financeOpeningBaseRows();
+  const dateColumnCount = Math.max(dates.length, 1) * 2;
+  return `
+    <section class="finance-card finance-balanse-card">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">BALANSE daily balance format</p>
+          <h2>Opening Balances</h2>
+        </div>
+        <strong class="finance-active-date">${financeOpeningDateLabel(todayInputValue())}</strong>
+      </div>
+      <div class="finance-actions">
+        <button class="secondary-btn" data-finance-import-source="Pastel Cloud" data-finance-type="opening">Import from Pastel Cloud</button>
+        <button class="secondary-btn" data-finance-import-source="Listener" data-finance-type="opening">Import from Listener</button>
+        <label class="secondary-btn finance-upload">Upload BALANSE Excel/CSV<input data-finance-upload="opening" type="file" accept=".csv,.xlsx,.xls" hidden /></label>
+        <button class="secondary-btn" data-finance-opening-view="current">Show current day only</button>
+        <button class="secondary-btn" data-finance-opening-view="previous">Show previous days</button>
+        <button class="secondary-btn" data-finance-opening-view="range">Select date range</button>
+        <button class="secondary-btn" data-finance-export="opening">Export to Excel</button>
+        <button class="secondary-btn" data-finance-print="opening">Export to PDF</button>
+      </div>
+      <p class="finance-note">Previous days are hidden from the main view by default, not deleted. The current opening balance date updates automatically each day.</p>
+      <div class="finance-balanse-table-wrap">
+        <table class="finance-balanse-table">
+          <thead>
+            <tr>
+              <th></th>
+              ${dates.map((date) => `<th colspan="2">${escapeHtml(financeOpeningDateLabel(date))}</th>`).join("")}
+            </tr>
+            <tr>
+              <th>NEDBANK</th>
+              ${dates.map(() => `<th>BALANCE</th><th>AVAILABLE</th>`).join("")}
+            </tr>
+          </thead>
+          <tbody>
+            ${templateRows.map((base) => {
+              const isEditable = !["section", "total", "grand-total"].includes(base.type);
+              return `
+                <tr class="finance-balanse-${escapeHtml(base.type)}">
+                  <th>${escapeHtml(base.name)}</th>
+                  ${dates.map((date) => {
+                    const record = byDateAndRow.get(`${date}|${base.accountCode || ""}|${base.name}|${base.rowOrder ?? ""}`)
+                      || allRows.find((row) => row.openingDate === date && (row.accountName || row.partyName) === base.name)
+                      || {};
+                    const balance = financeNumber(record.openingBalance);
+                    const available = financeNumber(record.availableBalance);
+                    const balanceDisplay = base.type === "section" ? "" : money.format(balance);
+                    const availableDisplay = base.type === "section" ? "" : money.format(available);
+                    return `
+                      <td>${isEditable ? `<input class="finance-balance-input" type="number" step="0.01" value="${balance}" data-finance-opening-edit="${escapeHtml(record.id || "")}" data-finance-opening-date="${escapeHtml(date)}" data-finance-opening-name="${escapeHtml(base.name)}" data-finance-opening-field="openingBalance" />` : balanceDisplay}</td>
+                      <td>${isEditable ? `<input class="finance-balance-input" type="number" step="0.01" value="${available}" data-finance-opening-edit="${escapeHtml(record.id || "")}" data-finance-opening-date="${escapeHtml(date)}" data-finance-opening-name="${escapeHtml(base.name)}" data-finance-opening-field="availableBalance" />` : availableDisplay}</td>
+                    `;
+                  }).join("")}
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+      <details class="finance-import-detail">
+        <summary>Stored record details</summary>
+        ${financeTable(Object.keys(financeRecordsForTable("opening")[0] || { Empty: "" }), financeRecordsForTable("opening"))}
+      </details>
+    </section>
+  `;
+}
+
+function financeTotals() {
+  const opening = financeRows("opening");
+  const closing = financeRows("closing");
+  const monthly = financeRows("monthly");
+  const age = financeRows("age");
+  const bank = financeRows("bank");
+  return {
+    opening: opening.reduce((sum, row) => sum + financeNumber(row.openingBalance), 0),
+    closing: closing.reduce((sum, row) => sum + financeNumber(row.closingBalance), 0),
+    monthly: monthly.reduce((sum, row) => sum + financeNumber(row.closingBalance), 0),
+    debtors: age.filter((row) => (row.type || "Debtor") !== "Creditor").reduce((sum, row) => sum + financeNumber(row.totalOutstanding), 0),
+    creditors: age.filter((row) => row.type === "Creditor").reduce((sum, row) => sum + financeNumber(row.totalOutstanding), 0),
+    d30: age.reduce((sum, row) => sum + financeNumber(row.days30), 0),
+    d60: age.reduce((sum, row) => sum + financeNumber(row.days60), 0),
+    d90: age.reduce((sum, row) => sum + financeNumber(row.days90), 0),
+    d120: age.reduce((sum, row) => sum + financeNumber(row.days120), 0),
+    bank: bank.reduce((sum, row) => sum + financeNumber(row.closingBankBalance), 0),
+  };
+}
+
+function financeSimpleBar(title, rows) {
+  const max = Math.max(...rows.map((row) => Math.abs(Number(row.value || 0))), 1);
+  return `
+    <section class="finance-card">
+      <h3>${escapeHtml(title)}</h3>
+      <div class="dashboard-bar-chart">
+        ${rows.map((row) => `
+          <div class="dashboard-bar-row">
+            <span>${escapeHtml(row.label)}</span>
+            <div><i style="width:${Math.max((Math.abs(row.value) / max) * 100, row.value ? 4 : 0)}%"></i></div>
+            <strong>${money.format(row.value)}</strong>
+          </div>
+        `).join("") || `<p class="empty-state">No data imported yet.</p>`}
+      </div>
+    </section>
+  `;
+}
+
+function financeTable(headers, rows) {
+  if (!rows.length) return `<p class="empty-state">No finance records imported yet.</p>`;
+  return `
+    <div class="finance-table">
+      <div class="finance-table-row finance-table-head" style="grid-template-columns: repeat(${headers.length}, minmax(140px, 1fr));">
+        ${headers.map((header) => `<span>${escapeHtml(header)}</span>`).join("")}
+      </div>
+      ${rows.map((row) => `
+        <div class="finance-table-row" style="grid-template-columns: repeat(${headers.length}, minmax(140px, 1fr));">
+          ${headers.map((header) => `<span>${escapeHtml(row[header] ?? "-")}</span>`).join("")}
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function financeRecordsForTable(type) {
+  const sourceRows = type === "outstanding30"
+    ? financeRows("age").filter((row) => financeNumber(row.days30) + financeNumber(row.days60) + financeNumber(row.days90) + financeNumber(row.days120) > 0)
+    : financeRows(type);
+  return sourceRows.map((row) => {
+    if (type === "opening") return {
+      "Account code": row.accountCode,
+      "Account name": row.accountName,
+      "Customer / supplier": row.partyName,
+      Branch: row.branch,
+      "Opening balance": money.format(financeNumber(row.openingBalance)),
+      "Opening date": formatDate(row.openingDate),
+      Source: row.source,
+      "Imported date": formatDate(String(row.importedAt || "").slice(0, 10)),
+      "Imported by": row.importedBy,
+    };
+    if (type === "closing") return {
+      "Account code": row.accountCode,
+      "Account name": row.accountName,
+      "Customer / supplier": row.partyName,
+      Branch: row.branch,
+      "Closing balance": money.format(financeNumber(row.closingBalance)),
+      "Closing date": formatDate(row.closingDate),
+      Source: row.source,
+      "Imported date": formatDate(String(row.importedAt || "").slice(0, 10)),
+      "Imported by": row.importedBy,
+    };
+    if (type === "monthly") return {
+      Month: row.month,
+      "Account code": row.accountCode,
+      "Account name": row.accountName,
+      "Opening balance": money.format(financeNumber(row.openingBalance)),
+      "Debit movement": money.format(financeNumber(row.debitMovement)),
+      "Credit movement": money.format(financeNumber(row.creditMovement)),
+      "Closing balance": money.format(financeNumber(row.closingBalance)),
+      Difference: money.format(financeNumber(row.closingBalance) - financeNumber(row.openingBalance)),
+      Source: row.source,
+      "Imported date": formatDate(String(row.importedAt || "").slice(0, 10)),
+    };
+    if (type === "age" || type === "outstanding30") return {
+      "Customer / supplier": row.partyName,
+      "Account code": row.accountCode,
+      Branch: row.branch,
+      Current: money.format(financeNumber(row.current)),
+      "30 Days": money.format(financeNumber(row.days30)),
+      "60 Days": money.format(financeNumber(row.days60)),
+      "90 Days": money.format(financeNumber(row.days90)),
+      "120+ Days": money.format(financeNumber(row.days120)),
+      "Total outstanding": money.format(financeNumber(row.totalOutstanding)),
+      "Last payment": formatDate(row.lastPaymentDate),
+      "Last invoice": formatDate(row.lastInvoiceDate),
+      "Collection notes": row.collectionNotes || "",
+      "Promise to pay": formatDate(row.promiseToPayDate),
+      "Responsible member": row.responsibleMember || "",
+      Status: row.status || "Not contacted",
+    };
+    return {
+      "Bank name": row.bankName,
+      "Account name": row.accountName,
+      "Account number": row.accountNumber,
+      Branch: row.branch,
+      "Opening bank balance": money.format(financeNumber(row.openingBankBalance)),
+      "Closing bank balance": money.format(financeNumber(row.closingBankBalance)),
+      "Balance date": formatDate(row.balanceDate),
+      Month: row.month,
+      "Imported date": formatDate(String(row.importedAt || "").slice(0, 10)),
+      "Imported by": row.importedBy,
+      Notes: row.notes,
+    };
+  });
+}
+
+function financeExport(type) {
+  const rows = financeRecordsForTable(type);
+  const headers = Object.keys(rows[0] || { Empty: "" });
+  const csv = [headers.map(csvEscape).join(","), ...rows.map((row) => headers.map((header) => csvEscape(row[header])).join(","))].join("\n");
+  downloadBlobFile(new Blob([csv], { type: "text/csv;charset=utf-8" }), `finance-${type}-${todayInputValue()}.csv`);
+  financeAudit("Export generated", type, "Finance CSV export");
+}
+
+function financePrintExport(type) {
+  const rows = financeRecordsForTable(type);
+  const headers = Object.keys(rows[0] || { Empty: "" });
+  const report = window.open("", "_blank", "noopener");
+  if (!report) return;
+  report.document.write(`
+    <html><head><title>Finance ${escapeHtml(type)} Report</title><style>
+      body{font-family:Arial,Helvetica,sans-serif;margin:24px;color:#17212b}h1{margin:0 0 12px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #d8e0e6;padding:6px;text-align:left}th{background:#f2f5f7}
+    </style></head><body>
+      <h1>Finance Balances and Age Analysis - ${escapeHtml(type)} report</h1>
+      <table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead><tbody>
+        ${rows.map((row) => `<tr>${headers.map((header) => `<td>${escapeHtml(row[header])}</td>`).join("")}</tr>`).join("")}
+      </tbody></table>
+      <script>window.onload=()=>window.print();</script>
+    </body></html>
+  `);
+  report.document.close();
+  financeAudit("Export generated", type, "Finance PDF export");
+}
+
+function mapFinanceCsvRow(type, headers, row) {
+  const find = (...names) => {
+    const index = headers.findIndex((header) => names.some((name) => header.toLowerCase().includes(name)));
+    return index >= 0 ? row[index] || "" : "";
+  };
+  const base = {
+    id: `finance-${type}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    accountCode: find("account code", "code"),
+    accountName: find("account name", "account"),
+    partyName: find("customer", "supplier", "name"),
+    branch: find("branch"),
+    source: find("source") || "Excel",
+    importedAt: new Date().toISOString(),
+    importedBy: currentUserName(),
+  };
+  if (type === "opening") return { ...base, openingBalance: find("opening balance", "balance"), availableBalance: find("available"), openingDate: find("opening date", "balance date", "date"), rowType: "account", rowOrder: Date.now() };
+  if (type === "closing") return { ...base, closingBalance: find("closing balance", "balance"), closingDate: find("closing date", "date") };
+  if (type === "monthly") return { ...base, month: find("month"), openingBalance: find("opening"), debitMovement: find("debit"), creditMovement: find("credit"), closingBalance: find("closing") };
+  if (type === "age") {
+    const current = find("current");
+    const d30 = find("30");
+    const d60 = find("60");
+    const d90 = find("90");
+    const d120 = find("120");
+    return { ...base, current, days30: d30, days60: d60, days90: d90, days120: d120, totalOutstanding: find("total") || [current, d30, d60, d90, d120].reduce((sum, value) => sum + financeNumber(value), 0), lastPaymentDate: find("last payment"), lastInvoiceDate: find("last invoice"), status: "Not contacted" };
+  }
+  return { ...base, bankName: find("bank name", "bank"), accountNumber: find("account number", "number"), openingBankBalance: find("opening"), closingBankBalance: find("closing", "balance"), balanceDate: find("balance date", "date"), month: find("month"), notes: find("notes") };
+}
+
+async function financeImportFile(type, file) {
+  if (!file) return;
+  const lowerName = file.name.toLowerCase();
+  if (type === "opening" && (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls"))) {
+    await financeImportOpeningWorkbook(file);
+    return;
+  }
+  if (!file.name.toLowerCase().endsWith(".csv")) {
+    alert("Excel uploads are accepted in the control, but this local prototype can only parse CSV for now. Please save the Excel file as CSV to import.");
+    financeAudit("Excel upload attempted", file.name, "CSV parser required for local prototype");
+    return;
+  }
+  const rows = parseCsv(await file.text());
+  const headers = rows[0] || [];
+  const imported = rows.slice(1).map((row) => mapFinanceCsvRow(type, headers, row));
+  saveFinanceRows(type, [...imported, ...financeRows(type)]);
+  financeAudit("Excel upload", file.name, `${imported.length} ${type} records imported`);
+  renderFinanceHub(activeFinanceTab);
+}
+
+async function financeImportOpeningWorkbook(file) {
+  try {
+    const response = await fetch(`/api/finance/import-opening-balances?fileName=${encodeURIComponent(file.name)}`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: await file.arrayBuffer(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "BALANSE workbook could not be imported.");
+    const imported = (data.rows || []).map((row, index) => ({
+      ...row,
+      id: row.id || `finance-opening-import-${Date.now()}-${index}`,
+      importedBy: row.importedBy || currentUserName(),
+      importedAt: row.importedAt || new Date().toISOString(),
+    }));
+    saveFinanceRows("opening", [...imported, ...financeRows("opening")]);
+    financeOpeningView = { mode: "previous", from: "", to: "" };
+    financeAudit("Balance imported", file.name, `${imported.length} BALANSE opening balance records imported`);
+    renderFinanceHub("opening");
+  } catch (error) {
+    alert(error.message || "The BALANSE workbook could not be imported.");
+    financeAudit("Excel upload attempted", file.name, error.message || "Import failed");
+  }
+}
+
+function renderFinanceDashboard() {
+  const totals = financeTotals();
+  return `
+    <div class="dashboard-summary-grid">
+      ${renderSummaryCard("Total opening balances", money.format(totals.opening))}
+      ${renderSummaryCard("Total closing balances", money.format(totals.closing))}
+      ${renderSummaryCard("Total monthly balances", money.format(totals.monthly))}
+      ${renderSummaryCard("Total debtors outstanding", money.format(totals.debtors))}
+      ${renderSummaryCard("Total creditors outstanding", money.format(totals.creditors))}
+      ${renderSummaryCard("Total 30+ days outstanding", money.format(totals.d30 + totals.d60 + totals.d90 + totals.d120))}
+      ${renderSummaryCard("Total 60+ days outstanding", money.format(totals.d60 + totals.d90 + totals.d120))}
+      ${renderSummaryCard("Total 90+ days outstanding", money.format(totals.d90 + totals.d120))}
+      ${renderSummaryCard("Total 120+ days outstanding", money.format(totals.d120))}
+      ${renderSummaryCard("Total bank balances", money.format(totals.bank))}
+    </div>
+    <div class="dashboard-chart-grid">
+      ${financeSimpleBar("Opening vs closing balances", [{ label: "Opening", value: totals.opening }, { label: "Closing", value: totals.closing }])}
+      ${financeSimpleBar("Monthly balance movement", financeRows("monthly").slice(0, 8).map((row) => ({ label: row.month || row.accountName || "-", value: financeNumber(row.closingBalance) - financeNumber(row.openingBalance) })))}
+      ${financeSimpleBar("Age analysis split", [{ label: "Current", value: financeRows("age").reduce((s, r) => s + financeNumber(r.current), 0) }, { label: "30 Days", value: totals.d30 }, { label: "60 Days", value: totals.d60 }, { label: "90 Days", value: totals.d90 }, { label: "120+ Days", value: totals.d120 }])}
+      ${financeSimpleBar("30+ days outstanding by client/customer", financeRows("age").filter((row) => financeNumber(row.days30) + financeNumber(row.days60) + financeNumber(row.days90) + financeNumber(row.days120) > 0).slice(0, 8).map((row) => ({ label: row.partyName || row.accountName || "-", value: financeNumber(row.days30) + financeNumber(row.days60) + financeNumber(row.days90) + financeNumber(row.days120) })))}
+      ${financeSimpleBar("Bank balances by account", financeRows("bank").slice(0, 8).map((row) => ({ label: row.accountName || row.bankName || "-", value: financeNumber(row.closingBankBalance) })))}
+    </div>
+  `;
+}
+
+function renderFinanceDataTab(type, title, purpose) {
+  const tableType = type === "outstanding30" ? "outstanding30" : type;
+  const tableRows = financeRecordsForTable(tableType);
+  return `
+    <section class="finance-card">
+      <div class="panel-heading"><div><p class="eyebrow">${escapeHtml(purpose)}</p><h2>${escapeHtml(title)}</h2></div></div>
+      <div class="finance-actions">
+        ${["opening", "closing", "age"].includes(type) ? `<button class="secondary-btn" data-finance-import-source="Pastel Cloud" data-finance-type="${type}">Import from Pastel Cloud</button><button class="secondary-btn" data-finance-import-source="Listener" data-finance-type="${type}">Import from Listener</button>` : ""}
+        ${type !== "outstanding30" ? `<label class="secondary-btn finance-upload">Manual upload/import<input data-finance-upload="${type}" type="file" accept=".csv,.xlsx,.xls" hidden /></label>` : ""}
+        <button class="secondary-btn" data-finance-export="${tableType}">Export to Excel</button>
+        <button class="secondary-btn" data-finance-print="${tableType}">Export to PDF</button>
+      </div>
+      <div class="approval-filterbar"><label>Search<input type="search" placeholder="Search records" data-finance-search /></label><label>Filter date<input type="date" data-finance-date /></label><label>Branch<input type="search" placeholder="Branch" data-finance-branch /></label><label>Account / customer<input type="search" placeholder="Account or customer" data-finance-account /></label></div>
+      ${type === "outstanding30" ? `<div class="finance-actions"><button class="primary-btn" data-finance-note>Add collection notes</button><button class="secondary-btn" data-finance-promise>Add promise to pay</button><button class="secondary-btn" data-finance-status>Update status</button></div>` : ""}
+      ${financeTable(Object.keys(tableRows[0] || { Empty: "" }), tableRows)}
+    </section>
+  `;
+}
+
+function renderFinanceSetup() {
+  const setup = JSON.parse(localStorage.getItem(financeStorageKeys.setup) || "{}");
+  return `
+    <section class="finance-card">
+      <h2>Finance Hub Setup</h2>
+      <div class="setup-grid">
+        <label>Pastel Cloud connection settings<input id="financePastelConnection" value="${escapeHtml(setup.pastel || "")}" placeholder="API endpoint / tenant details" /></label>
+        <label>Listener connection settings<input id="financeListenerConnection" value="${escapeHtml(setup.listener || "")}" placeholder="Listener endpoint" /></label>
+        <label>Import mapping settings<textarea id="financeImportMapping" rows="3" placeholder="Default column mappings">${escapeHtml(setup.importMapping || "")}</textarea></label>
+        <label>Bank balance Excel mapping<textarea id="financeBankMapping" rows="3" placeholder="Bank upload mappings">${escapeHtml(setup.bankMapping || "")}</textarea></label>
+        <label>Branch setup<textarea id="financeBranchSetup" rows="3" placeholder="Branches">${escapeHtml(setup.branches || "")}</textarea></label>
+        <label>Account categories<textarea id="financeAccountCategories" rows="3" placeholder="Categories">${escapeHtml(setup.categories || "")}</textarea></label>
+        <label>Age bucket setup<input id="financeAgeBuckets" value="${escapeHtml(setup.ageBuckets || "Current, 30 Days, 60 Days, 90 Days, 120+ Days")}" /></label>
+        <label>User permissions for this hub<textarea rows="3" readonly>${escapeHtml("Managed from main platform member access and hub permissions.")}</textarea></label>
+      </div>
+      <button class="primary-btn" data-save-finance-setup>Save setup</button>
+    </section>
+  `;
+}
+
+function renderFinanceAudit() {
+  const rows = loadAudit().filter((entry) => entry.module === "Finance Balances and Age Analysis");
+  return financeTable(["Date and time", "Member name", "Action performed", "Reference", "Details"], rows.map((entry) => ({
+    "Date and time": new Date(entry.timestamp).toLocaleString("en-ZA"),
+    "Member name": entry.userName || displayNameFromUser(entry.user),
+    "Action performed": entry.action,
+    Reference: entry.reference || "-",
+    Details: entry.notes || entry.detail || "-",
+  })));
+}
+
+function renderFinanceHub(tab = activeFinanceTab) {
+  activeFinanceTab = tab;
+  const hub = companyHubBySlug("finance-age-analysis");
+  const content = {
+    dashboard: renderFinanceDashboard(),
+    opening: renderFinanceOpeningBalances(),
+    closing: renderFinanceDataTab("closing", "Closing Balances", "Imported closing balance records"),
+    monthly: renderFinanceDataTab("monthly", "Monthly Balances", "Monthly balance movement"),
+    age: renderFinanceDataTab("age", "Age Analysis", "Debtor and creditor age analysis"),
+    outstanding30: renderFinanceDataTab("outstanding30", "30+ Days Outstanding", "Collection workflow for aged balances"),
+    bank: renderFinanceDataTab("bank", "Bank Balances", "Excel/CSV bank balance upload"),
+    setup: renderFinanceSetup(),
+    audit: renderFinanceAudit(),
+  }[tab] || renderFinanceDashboard();
+  portalHubGrid.innerHTML = `
+    <section class="finance-hub-shell">
+      <aside class="finance-sidebar">
+        <div class="brand"><img class="brand-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" /><div><strong>${escapeHtml(hub.name)}</strong><small>Finance hub</small></div></div>
+        <nav>${financeTabs.map((item) => `<button class="nav-item ${item.key === tab ? "active" : ""}" type="button" data-finance-tab="${item.key}">${escapeHtml(item.label)}</button>`).join("")}</nav>
+        <div class="finance-user-panel">
+          <small>Signed in as</small>
+          <strong>${escapeHtml(currentUserName())}</strong>
+          <span>${escapeHtml(currentMember().access || "Member")}</span>
+          <button class="secondary-btn" type="button" data-finance-logout>Logout</button>
+        </div>
+      </aside>
+      <main class="finance-main">
+        <div class="topbar"><div><p class="eyebrow">Interactive Security</p><h1>${escapeHtml(financeTabs.find((item) => item.key === tab)?.label || "Finance Hub")}</h1></div><button class="secondary-btn" type="button" onclick="window.location.href='/'">Back to portal</button></div>
+        ${content}
+      </main>
+    </section>
+  `;
+  financeAudit("User login/access", hub.name, `Opened ${financeTabs.find((item) => item.key === tab)?.label || tab}`);
+}
+
 function renderPortal() {
   const routeHub = companyHubBySlug(currentCompanyHubSlug());
   if (routeHub && routeHub.slug !== "quotation-hub") {
+    if (!hasHubAccess(routeHub)) {
+      document.body.classList.remove("finance-hub-active");
+      portalHubGrid.innerHTML = `<p class="empty-state">Access denied</p>`;
+      return;
+    }
+    if (routeHub.slug === "finance-age-analysis") {
+      document.body.classList.add("finance-hub-active");
+      renderFinanceHub(activeFinanceTab);
+      return;
+    }
+    document.body.classList.remove("finance-hub-active");
     portalHubGrid.innerHTML = `
       <article class="hub-card portal-module-card hub-placeholder-card">
         <div class="module-icon" aria-hidden="true">${moduleIcon(routeHub.icon)}</div>
@@ -2588,6 +3705,7 @@ function renderPortal() {
     `;
     return;
   }
+  document.body.classList.remove("finance-hub-active");
 
   const hubs = storageList(hubsStorageKey)
     .filter((hub) => companyHubBySlug(hub.slug))
@@ -2599,7 +3717,7 @@ function renderPortal() {
       <article class="hub-card portal-module-card" data-open-hub="${escapeHtml(hub.slug)}">
         <div class="module-icon" aria-hidden="true">${moduleIcon(hub.icon)}</div>
         <div>
-          <mark>${hub.slug === "quotation-hub" ? "Active" : "Placeholder"}</mark>
+          <mark>${hub.status === "active" ? "Active" : "Placeholder"}</mark>
           <strong>${escapeHtml(hub.name)}</strong>
           <p>${escapeHtml(hub.description)}</p>
           <ul class="hub-feature-list">
@@ -3164,15 +4282,19 @@ function isUnreadSalesRequest(request = {}) {
   return !salesRequestViewedBy(request).includes(currentUser()) && !request.accepted_by_user_id;
 }
 
-function unreadSalesRequestCount() {
+function newSalesRequestBadgeCount() {
   return salesRequestsForCurrentUser().filter(isUnreadSalesRequest).length;
 }
 
 function renderSalesRequestBadge() {
   if (!salesRequestCount) return;
-  const count = unreadSalesRequestCount();
+  const count = newSalesRequestBadgeCount();
   salesRequestCount.textContent = String(count);
   salesRequestCount.hidden = count <= 0;
+  if (state.lastSalesRequestBadgeCount !== null && state.lastSalesRequestBadgeCount !== count) {
+    writeAudit("Badge count updated", `Sales Quotation Requests: ${count}`, "Sales Quotation Requests", "Sales request badge", `Updated by ${currentUserName()} from ${state.lastSalesRequestBadgeCount} to ${count}`);
+  }
+  state.lastSalesRequestBadgeCount = count;
 }
 
 function markSalesRequestViewed(id, reason = "Request viewed") {
@@ -4370,7 +5492,7 @@ function renderSalesRequests() {
   renderSalesRequestBadge();
   const allRequests = salesRequestsForCurrentUser().sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
   const requests = filteredSalesRequests().sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
-  const unreadCount = unreadSalesRequestCount();
+  const unreadCount = newSalesRequestBadgeCount();
   const reps = salesRequestFilterOptions(allRequests, "sales_rep_name");
   const quotationTypes = salesRequestFilterOptions(allRequests, "quotation_type", "Technical Quotation");
   salesRequestList.innerHTML = "";
@@ -7579,6 +8701,45 @@ dashboardPrintReport.addEventListener("click", () => {
   window.print();
 });
 
+function renderProjectionsAfterFilterChange(filterName) {
+  if (!canAccess("projections")) return;
+  renderProjections();
+  writeAudit("Changed projections filters", filterName, "Projections", "Projections", `${filterName} changed by ${currentUserName()}`);
+}
+
+projectionsMonth?.addEventListener("change", () => {
+  projectionsFromDate.value = "";
+  projectionsToDate.value = "";
+  renderProjectionsAfterFilterChange("Month");
+});
+projectionsFromDate?.addEventListener("change", () => renderProjectionsAfterFilterChange("Date from"));
+projectionsToDate?.addEventListener("change", () => renderProjectionsAfterFilterChange("Date to"));
+projectionsQuotationType?.addEventListener("change", () => renderProjectionsAfterFilterChange("Quotation type"));
+projectionsSalesRepFilter?.addEventListener("input", () => {
+  clearTimeout(window.projectionsFilterTimer);
+  window.projectionsFilterTimer = setTimeout(() => renderProjectionsAfterFilterChange("Sales rep"), 250);
+});
+projectionsBranchFilter?.addEventListener("input", () => {
+  clearTimeout(window.projectionsFilterTimer);
+  window.projectionsFilterTimer = setTimeout(() => renderProjectionsAfterFilterChange("Branch"), 250);
+});
+projectionsPreviousMonth?.addEventListener("click", () => {
+  const [year, month] = (projectionsMonth.value || monthInputValue()).split("-").map(Number);
+  projectionsMonth.value = monthInputValue(new Date(year, month - 2, 1));
+  projectionsFromDate.value = "";
+  projectionsToDate.value = "";
+  renderProjectionsAfterFilterChange("Previous month");
+});
+projectionsNextMonth?.addEventListener("click", () => {
+  const [year, month] = (projectionsMonth.value || monthInputValue()).split("-").map(Number);
+  projectionsMonth.value = monthInputValue(new Date(year, month, 1));
+  projectionsFromDate.value = "";
+  projectionsToDate.value = "";
+  renderProjectionsAfterFilterChange("Next month");
+});
+projectionsExportExcel?.addEventListener("click", exportProjectionsCsv);
+projectionsExportPdf?.addEventListener("click", exportProjectionsPdf);
+
 requestFiles.addEventListener("change", async () => {
   const files = Array.from(requestFiles.files || []);
   const unsupported = files.filter((file) => !isSupportedRequestDocument(file));
@@ -7710,6 +8871,7 @@ salesRequestForm.addEventListener("submit", (event) => {
   };
   saveSalesRequests([request, ...loadSalesRequests()]);
   writeAudit("Request submitted", request.request_number, "Sales Quotation Requests", request.request_number, `${request.quotation_type}: ${request.client_name}`);
+  renderSalesRequestBadge();
   state.salesRequestFiles = [];
   state.selectedRequestSalesRepId = "";
   salesRequestForm.reset();
@@ -8243,8 +9405,9 @@ Object.values(fields).forEach((field) => {
 });
 
 function showSection(sectionName) {
-  if (isQuotationHubSsoRoute()) return;
+  if (isHubSsoRoute()) return;
   const activeSection = sectionName === "approval" ? "approvals" : sectionName;
+  const previousSection = document.body.dataset.activeSection || "";
   if (!isSignedIn()) {
     loginScreen.hidden = false;
     window.location.hash = "portal";
@@ -8266,7 +9429,7 @@ function showSection(sectionName) {
   });
   renderSalesRequestBadge();
 
-  ["portal", "dashboard", "builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "approvals", "library", "projectTimeline", "settings", "audit"].forEach((section) => {
+  ["portal", "projections", "dashboard", "builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "approvals", "library", "projectTimeline", "settings", "audit"].forEach((section) => {
     const sectionElement = document.querySelector(`#${section}-section`);
     const isActive = section === activeSection;
     if (!sectionElement) return;
@@ -8276,6 +9439,13 @@ function showSection(sectionName) {
   });
 
   if (activeSection === "portal") renderPortal();
+  if (activeSection === "projections") {
+    renderProjections();
+    if (previousSection !== "projections") {
+      const range = projectionsRange();
+      writeAudit("Opened Projections tab", `${range.from} to ${range.to}`, "Projections", "Projections", currentUserName());
+    }
+  }
   if (activeSection === "dashboard") renderDashboard();
   if (activeSection === "guardingBuilder") {
     if (!guardingFields.quoteNumber.value) guardingFields.quoteNumber.value = reserveQuoteNumber(todayInputValue());
@@ -8374,6 +9544,98 @@ function openPlaceholderHub(hubSlug) {
 }
 
 portalHubGrid.addEventListener("click", (event) => {
+  if (event.target.closest("[data-finance-logout]")) {
+    clearSharedSession();
+    loginScreen.hidden = false;
+    window.location.href = "/";
+    return;
+  }
+  const financeTab = event.target.closest("[data-finance-tab]");
+  if (financeTab) {
+    renderFinanceHub(financeTab.dataset.financeTab);
+    return;
+  }
+  const financeOpeningViewButton = event.target.closest("[data-finance-opening-view]");
+  if (financeOpeningViewButton) {
+    const mode = financeOpeningViewButton.dataset.financeOpeningView;
+    if (mode === "range") {
+      const from = prompt("From date (YYYY-MM-DD):", financeOpeningView.from || todayInputValue());
+      const to = prompt("To date (YYYY-MM-DD):", financeOpeningView.to || todayInputValue());
+      if (!from || !to) return;
+      financeOpeningView = { mode, from, to };
+      financeAudit("Date range viewed", "Opening Balances", `${from} to ${to}`);
+    } else {
+      financeOpeningView = { mode, from: "", to: "" };
+      financeAudit("Date range viewed", "Opening Balances", mode === "current" ? "Current day only" : "Previous days");
+    }
+    renderFinanceHub("opening");
+    return;
+  }
+  const financeImportSource = event.target.closest("[data-finance-import-source]");
+  if (financeImportSource) {
+    const source = financeImportSource.dataset.financeImportSource;
+    const type = financeImportSource.dataset.financeType;
+    alert(`${source} connection is not configured yet. Please add the connection details in Finance Setup.`);
+    financeAudit(`Import from ${source}`, type, "Connection settings not configured");
+    return;
+  }
+  const financeExportType = event.target.closest("[data-finance-export]")?.dataset.financeExport;
+  if (financeExportType) {
+    financeExport(financeExportType);
+    return;
+  }
+  const financePrintType = event.target.closest("[data-finance-print]")?.dataset.financePrint;
+  if (financePrintType) {
+    financePrintExport(financePrintType);
+    return;
+  }
+  if (event.target.closest("[data-save-finance-setup]")) {
+    localStorage.setItem(financeStorageKeys.setup, JSON.stringify({
+      pastel: document.querySelector("#financePastelConnection")?.value || "",
+      listener: document.querySelector("#financeListenerConnection")?.value || "",
+      importMapping: document.querySelector("#financeImportMapping")?.value || "",
+      bankMapping: document.querySelector("#financeBankMapping")?.value || "",
+      branches: document.querySelector("#financeBranchSetup")?.value || "",
+      categories: document.querySelector("#financeAccountCategories")?.value || "",
+      ageBuckets: document.querySelector("#financeAgeBuckets")?.value || "",
+    }));
+    financeAudit("Manual edit", "Finance setup", "Setup settings saved");
+    renderFinanceHub("setup");
+    return;
+  }
+  if (event.target.closest("[data-finance-note]")) {
+    const name = prompt("Customer / supplier name for collection note:");
+    const note = prompt("Collection note:");
+    if (name && note) {
+      const rows = financeRows("age").map((row) => String(row.partyName || "").toLowerCase() === name.toLowerCase() ? { ...row, collectionNotes: note } : row);
+      saveFinanceRows("age", rows);
+      financeAudit("Collection note added", name, note);
+      renderFinanceHub("outstanding30");
+    }
+    return;
+  }
+  if (event.target.closest("[data-finance-promise]")) {
+    const name = prompt("Customer / supplier name:");
+    const date = prompt("Promise to pay date (YYYY-MM-DD):");
+    if (name && date) {
+      const rows = financeRows("age").map((row) => String(row.partyName || "").toLowerCase() === name.toLowerCase() ? { ...row, promiseToPayDate: date, status: "Promise to pay" } : row);
+      saveFinanceRows("age", rows);
+      financeAudit("Promise to pay added", name, date);
+      renderFinanceHub("outstanding30");
+    }
+    return;
+  }
+  if (event.target.closest("[data-finance-status]")) {
+    const name = prompt("Customer / supplier name:");
+    const status = prompt("Status: Not contacted, Contacted, Promise to pay, Payment received, Dispute, Handed over");
+    if (name && status) {
+      const rows = financeRows("age").map((row) => String(row.partyName || "").toLowerCase() === name.toLowerCase() ? { ...row, status } : row);
+      saveFinanceRows("age", rows);
+      financeAudit("Status changed", name, status);
+      renderFinanceHub("outstanding30");
+    }
+    return;
+  }
   const moduleCard = event.target.closest("[data-open-section]");
   const section = moduleCard?.dataset.openSection;
   if (section) {
@@ -8386,13 +9648,41 @@ portalHubGrid.addEventListener("click", (event) => {
   const slug = button?.dataset.openHub;
   if (!slug) return;
   console.log("Hub card clicked", { hubSlug: slug });
-  if (slug === "quotation-hub") {
+  const hub = storageList(hubsStorageKey).find((item) => item.slug === slug);
+  if (hub?.status === "active") {
     const section = firstAccessibleQuotationSection();
-    openHub(slug, section);
-    writeAudit("Opened hub", "Quotation Hub", "Portal", "quotation-hub", `Opened ${sectionHeadings[section]?.title || section} in a new tab`);
+    openHub(slug, slug === "quotation-hub" ? section : "dashboard");
+    writeAudit("Opened hub", hub.name, "Portal", hub.slug, `Opened ${hub.name} in a new tab`);
     return;
   }
   openPlaceholderHub(slug);
+});
+
+portalHubGrid.addEventListener("change", async (event) => {
+  const openingEdit = event.target.dataset.financeOpeningEdit;
+  if (openingEdit !== undefined) {
+    const field = event.target.dataset.financeOpeningField;
+    const date = event.target.dataset.financeOpeningDate;
+    const name = event.target.dataset.financeOpeningName;
+    const rows = financeRows("opening");
+    let updated = false;
+    const nextRows = rows.map((row) => {
+      const matches = (openingEdit && row.id === openingEdit) || (row.openingDate === date && (row.accountName || row.partyName) === name);
+      if (!matches) return row;
+      updated = true;
+      return { ...row, [field]: Number(event.target.value || 0), source: "Manual", importedAt: new Date().toISOString(), importedBy: currentUserName() };
+    });
+    if (updated) {
+      saveFinanceRows("opening", nextRows);
+      financeAudit("Balance manually edited", `${name} - ${financeOpeningDateLabel(date)}`, `${field}: ${event.target.value}`);
+      renderFinanceHub("opening");
+    }
+    return;
+  }
+  const type = event.target.dataset.financeUpload;
+  if (!type) return;
+  await financeImportFile(type, event.target.files?.[0]);
+  event.target.value = "";
 });
 
 seedPortalTables();
@@ -8403,7 +9693,7 @@ autoPopulateRequestSalesRep(true);
 const hasSsoParamOnLoad = new URLSearchParams(window.location.search).has("sso");
 const isQuotationHubRouteOnLoad = window.location.pathname.startsWith("/hubs/quotation-hub");
 const isCompanyHubRouteOnLoad = window.location.pathname.startsWith("/hubs/");
-if (isQuotationHubSsoRoute() || hasSsoParamOnLoad || isCompanyHubRouteOnLoad) {
+if (isHubSsoRoute() || hasSsoParamOnLoad || isCompanyHubRouteOnLoad) {
   hydrateSharedSessionFromUrl();
 } else {
   clearSharedSession();
@@ -8441,8 +9731,9 @@ refreshAutoTerms();
 updateSupplierQuoteDisplay();
 renderAll();
 applyPermissions();
+renderSalesRequestBadge();
 const routeSection = window.location.hash.slice(1) === "approval" ? "approvals" : window.location.hash.slice(1);
-const initialSection = ["portal", "dashboard", "builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "approvals", "library", "projectTimeline", "settings", "audit"].includes(routeSection)
+const initialSection = ["portal", "projections", "dashboard", "builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "approvals", "library", "projectTimeline", "settings", "audit"].includes(routeSection)
   ? routeSection
   : "portal";
 consumeHubSsoTokenIfPresent().then((handledSso) => {
@@ -8467,6 +9758,19 @@ consumeHubSsoTokenIfPresent().then((handledSso) => {
     window.location.hash = "portal";
   }
 });
+
+window.addEventListener("storage", (event) => {
+  if (event.key !== salesRequestsStorageKey || !isSignedIn()) return;
+  renderSalesRequestBadge();
+  if (document.body.dataset.activeSection === "salesRequests") renderSalesRequests();
+});
+
+setInterval(() => {
+  if (!isSignedIn()) return;
+  renderSalesRequestBadge();
+  if (document.body.dataset.activeSection === "salesRequests") renderSalesRequests();
+}, 15000);
+
 (function patchBarChart() {
   if (typeof renderBarChart !== "function") return;
   window.renderBarChart = function (target, rows, valueKey, labelKey, formatter) {

@@ -2,6 +2,8 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const os = require("os");
+const { spawnSync } = require("child_process");
 const bcrypt = require("./vendor/bcrypt");
 
 const root = __dirname;
@@ -29,6 +31,7 @@ const permissionKeys = [
   "supplier_prices",
   "member_access_management",
   "quotation_hub",
+  "finance_age_analysis",
   "sales_quotation_requests",
 ];
 
@@ -311,6 +314,33 @@ function readBody(req) {
 // saveSession: creates a new session. Does NOT rewrite the member's security
 //   fields (password_hash, passwordAlgorithm, failedLoginAttempts, lockedUntil,
 //   mustChangePassword). Only refreshes non-sensitive profile fields.
+function readRawBody(req, maxBytes = 15 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    req.on("data", (chunk) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        req.destroy();
+        reject(new Error("Uploaded file is too large."));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+function bundledPythonPath() {
+  const candidates = [
+    process.env.PYTHON,
+    path.join(os.homedir(), ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "python", "python.exe"),
+    path.join(os.homedir(), ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "python", "bin", "python"),
+    "python",
+  ].filter(Boolean);
+  return candidates.find((candidate) => candidate === "python" || fs.existsSync(candidate)) || "python";
+}
 
 function getSession(req) {
   const sid = parseCookies(req).interactive_security_session;
@@ -439,8 +469,13 @@ function saveSession(user) {
 }
 
 function canAccessHub(session, hubSlug) {
-  if (!session || hubSlug !== "quotation-hub") return false;
-  return hasPermission(session, "quotation_hub");
+  if (!session) return false;
+  const hubPermissionMap = {
+    "quotation-hub": "quotation_hub",
+    "finance-age-analysis": "finance_age_analysis",
+  };
+  const permissionKey = hubPermissionMap[hubSlug];
+  return permissionKey ? hasPermission(session, permissionKey) : ["Super Admin", "Admin"].includes(normalizeRole(session.role || session.access));
 }
 
 function hasPermission(session, permissionKey) {
@@ -579,6 +614,98 @@ document.getElementById('form').addEventListener('submit', async function(e) {
 }
 
 // ── API handlers ──────────────────────────────────────────────────────────────
+
+function parseBalanseWorkbook(filePath, session) {
+  const script = `
+import json, re, sys
+from datetime import datetime
+from openpyxl import load_workbook
+
+path = sys.argv[1]
+member_name = sys.argv[2]
+year = int(sys.argv[3])
+month_lookup = {
+  "JANUARY": 1, "FEBRUARY": 2, "MARCH": 3, "APRIL": 4, "MAY": 5, "JUNE": 6,
+  "JULY": 7, "AUGUST": 8, "SEPTEMBER": 9, "OCTOBER": 10, "NOVEMBER": 11, "DECEMBER": 12,
+}
+wb = load_workbook(path, data_only=True)
+ws = wb["BALANSE"] if "BALANSE" in wb.sheetnames else wb[wb.sheetnames[0]]
+
+def slug(value):
+  return re.sub(r"(^-|-$)", "", re.sub(r"[^A-Z0-9]+", "-", str(value).upper())).strip("-")
+
+def parse_date(value):
+  if value is None:
+    return ""
+  if hasattr(value, "date"):
+    return value.date().isoformat()
+  text = str(value).strip().upper()
+  parts = text.split()
+  if len(parts) >= 2 and parts[0].isdigit():
+    month = month_lookup.get(parts[1])
+    if month:
+      return datetime(year, month, int(parts[0])).date().isoformat()
+  return ""
+
+date_cols = []
+for col in range(2, ws.max_column + 1):
+  date_value = parse_date(ws.cell(1, col).value)
+  if date_value:
+    date_cols.append((col, date_value))
+
+section_words = {"OPERATING COMPANIES", "PROPERTY COMPANIES", "LOAN COMPANIES", "BONDS", "NEDBANK PRIVATE", "DISCOVERY CURRENT", "FNB CURRENT", "ABSA BUSINESS", "ABSA PRIVATE", "ASCOGYSTIX"}
+rows = []
+now = datetime.utcnow().isoformat() + "Z"
+for row_index in range(2, ws.max_row + 1):
+  name = ws.cell(row_index, 1).value
+  if name is None:
+    continue
+  name = str(name).strip()
+  if not name:
+    continue
+  upper = name.upper()
+  if upper == "NEDBANK":
+    continue
+  row_type = "account"
+  if upper in section_words:
+    row_type = "section"
+  elif "GRAND TOTAL" in upper:
+    row_type = "grand-total"
+  elif "TOTAL" in upper or "SUB TOTAL" in upper:
+    row_type = "total"
+  for col, date_value in date_cols:
+    balance = ws.cell(row_index, col).value
+    available = ws.cell(row_index, col + 1).value if col + 1 <= ws.max_column else None
+    if balance is None and available is None:
+      continue
+    rows.append({
+      "id": f"finance-opening-import-{row_index}-{col}-{date_value}",
+      "accountCode": "" if row_type != "account" else slug(name),
+      "accountName": name,
+      "partyName": name,
+      "branch": "",
+      "rowType": row_type,
+      "rowOrder": row_index,
+      "openingDate": date_value,
+      "openingBalance": float(balance or 0),
+      "availableBalance": float(available or 0),
+      "source": "Excel - BALANSE",
+      "importedBy": member_name,
+      "importedAt": now,
+    })
+
+print(json.dumps({"rows": rows}))
+`;
+  const result = spawnSync(bundledPythonPath(), ["-", filePath, session.name || session.email || "Unknown", String(new Date().getFullYear())], {
+    input: script,
+    encoding: "utf8",
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    throw new Error(result.stderr || "BALANSE workbook parser failed.");
+  }
+  return JSON.parse(result.stdout || "{\"rows\":[]}");
+}
 
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -1073,6 +1200,30 @@ async function handleApi(req, res) {
     writeDb(db);
     console.log(`[setup] Super Admin created: ${email}`);
     return json(res, 200, { ok: true, email });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/finance/import-opening-balances") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "finance_age_analysis")) return json(res, 403, { error: "Access denied" });
+    const fileName = path.basename(url.searchParams.get("fileName") || "BALANSE.xlsx");
+    if (!/\.(xlsx|xls)$/i.test(fileName)) return json(res, 400, { error: "Please upload the BALANSE Excel workbook." });
+    const uploadsDir = path.join(dataDir, "uploads");
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+    const tempPath = path.join(uploadsDir, `${crypto.randomUUID()}-${fileName}`);
+    try {
+      const buffer = await readRawBody(req);
+      fs.writeFileSync(tempPath, buffer);
+      const parsed = parseBalanseWorkbook(tempPath, session);
+      const db = readDb();
+      writeAudit(db, "Balance imported", session, "Finance Balances and Age Analysis", fileName, `${parsed.rows.length} BALANSE rows parsed`);
+      writeDb(db);
+      return json(res, 200, parsed);
+    } catch (error) {
+      return json(res, 500, { error: error.message || "BALANSE workbook could not be imported." });
+    } finally {
+      try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch {}
+    }
   }
 
   return json(res, 404, { error: "API route not found" });
