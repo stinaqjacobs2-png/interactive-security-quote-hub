@@ -2,11 +2,70 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const bcrypt = require("./vendor/bcrypt");
 
 const root = __dirname;
 const dataDir = path.join(root, "data");
 const dbPath = path.join(dataDir, "app-db.json");
 const port = Number(process.env.PORT || 3100);
+const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS || 12);
+const MAX_FAILED_LOGINS = Number(process.env.MAX_FAILED_LOGINS || 5);
+const LOCKOUT_MINUTES = Number(process.env.LOCKOUT_MINUTES || 30);
+const SESSION_IDLE_MINUTES = Number(process.env.SESSION_IDLE_MINUTES || 30);
+const SESSION_ABSOLUTE_HOURS = Number(process.env.SESSION_ABSOLUTE_HOURS || 8);
+const PASSWORD_RESET_MINUTES = Number(process.env.PASSWORD_RESET_MINUTES || 30);
+
+const permissionKeys = [
+  "dashboard",
+  "build_quotation",
+  "build_guarding_quotation",
+  "build_armed_response_quotation",
+  "quote_library",
+  "project_timeline",
+  "approval",
+  "reports",
+  "audit_trail",
+  "setup",
+  "supplier_prices",
+  "member_access_management",
+  "quotation_hub",
+  "sales_quotation_requests",
+];
+
+const roleDefaults = {
+  "Super Admin": permissionKeys,
+  Admin: permissionKeys,
+  "Quotation Builder": [
+    "quotation_hub",
+    "build_quotation",
+    "build_guarding_quotation",
+    "build_armed_response_quotation",
+    "sales_quotation_requests",
+    "quote_library",
+    "project_timeline",
+  ],
+  "Sales Representative": ["quotation_hub", "sales_quotation_requests"],
+  "Read Only": ["quotation_hub", "dashboard", "quote_library", "reports"],
+};
+
+function normalizeRole(role = "") {
+  const value = String(role || "").trim();
+  const aliases = {
+    "Full Access Member": "Admin",
+    "Quotation Builder Only": "Quotation Builder",
+    Member: "Sales Representative",
+  };
+  return aliases[value] || (roleDefaults[value] ? value : "Read Only");
+}
+
+function defaultPermissionsForRole(role) {
+  return roleDefaults[normalizeRole(role)] || [];
+}
+
+function sanitizePermissions(permissions = []) {
+  return Array.from(new Set((Array.isArray(permissions) ? permissions : [])
+    .filter((permission) => permissionKeys.includes(permission))));
+}
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -29,16 +88,62 @@ function ensureDb() {
       sales_quotation_request_files: [],
       email_logs: [],
       audit_trail: [],
+      password_reset_tokens: [],
+      security_settings: {
+        maxFailedLogins: MAX_FAILED_LOGINS,
+        lockoutMinutes: LOCKOUT_MINUTES,
+        sessionIdleMinutes: SESSION_IDLE_MINUTES,
+        sessionAbsoluteHours: SESSION_ABSOLUTE_HOURS,
+        passwordResetMinutes: PASSWORD_RESET_MINUTES,
+        mfaEnabled: false,
+      },
     }, null, 2));
     return;
   }
   const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
   let changed = false;
-  ["sessions", "sso_tokens", "members", "user_permissions", "sales_quotation_requests", "sales_quotation_request_files", "email_logs", "audit_trail"].forEach((table) => {
+  ["sessions", "sso_tokens", "members", "user_permissions", "sales_quotation_requests", "sales_quotation_request_files", "email_logs", "audit_trail", "password_reset_tokens"].forEach((table) => {
     if (!Array.isArray(db[table])) {
       db[table] = [];
       changed = true;
     }
+  });
+  if (!db.security_settings) {
+    db.security_settings = {
+      maxFailedLogins: MAX_FAILED_LOGINS,
+      lockoutMinutes: LOCKOUT_MINUTES,
+      sessionIdleMinutes: SESSION_IDLE_MINUTES,
+      sessionAbsoluteHours: SESSION_ABSOLUTE_HOURS,
+      passwordResetMinutes: PASSWORD_RESET_MINUTES,
+      mfaEnabled: false,
+    };
+    changed = true;
+  }
+  db.members = db.members.map((member) => {
+    let updated = member;
+    const normalizedRole = normalizeRole(updated.role || updated.access || "Read Only");
+    const normalizedPermissions = sanitizePermissions(updated.permissions);
+    if (updated.role !== normalizedRole || updated.access !== normalizedRole) {
+      updated = {
+        ...updated,
+        role: normalizedRole,
+        access: normalizedRole,
+        permissions: normalizedPermissions.length ? normalizedPermissions : defaultPermissionsForRole(normalizedRole),
+      };
+      changed = true;
+    }
+    if (updated.passwordHash && !updated.legacyPasswordHash) {
+      updated = {
+        ...updated,
+        legacyPasswordHash: updated.passwordHash,
+        passwordHash: undefined,
+        password_hash: updated.password_hash || "",
+        passwordAlgorithm: updated.password_hash ? "bcrypt" : "legacy-sha256-reset-required",
+        mustChangePassword: true,
+      };
+      changed = true;
+    }
+    return updated;
   });
   db.sales_quotation_requests = db.sales_quotation_requests.map((request) => {
     const normalized = String(request.status || "")
@@ -71,6 +176,88 @@ function readDb() {
 function writeDb(db) {
   ensureDb();
   fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
+}
+
+function normalizeEmail(value = "") {
+  return String(value).trim().toLowerCase();
+}
+
+function publicUser(member) {
+  const role = normalizeRole(member.role || member.access || "Read Only");
+  const hasExplicitPermissions = Boolean(member.permissionsExplicit) || (Array.isArray(member.permissions) && member.permissions.length > 0);
+  const permissions = hasExplicitPermissions ? sanitizePermissions(member.permissions) : defaultPermissionsForRole(role);
+  return {
+    userId: member.id,
+    email: member.email,
+    name: member.name || member.email,
+    role,
+    permissions,
+    permissionsExplicit: hasExplicitPermissions,
+    inviteStatus: member.inviteStatus || "Active",
+    mustChangePassword: Boolean(member.mustChangePassword),
+    mfaEnabled: Boolean(member.mfaEnabled),
+    mfaRequired: Boolean(member.mfaRequired),
+  };
+}
+
+function passwordPolicyErrors(password = "") {
+  const errors = [];
+  if (password.length < 12) errors.push("at least 12 characters");
+  if (!/[A-Z]/.test(password)) errors.push("one uppercase letter");
+  if (!/[a-z]/.test(password)) errors.push("one lowercase letter");
+  if (!/[0-9]/.test(password)) errors.push("one number");
+  if (!/[^A-Za-z0-9]/.test(password)) errors.push("one special character");
+  return errors;
+}
+
+function assertStrongPassword(password) {
+  const errors = passwordPolicyErrors(password);
+  if (errors.length) {
+    const error = new Error(`Password must contain ${errors.join(", ")}.`);
+    error.code = "WEAK_PASSWORD";
+    error.details = errors;
+    throw error;
+  }
+}
+
+function hashPassword(password) {
+  assertStrongPassword(password);
+  return bcrypt.hashSync(password, BCRYPT_ROUNDS);
+}
+
+function verifyPassword(password, passwordHash) {
+  if (!passwordHash || !passwordHash.startsWith("$2")) return false;
+  return bcrypt.compareSync(password, passwordHash);
+}
+
+function tokenHash(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function securitySettings(db) {
+  return {
+    maxFailedLogins: Number(db.security_settings?.maxFailedLogins || MAX_FAILED_LOGINS),
+    lockoutMinutes: Number(db.security_settings?.lockoutMinutes || LOCKOUT_MINUTES),
+    sessionIdleMinutes: Number(db.security_settings?.sessionIdleMinutes || SESSION_IDLE_MINUTES),
+    sessionAbsoluteHours: Number(db.security_settings?.sessionAbsoluteHours || SESSION_ABSOLUTE_HOURS),
+    passwordResetMinutes: Number(db.security_settings?.passwordResetMinutes || PASSWORD_RESET_MINUTES),
+    mfaEnabled: Boolean(db.security_settings?.mfaEnabled),
+  };
+}
+
+function writeAudit(db, action, user, module = "Authentication", reference = user?.email || "", notes = "") {
+  db.audit_trail.unshift({
+    id: crypto.randomUUID(),
+    action,
+    detail: reference,
+    module,
+    reference,
+    notes,
+    user: user?.email || "system",
+    userName: user?.name || user?.email || "System",
+    timestamp: new Date().toISOString(),
+  });
+  db.audit_trail = db.audit_trail.slice(0, 5000);
 }
 
 function json(res, status, payload) {
@@ -118,21 +305,48 @@ function getSession(req) {
   const sid = parseCookies(req).interactive_security_session;
   if (!sid) return null;
   const db = readDb();
-  return db.sessions.find((session) => session.sid === sid && new Date(session.expiresAt) > new Date()) || null;
+  const settings = securitySettings(db);
+  const now = new Date();
+  const session = db.sessions.find((item) => item.sid === sid);
+  if (!session) return null;
+  const absoluteExpired = new Date(session.expiresAt) <= now;
+  const lastActivity = session.lastActivityAt ? new Date(session.lastActivityAt) : new Date(session.createdAt || 0);
+  const idleExpired = now.getTime() - lastActivity.getTime() > settings.sessionIdleMinutes * 60 * 1000;
+  if (absoluteExpired || idleExpired) {
+    db.sessions = db.sessions.filter((item) => item.sid !== sid);
+    writeAudit(db, "Session expired", session, "Authentication", session.email, absoluteExpired ? "Absolute session expiry" : "Inactive session expiry");
+    writeDb(db);
+    return null;
+  }
+  session.role = normalizeRole(session.role || session.access || "Read Only");
+  const sanitizedSessionPermissions = sanitizePermissions(session.permissions);
+  session.permissions = session.permissionsExplicit ? sanitizedSessionPermissions : (sanitizedSessionPermissions.length ? sanitizedSessionPermissions : defaultPermissionsForRole(session.role));
+  session.lastActivityAt = now.toISOString();
+  writeDb(db);
+  return session;
 }
 
 function saveSession(user) {
   const db = readDb();
+  const settings = securitySettings(db);
   const sid = crypto.randomBytes(32).toString("hex");
+  const now = new Date();
+  const role = normalizeRole(user.role || user.access || "Read Only");
+  const userPermissions = sanitizePermissions(user.permissions);
+  const hasExplicitPermissions = Boolean(user.permissionsExplicit) || userPermissions.length > 0;
   const session = {
     sid,
     userId: user.userId || user.id || user.email,
     email: user.email,
     name: user.name || user.email,
-    role: user.role || user.access || "Admin",
-    permissions: Array.isArray(user.permissions) ? user.permissions : [],
-    createdAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
+    role,
+    permissions: hasExplicitPermissions ? userPermissions : defaultPermissionsForRole(role),
+    permissionsExplicit: hasExplicitPermissions,
+    mfaEnabled: Boolean(user.mfaEnabled),
+    mfaRequired: Boolean(user.mfaRequired),
+    createdAt: now.toISOString(),
+    lastActivityAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + settings.sessionAbsoluteHours * 60 * 60 * 1000).toISOString(),
   };
   db.sessions = db.sessions.filter((item) => item.email !== session.email || new Date(item.expiresAt) > new Date());
   db.sessions.push(session);
@@ -147,6 +361,8 @@ function saveSession(user) {
     inviteStatus: user.inviteStatus || "Active",
     role: session.role,
     permissions: session.permissions,
+    mfaEnabled: session.mfaEnabled,
+    mfaRequired: session.mfaRequired,
     updated_at: new Date().toISOString(),
   };
   if (memberIndex >= 0) db.members[memberIndex] = { ...db.members[memberIndex], ...memberRecord };
@@ -157,21 +373,16 @@ function saveSession(user) {
 
 function canAccessHub(session, hubSlug) {
   if (!session || hubSlug !== "quotation-hub") return false;
-  if (session.role === "Super Admin") return true;
-  if (Array.isArray(session.permissions) && session.permissions.length) return session.permissions.includes("quotation_hub");
-  return ["Admin", "Full Access Member", "Quotation Builder Only"].includes(session.role);
+  return hasPermission(session, "quotation_hub");
 }
 
 function hasPermission(session, permissionKey) {
   if (!session) return false;
-  if (session.role === "Super Admin") return true;
-  if (Array.isArray(session.permissions) && session.permissions.includes(permissionKey)) return true;
-  const roleDefaults = {
-    Admin: ["dashboard", "build_quotation", "quote_library", "approval", "reports", "audit_trail", "setup", "supplier_prices", "member_access_management", "quotation_hub", "sales_quotation_requests"],
-    "Full Access Member": ["dashboard", "reports", "build_quotation", "quote_library", "approval", "quotation_hub", "sales_quotation_requests"],
-    "Quotation Builder Only": ["build_quotation", "quotation_hub", "sales_quotation_requests"],
-  };
-  return (roleDefaults[session.role] || []).includes(permissionKey);
+  const role = normalizeRole(session.role || session.access);
+  if (["Super Admin", "Admin"].includes(role)) return true;
+  const permissions = sanitizePermissions(session.permissions);
+  const assigned = session.permissionsExplicit ? permissions : (permissions.length ? permissions : defaultPermissionsForRole(role));
+  return assigned.includes(permissionKey);
 }
 
 function serveIndex(res) {
@@ -183,10 +394,9 @@ function serveIndex(res) {
 function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let cleanPath = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
-  if (cleanPath.startsWith("/hubs/quotation-hub/")) {
-    cleanPath = `/${cleanPath.slice("/hubs/quotation-hub/".length)}`;
-  } else if (cleanPath.startsWith("/hubs/")) {
-    cleanPath = `/${cleanPath.slice("/hubs/".length)}`;
+  const hubAssetMatch = cleanPath.match(/^\/hubs\/[^/]+\/(.+)$/);
+  if (hubAssetMatch) {
+    cleanPath = `/${hubAssetMatch[1]}`;
   }
   const filePath = path.normalize(path.join(root, cleanPath));
   if (!filePath.startsWith(root)) {
@@ -212,8 +422,64 @@ async function handleApi(req, res) {
 
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
     const body = await readBody(req);
-    if (!body.email) return json(res, 400, { error: "Missing user email" });
-    const session = saveSession(body);
+    const email = normalizeEmail(body.email);
+    const password = String(body.password || "");
+    if (!email || !password) return json(res, 400, { error: "Missing email or password" });
+    const db = readDb();
+    const settings = securitySettings(db);
+    let member = db.members.find((item) => normalizeEmail(item.email) === email);
+    const now = new Date();
+    const hasPasswordUsers = db.members.some((item) => item.password_hash);
+    if (!member && !hasPasswordUsers && process.env.NODE_ENV !== "production") {
+      try {
+        member = {
+          id: email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+          name: body.name || "System Admin",
+          email,
+          role: "Super Admin",
+          permissions: permissionKeys,
+          inviteStatus: "Active",
+          password_hash: hashPassword(password),
+          passwordAlgorithm: "bcrypt",
+          mustChangePassword: false,
+          failedLoginAttempts: 0,
+          created_at: now.toISOString(),
+          updated_at: now.toISOString(),
+          mfaEnabled: false,
+        };
+        db.members.push(member);
+        writeAudit(db, "Created bootstrap admin", member, "Authentication", email, "Development bootstrap only");
+        writeDb(db);
+      } catch (error) {
+        return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
+      }
+    }
+    if (!member || member.inviteStatus === "Disabled") return json(res, 401, { error: "The email address or password is incorrect." });
+    if (member.lockedUntil && new Date(member.lockedUntil) > now) {
+      return json(res, 423, { error: `Account locked until ${member.lockedUntil}`, code: "ACCOUNT_LOCKED", lockedUntil: member.lockedUntil });
+    }
+    if (!member.password_hash) {
+      return json(res, 403, { error: "Password reset required before this account can sign in.", code: "PASSWORD_RESET_REQUIRED" });
+    }
+    if (!verifyPassword(password, member.password_hash)) {
+      member.failedLoginAttempts = Number(member.failedLoginAttempts || 0) + 1;
+      member.lastFailedLoginAt = now.toISOString();
+      if (member.failedLoginAttempts >= settings.maxFailedLogins) {
+        member.lockedUntil = new Date(now.getTime() + settings.lockoutMinutes * 60 * 1000).toISOString();
+        writeAudit(db, "Account locked", member, "Authentication", email, `${member.failedLoginAttempts} failed login attempts`);
+      } else {
+        writeAudit(db, "Failed login", member, "Authentication", email, `${member.failedLoginAttempts} failed login attempts`);
+      }
+      writeDb(db);
+      return json(res, 401, { error: "The email address or password is incorrect.", remainingAttempts: Math.max(0, settings.maxFailedLogins - member.failedLoginAttempts) });
+    }
+    member.failedLoginAttempts = 0;
+    member.lockedUntil = null;
+    member.lastLoginAt = now.toISOString();
+    member.updated_at = now.toISOString();
+    writeAudit(db, "Signed in", member, "Authentication", email, member.mustChangePassword ? "Password change required" : "Successful login");
+    writeDb(db);
+    const session = saveSession(publicUser(member));
     setCookie(res, "interactive_security_session", session.sid);
     return json(res, 200, {
       user: {
@@ -222,8 +488,105 @@ async function handleApi(req, res) {
         name: session.name,
         role: session.role,
         permissions: session.permissions,
+        permissionsExplicit: session.permissionsExplicit,
+        mustChangePassword: Boolean(member.mustChangePassword),
+        mfaEnabled: Boolean(member.mfaEnabled),
+        mfaRequired: Boolean(member.mfaRequired),
       },
     });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/change-password") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    const body = await readBody(req);
+    const currentPassword = String(body.currentPassword || "");
+    const newPassword = String(body.newPassword || "");
+    const db = readDb();
+    const member = db.members.find((item) => normalizeEmail(item.email) === normalizeEmail(session.email));
+    if (!member) return json(res, 404, { error: "Member not found" });
+    if (member.password_hash && !verifyPassword(currentPassword, member.password_hash)) {
+      writeAudit(db, "Failed password change", member, "Authentication", member.email, "Current password incorrect");
+      writeDb(db);
+      return json(res, 401, { error: "Current password is incorrect." });
+    }
+    try {
+      member.password_hash = hashPassword(newPassword);
+    } catch (error) {
+      return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
+    }
+    member.passwordAlgorithm = "bcrypt";
+    member.mustChangePassword = false;
+    member.passwordChangedAt = new Date().toISOString();
+    member.failedLoginAttempts = 0;
+    member.lockedUntil = null;
+    writeAudit(db, "Changed password", member, "Authentication", member.email, "Password changed successfully");
+    writeDb(db);
+    return json(res, 200, { ok: true });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/request-password-reset") {
+    const body = await readBody(req);
+    const email = normalizeEmail(body.email);
+    const db = readDb();
+    const settings = securitySettings(db);
+    const member = db.members.find((item) => normalizeEmail(item.email) === email);
+    let resetToken = "";
+    if (member && member.inviteStatus !== "Disabled") {
+      resetToken = crypto.randomBytes(32).toString("base64url");
+      db.password_reset_tokens.push({
+        id: crypto.randomUUID(),
+        token_hash: tokenHash(resetToken),
+        user_id: member.id,
+        email: member.email,
+        expires_at: new Date(Date.now() + settings.passwordResetMinutes * 60 * 1000).toISOString(),
+        used_at: null,
+        created_at: new Date().toISOString(),
+      });
+      db.email_logs.push({
+        id: crypto.randomUUID(),
+        type: "password_reset",
+        to: member.email,
+        subject: "Interactive Security password reset",
+        status: process.env.NODE_ENV === "production" ? "Pending email provider" : "Development token generated",
+        created_at: new Date().toISOString(),
+      });
+      writeAudit(db, "Password reset requested", member, "Authentication", member.email, "Reset token generated");
+      writeDb(db);
+    }
+    return json(res, 200, {
+      ok: true,
+      message: "If the account exists, a password reset link will be sent.",
+      resetToken: process.env.NODE_ENV === "production" ? undefined : resetToken,
+    });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/reset-password") {
+    const body = await readBody(req);
+    const resetToken = String(body.token || "");
+    const newPassword = String(body.newPassword || "");
+    const db = readDb();
+    const record = db.password_reset_tokens.find((item) => item.token_hash === tokenHash(resetToken));
+    if (!record || record.used_at || new Date(record.expires_at) <= new Date()) {
+      return json(res, 401, { error: "Password reset link is invalid or expired." });
+    }
+    const member = db.members.find((item) => item.id === record.user_id || normalizeEmail(item.email) === normalizeEmail(record.email));
+    if (!member) return json(res, 404, { error: "Member not found" });
+    try {
+      member.password_hash = hashPassword(newPassword);
+    } catch (error) {
+      return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
+    }
+    record.used_at = new Date().toISOString();
+    member.passwordAlgorithm = "bcrypt";
+    member.mustChangePassword = false;
+    member.failedLoginAttempts = 0;
+    member.lockedUntil = null;
+    member.passwordChangedAt = new Date().toISOString();
+    member.inviteStatus = "Active";
+    writeAudit(db, "Password reset completed", member, "Authentication", member.email, "Password reset token consumed");
+    writeDb(db);
+    return json(res, 200, { ok: true });
   }
 
   if (req.method === "GET" && url.pathname === "/api/auth/session") {
@@ -235,6 +598,9 @@ async function handleApi(req, res) {
   if (req.method === "GET" && url.pathname === "/api/members/search") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!["sales_quotation_requests", "build_quotation", "approval", "setup"].some((permission) => hasPermission(session, permission))) {
+      return json(res, 403, { error: "Access denied" });
+    }
     const query = (url.searchParams.get("query") || "").trim().toLowerCase();
     const db = readDb();
     const activeMembers = db.members
@@ -250,6 +616,63 @@ async function handleApi(req, res) {
         department: member.department || "",
       }));
     return json(res, 200, { members: activeMembers });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/members") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
+    const body = await readBody(req);
+    const email = normalizeEmail(body.email);
+    const tempPassword = String(body.temporaryPassword || "");
+    if (!email || !body.name) return json(res, 400, { error: "Member name and email are required." });
+    const db = readDb();
+    const existing = db.members.find((item) => normalizeEmail(item.email) === email && item.id !== body.id);
+    if (existing) return json(res, 409, { error: "A member with this email address already exists." });
+    let password_hash = "";
+    if (tempPassword) {
+      try {
+        password_hash = hashPassword(tempPassword);
+      } catch (error) {
+        return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
+      }
+    }
+    const now = new Date().toISOString();
+    const id = body.id || email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const index = db.members.findIndex((item) => item.id === id || normalizeEmail(item.email) === email);
+    const previous = index >= 0 ? db.members[index] : {};
+    const role = normalizeRole(body.role || body.access || previous.role || "Sales Representative");
+    const permissions = sanitizePermissions(Array.isArray(body.permissions) ? body.permissions : (previous.permissions || defaultPermissionsForRole(role)));
+    const member = {
+      ...previous,
+      id,
+      name: String(body.name || previous.name || email),
+      email,
+      phone: body.phone || previous.phone || "",
+      branch: body.branch || previous.branch || "",
+      department: body.department || previous.department || "",
+      role,
+      access: role,
+      permissions,
+      permissionsExplicit: true,
+      inviteStatus: body.inviteStatus || previous.inviteStatus || "Invite Sent",
+      mustChangePassword: password_hash ? true : Boolean(previous.mustChangePassword),
+      password_hash: password_hash || previous.password_hash || "",
+      passwordAlgorithm: password_hash ? "bcrypt" : previous.passwordAlgorithm || "",
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+      mfaEnabled: Boolean(previous.mfaEnabled),
+      mfaRequired: Boolean(previous.mfaRequired),
+      created_at: previous.created_at || now,
+      updated_at: now,
+    };
+    if (index >= 0) db.members[index] = member;
+    else db.members.push(member);
+    const previousSummary = previous.email ? `${normalizeRole(previous.role || previous.access)}: ${(previous.permissions || []).join(", ") || "role defaults"}` : "new member";
+    const newSummary = `${role}: ${permissions.join(", ") || "no modules selected"}`;
+    writeAudit(db, index >= 0 ? "Updated member access" : "Member invite sent", session, "Setup - Member access", email, `${previousSummary} -> ${newSummary}`);
+    writeDb(db);
+    return json(res, 200, { member: publicUser(member) });
   }
 
   if (req.method === "POST" && url.pathname === "/api/sso/create-token") {
@@ -271,6 +694,7 @@ async function handleApi(req, res) {
         name: session.name,
         role: session.role,
         permissions: session.permissions,
+        permissionsExplicit: session.permissionsExplicit,
       },
       hub_slug: hubSlug,
       expires_at: new Date(Date.now() + 60 * 1000).toISOString(),
@@ -280,7 +704,7 @@ async function handleApi(req, res) {
     db.sso_tokens.push(record);
     writeDb(db);
     const redirectUrl = `${url.origin}/hubs/${hubSlug}/sso-login?token=${encodeURIComponent(token)}`;
-    console.log("SSO token created", { userId: session.userId, hubSlug, token, redirectUrl });
+    console.log("SSO token created", { userId: session.userId, hubSlug, redirectUrl });
     return json(res, 200, { redirectUrl });
   }
 
@@ -290,7 +714,7 @@ async function handleApi(req, res) {
     const hubSlug = body.hubSlug;
     const db = readDb();
     const record = db.sso_tokens.find((item) => item.token === token);
-    console.log("SSO token received by hub", { hubSlug, token });
+    console.log("SSO token received by hub", { hubSlug });
     if (!record) return json(res, 401, { error: "token not found" });
     if (record.hub_slug !== hubSlug) return json(res, 401, { error: "hub mismatch" });
     if (record.used_at) return json(res, 401, { error: "token used already" });
@@ -307,6 +731,7 @@ async function handleApi(req, res) {
         name: session.name,
         role: session.role,
         permissions: session.permissions,
+        permissionsExplicit: session.permissionsExplicit,
       },
     });
   }
@@ -318,6 +743,7 @@ async function handleApi(req, res) {
       userId: session.userId,
       role: session.role,
       permissions: session.permissions || [],
+      permissionsExplicit: Boolean(session.permissionsExplicit),
     });
   }
 
@@ -328,8 +754,12 @@ async function handleApi(req, res) {
     const body = await readBody(req);
     const db = readDb();
     const now = new Date().toISOString();
+    const previous = db.user_permissions
+      .filter((item) => item.user_id === body.userId && item.can_access)
+      .map((item) => item.permission_key);
+    const requestedPermissions = sanitizePermissions(body.permissions || []);
     db.user_permissions = db.user_permissions.filter((item) => item.user_id !== body.userId);
-    (body.permissions || []).forEach((permissionKey) => {
+    requestedPermissions.forEach((permissionKey) => {
       db.user_permissions.push({
         id: crypto.randomUUID(),
         user_id: body.userId,
@@ -339,6 +769,10 @@ async function handleApi(req, res) {
         updated_at: now,
       });
     });
+    const member = db.members.find((item) => item.id === body.userId || normalizeEmail(item.email) === normalizeEmail(body.userEmail || ""));
+    if (member) member.permissions = requestedPermissions;
+    if (member) member.permissionsExplicit = true;
+    writeAudit(db, "Changed member permissions", session, "Setup - Member access", body.userId || body.userEmail || "", `Previous: ${previous.join(", ") || "none"} | New: ${requestedPermissions.join(", ") || "none"}`);
     writeDb(db);
     return json(res, 200, { ok: true });
   }
@@ -350,7 +784,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res);
-    if (url.pathname === "/hubs/quotation-hub" || url.pathname === "/hubs/quotation-hub/sso-login") return serveIndex(res);
+    if (url.pathname.startsWith("/hubs/")) return serveIndex(res);
     return serveStatic(req, res);
   } catch (error) {
     console.error(error);

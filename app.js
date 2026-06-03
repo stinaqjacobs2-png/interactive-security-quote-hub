@@ -3,6 +3,7 @@ const state = {
   selectedCompanyId: "",
   selectedApprovalId: "",
   selectedLibraryId: "",
+  selectedTimelineId: "",
   selectedSalesRequestId: "",
   focusRejectionReason: false,
   auditReportRows: [],
@@ -15,6 +16,13 @@ const state = {
   supplierImport: null,
   supplierImportErrors: [],
   salesRequestFiles: [],
+  salesRequestFilters: {
+    status: "All",
+    salesRep: "",
+    clientName: "",
+    submittedDate: "",
+    quotationType: "All",
+  },
   revisionSourceId: "",
   activeSalesRequestId: "",
   selectedRequestSalesRepId: "",
@@ -25,6 +33,12 @@ const state = {
     staffing: [],
     equipment: [],
     additionalCosts: [],
+    lineItems: [],
+  },
+  armed: {
+    activeSalesRequestId: "",
+    additionalServices: [],
+    onceOffCharges: [],
   },
 };
 
@@ -47,6 +61,8 @@ const hubActivitySummaryStorageKey = "interactiveSecurityHubActivitySummary";
 const userPermissionsStorageKey = "interactiveSecurityUserPermissions";
 const quotationSettingsStorageKey = "interactiveSecurityQuotationSettings";
 const salesRequestsStorageKey = "interactiveSecuritySalesQuotationRequests";
+const projectTimelineStorageKey = "interactiveSecurityProjectTimelines";
+const guardingPriceListStorageKey = "interactiveSecurityGuardingPriceList";
 const requestSequencePrefix = "interactiveSecuritySalesRequestSequence";
 const supplierQuoteDbName = "quotePilotSupplierQuotations";
 const supplierQuoteStoreName = "files";
@@ -208,13 +224,17 @@ const costingBalanceNote = document.querySelector("#costingBalanceNote");
 const approvalList = document.querySelector("#approvalList");
 const approvalDetail = document.querySelector("#approvalDetail");
 const approvalCount = document.querySelector("#approvalCount");
+const salesRequestCount = document.querySelector("#salesRequestCount");
 const quoteLibraryList = document.querySelector("#quoteLibraryList");
 const quoteLibraryDetail = document.querySelector("#quoteLibraryDetail");
+const projectTimelineList = document.querySelector("#projectTimelineList");
+const projectTimelineDetail = document.querySelector("#projectTimelineDetail");
 const auditList = document.querySelector("#auditList");
 const loginScreen = document.querySelector("#loginScreen");
 const loginForm = document.querySelector("#loginForm");
 const loginEmail = document.querySelector("#loginEmail");
 const loginPassword = document.querySelector("#loginPassword");
+const forgotPassword = document.querySelector("#forgotPassword");
 const sectionEyebrow = document.querySelector("#sectionEyebrow");
 const sectionTitle = document.querySelector("#sectionTitle");
 const sectionStatus = document.querySelector("#sectionStatus");
@@ -253,6 +273,20 @@ const setupClientContact = document.querySelector("#setupClientContact");
 const setupClientEmail = document.querySelector("#setupClientEmail");
 const setupClientPhone = document.querySelector("#setupClientPhone");
 const clientList = document.querySelector("#clientList");
+const guardingPriceForm = document.querySelector("#guardingPriceForm");
+const guardingPriceItemName = document.querySelector("#guardingPriceItemName");
+const guardingPriceShiftType = document.querySelector("#guardingPriceShiftType");
+const guardingPriceBillingType = document.querySelector("#guardingPriceBillingType");
+const guardingPriceDescription = document.querySelector("#guardingPriceDescription");
+const guardingPriceUnitType = document.querySelector("#guardingPriceUnitType");
+const guardingPriceCategory = document.querySelector("#guardingPriceCategory");
+const guardingPriceServiceType = document.querySelector("#guardingPriceServiceType");
+const guardingPriceRate = document.querySelector("#guardingPriceRate");
+const guardingPriceActive = document.querySelector("#guardingPriceActive");
+const guardingPriceImportFile = document.querySelector("#guardingPriceImportFile");
+const guardingPriceImportSummary = document.querySelector("#guardingPriceImportSummary");
+const guardingPriceList = document.querySelector("#guardingPriceList");
+const exportGuardingPriceList = document.querySelector("#exportGuardingPriceList");
 const auditMemberFilter = document.querySelector("#auditMemberFilter");
 const auditSingleDate = document.querySelector("#auditSingleDate");
 const auditFromDate = document.querySelector("#auditFromDate");
@@ -278,10 +312,6 @@ const salesRepValueChart = document.querySelector("#salesRepValueChart");
 const salesRepTotalsTable = document.querySelector("#salesRepTotalsTable");
 const outstandingClientTable = document.querySelector("#outstandingClientTable");
 const portalHubGrid = document.querySelector("#portalHubGrid");
-const portalSummaryTitle = document.querySelector("#portalSummaryTitle");
-const portalSummaryGrid = document.querySelector("#portalSummaryGrid");
-const portalMonthlyChart = document.querySelector("#portalMonthlyChart");
-const portalSalesRepTable = document.querySelector("#portalSalesRepTable");
 const quotationSettingsForm = document.querySelector("#quotationSettingsForm");
 const profitDeductionPercent = document.querySelector("#profitDeductionPercent");
 const commissionPercent = document.querySelector("#commissionPercent");
@@ -299,13 +329,21 @@ const salesRequestSummaryPanel = document.querySelector("#salesRequestSummaryPan
 const salesRequestSummary = document.querySelector("#salesRequestSummary");
 const requestQuotationType = document.querySelector("#requestQuotationType");
 const guardingRequestFields = document.querySelector("#guardingRequestFields");
+const armedResponseRequestFields = document.querySelector("#armedResponseRequestFields");
 const guardingStaffRows = document.querySelector("#guardingStaffRows");
 const guardingEquipmentRows = document.querySelector("#guardingEquipmentRows");
 const guardingCostRows = document.querySelector("#guardingCostRows");
+const guardingLineItemRows = document.querySelector("#guardingLineItemRows");
 const guardingRequestDocumentsPanel = document.querySelector("#guardingRequestDocumentsPanel");
 const guardingRequestDocumentsList = document.querySelector("#guardingRequestDocumentsList");
 const guardingRequestSummaryPanel = document.querySelector("#guardingRequestSummaryPanel");
 const guardingRequestSummary = document.querySelector("#guardingRequestSummary");
+const armedResponseServiceRows = document.querySelector("#armedResponseServiceRows");
+const armedResponseChargeRows = document.querySelector("#armedResponseChargeRows");
+const armedResponseRequestDocumentsPanel = document.querySelector("#armedResponseRequestDocumentsPanel");
+const armedResponseRequestDocumentsList = document.querySelector("#armedResponseRequestDocumentsList");
+const armedResponseRequestSummaryPanel = document.querySelector("#armedResponseRequestSummaryPanel");
+const armedResponseRequestSummary = document.querySelector("#armedResponseRequestSummary");
 
 const guardingFields = {
   company: document.querySelector("#guardingCompany"),
@@ -335,11 +373,48 @@ const guardingFields = {
   builderNotes: document.querySelector("#guardingBuilderNotes"),
 };
 
+const armedResponseFields = {
+  company: document.querySelector("#armedResponseCompany"),
+  clientName: document.querySelector("#armedResponseClientName"),
+  contactPerson: document.querySelector("#armedResponseContactPerson"),
+  contactNumber: document.querySelector("#armedResponseContactNumber"),
+  email: document.querySelector("#armedResponseEmail"),
+  siteName: document.querySelector("#armedResponseSiteName"),
+  siteAddress: document.querySelector("#armedResponseSiteAddress"),
+  province: document.querySelector("#armedResponseProvince"),
+  area: document.querySelector("#armedResponseArea"),
+  industry: document.querySelector("#armedResponseIndustry"),
+  salesRep: document.querySelector("#armedResponseSalesRep"),
+  quoteNumber: document.querySelector("#armedResponseQuoteNumber"),
+  quoteDate: document.querySelector("#armedResponseQuoteDate"),
+  siteCount: document.querySelector("#armedResponseSiteCount"),
+  existingAlarm: document.querySelector("#armedResponseExistingAlarm"),
+  alarmMonitoring: document.querySelector("#armedResponseAlarmMonitoring"),
+  armedRequired: document.querySelector("#armedResponseArmedRequired"),
+  keyHolding: document.querySelector("#armedResponseKeyHolding"),
+  openingClosing: document.querySelector("#armedResponseOpeningClosing"),
+  patrolService: document.querySelector("#armedResponsePatrolService"),
+  panicButton: document.querySelector("#armedResponsePanicButton"),
+  medical: document.querySelector("#armedResponseMedical"),
+  fire: document.querySelector("#armedResponseFire"),
+  startDate: document.querySelector("#armedResponseStartDate"),
+  duration: document.querySelector("#armedResponseDuration"),
+  specialInstructions: document.querySelector("#armedResponseSpecialInstructions"),
+  builderNotes: document.querySelector("#armedResponseBuilderNotes"),
+  packageName: document.querySelector("#armedResponsePackageName"),
+  packageDescription: document.querySelector("#armedResponsePackageDescription"),
+  packageSiteCount: document.querySelector("#armedResponsePackageSiteCount"),
+  markupPercent: document.querySelector("#armedResponseMarkupPercent"),
+  monthlyPerSite: document.querySelector("#armedResponseMonthlyPerSite"),
+};
+
 const permissionDefinitions = [
   { key: "dashboard", label: "Dashboard", section: "dashboard" },
   { key: "build_quotation", label: "Building Technical Quotation", section: "builder" },
   { key: "build_guarding_quotation", label: "Building Guarding Quotation", section: "guardingBuilder" },
+  { key: "build_armed_response_quotation", label: "Building Armed Response Quotation", section: "armedResponseBuilder" },
   { key: "quote_library", label: "Quote Library", section: "library" },
+  { key: "project_timeline", label: "Project Timeline", section: "projectTimeline" },
   { key: "approval", label: "Approval", section: "approvals" },
   { key: "reports", label: "Reports", section: "dashboard" },
   { key: "audit_trail", label: "Audit Trail", section: "audit" },
@@ -350,11 +425,24 @@ const permissionDefinitions = [
   { key: "sales_quotation_requests", label: "Sales Quotation Requests", section: "salesRequests" },
 ];
 
+const platformRoles = ["Super Admin", "Admin", "Quotation Builder", "Sales Representative", "Read Only"];
+
+function normalizeRole(role = "") {
+  const value = String(role || "").trim();
+  const aliases = {
+    "Full Access Member": "Admin",
+    "Quotation Builder Only": "Quotation Builder",
+    Member: "Sales Representative",
+  };
+  return aliases[value] || (platformRoles.includes(value) ? value : "Read Only");
+}
+
 const roleDefaultPermissions = {
   "Super Admin": permissionDefinitions.map((permission) => permission.key),
   Admin: permissionDefinitions.map((permission) => permission.key),
-  "Full Access Member": ["dashboard", "reports", "build_quotation", "build_guarding_quotation", "quote_library", "approval", "quotation_hub", "sales_quotation_requests"],
-  "Quotation Builder Only": ["build_quotation", "build_guarding_quotation", "quotation_hub", "sales_quotation_requests"],
+  "Quotation Builder": ["quotation_hub", "build_quotation", "build_guarding_quotation", "build_armed_response_quotation", "sales_quotation_requests", "quote_library", "project_timeline"],
+  "Sales Representative": ["quotation_hub", "sales_quotation_requests"],
+  "Read Only": ["quotation_hub", "dashboard", "quote_library", "reports"],
 };
 
 const sectionHeadings = {
@@ -378,6 +466,11 @@ const sectionHeadings = {
     title: "Building Guarding Quotation",
     status: "Draft",
   },
+  armedResponseBuilder: {
+    eyebrow: "Armed response quotation workspace",
+    title: "Building Armed Response Quotation",
+    status: "Draft",
+  },
   approvals: {
     eyebrow: "Approval workspace",
     title: "Approve submitted quotations",
@@ -392,6 +485,11 @@ const sectionHeadings = {
     eyebrow: "Quotation records",
     title: "Quote Library",
     status: "Library",
+  },
+  projectTimeline: {
+    eyebrow: "Project delivery",
+    title: "Project Timeline",
+    status: "Accepted",
   },
   settings: {
     eyebrow: "Platform setup",
@@ -449,11 +547,13 @@ function quoteItemTotal(quote, item) {
 
 function quoteSubtotal(quote) {
   if (quote.quotationType === "Guarding Quotation") return Number(quote.guardingPricing?.monthlySelling || quote.monthlyValue || 0);
+  if (quote.quotationType === "Monthly Armed Response Quotation") return Number(quote.armedResponsePricing?.monthlySelling || quote.monthlyValue || 0);
   return (quote.items || []).reduce((sum, item) => sum + quoteItemTotal(quote, item), 0);
 }
 
 function quoteAnnualValue(quote) {
   if (quote.quotationType === "Guarding Quotation") return Number(quote.guardingPricing?.annualValue || quote.annualValue || quoteSubtotal(quote) * 12);
+  if (quote.quotationType === "Monthly Armed Response Quotation") return Number(quote.armedResponsePricing?.annualValue || quote.annualValue || quoteSubtotal(quote) * 12);
   return quoteSubtotal(quote) * (1 + state.taxRate);
 }
 
@@ -786,7 +886,7 @@ function processedQuotationHtml(quote) {
         <style>
           body { font-family: Arial, Helvetica, sans-serif; color: #17212b; margin: 24px; }
           h1, h2, h3 { margin-bottom: 8px; }
-          .logo { width: 190px; display: block; margin: 0 auto 14px; }
+          .logo { width: 260px; display: block; margin: 0 auto 8px; }
           .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
           .box { border: 1px solid #dce3ea; padding: 8px; border-radius: 6px; }
           .box small { display: block; color: #687585; font-weight: 700; }
@@ -847,9 +947,264 @@ function processedQuotationHtml(quote) {
   `;
 }
 
+function guardingShiftLabel(row = {}) {
+  const day = Number(row.dayShiftQuantity || 0);
+  const night = Number(row.nightShiftQuantity || 0);
+  if (day && night) return `Day ${day} / Night ${night}`;
+  if (day) return "Day shift";
+  if (night) return "Night shift";
+  return "As scheduled";
+}
+
+function guardingDaysPerWeek(row = {}) {
+  const daysPerMonth = Number(row.daysPerMonth || 0);
+  return daysPerMonth ? Math.max(1, Math.round((daysPerMonth / 4.33) * 10) / 10) : "-";
+}
+
+function guardingScopeText(quote) {
+  const details = quote.guardingDetails || {};
+  const selectedItems = guardingDisplayLineItems(quote).map(guardingLineItemLabel).filter(Boolean);
+  return [
+    selectedItems.length ? `Selected guarding services: ${selectedItems.join(", ")}.` : details.serviceType || "Guarding services",
+    `Guarding duties: access control, patrols, visible guarding presence, incident escalation, and client-specific site duties.`,
+    `Posting instructions: officers will be posted according to the confirmed site deployment schedule and agreed shift requirements.`,
+    `Reporting requirements: incident reporting, shift handover notes, and escalation of irregularities to the client and Interactive Security management.`,
+    `Site supervision: ${details.supervisor === "Yes" ? "Supervisor required and included in the deployment planning." : "Site supervision will be coordinated through Interactive Security management unless otherwise agreed."}`,
+    `Armed / unarmed status: ${details.armed === "Yes" ? "Armed guarding required." : "Unarmed guarding service."}`,
+    details.specialInstructions ? `Special client instructions: ${details.specialInstructions}` : "",
+  ].filter(Boolean).join(" ");
+}
+
+function guardingQuotationDocumentHtml(quote, options = {}) {
+  const company = companies[quote.selectedCompany];
+  const salesRep = salesReps[quote.salesRep];
+  const details = quote.guardingDetails || {};
+  const lineItems = guardingDisplayLineItems(quote);
+  const pricing = quote.guardingPricing || {};
+  const monthlySubtotal = Number(pricing.monthlySelling || quoteSubtotal(quote) || 0);
+  const vat = roundCurrency(monthlySubtotal * state.taxRate);
+  const monthlyTotal = roundCurrency(monthlySubtotal + vat);
+  const quoteDate = formatDate(quote.quoteDate);
+  const experience = [
+    "Security Officer qualification",
+    "Public relations course",
+    "Surveillance and patrol procedure",
+    "Site induction",
+    "Incident reporting",
+    "Backup support",
+  ];
+  const duties = [
+    "Access control and visitor management",
+    "Patrols and visible guarding presence",
+    "Incident reporting and escalation",
+    "Shift handover and site occurrence notes",
+    details.controlRoom === "Yes" ? "Control room support" : "",
+    details.patrols === "Yes" ? "Scheduled patrols" : "",
+  ].filter(Boolean);
+  const rows = lineItems.length ? lineItems.map((row) => `
+    <tr class="${row.shiftType === "Night Shift" ? "guarding-night-row" : ""}">
+      <td>
+        <strong>${escapeHtml(`${row.quantity || 0} x ${guardingLineItemLabel(row)}`)}</strong>
+        ${row.description && row.description !== guardingLineItemLabel(row) ? `<small>${escapeHtml(row.description)}</small>` : ""}
+        ${row.notes ? `<small>${escapeHtml(row.notes)}</small>` : ""}
+      </td>
+      <td>${String(row.experience || "").split(";").filter(Boolean).map((item) => `<div>${escapeHtml(item.trim())}</div>`).join("") || experience.map((item) => `<div>${escapeHtml(item)}</div>`).join("")}</td>
+      <td>${String(row.duties || "").split(";").filter(Boolean).map((item) => `<div>${escapeHtml(item.trim())}</div>`).join("") || duties.map((item, index) => `<div>${index + 1}) ${escapeHtml(item)}</div>`).join("")}</td>
+      <td>
+        ${guardingScheduleText(row, quote).split("\n").map((line, lineIndex) => lineIndex === 0 ? `<strong>${escapeHtml(line)}</strong>` : `<div>${escapeHtml(line)}</div>`).join("")}
+        ${row.unitNotes ? `<small>${escapeHtml(row.unitNotes)}</small>` : ""}
+        <strong>${money.format(guardingLineItemTotal(row))} Excl. VAT line total</strong>
+      </td>
+    </tr>
+  `).join("") : `
+    <tr>
+      <td><strong>Security Officer</strong></td>
+      <td>${experience.map((item) => `<div>${escapeHtml(item)}</div>`).join("")}</td>
+      <td>${duties.map((item, index) => `<div>${index + 1}) ${escapeHtml(item)}</div>`).join("")}</td>
+      <td><strong>${escapeHtml(quoteDate || "-")}</strong><div>Schedule to be confirmed</div><strong>${money.format(0)} Excl. VAT</strong></td>
+    </tr>
+  `;
+
+  return `
+    <div class="guarding-document ${options.preview ? "guarding-document-preview" : ""}">
+      <header class="guarding-doc-header">
+        <div></div>
+        <img class="guarding-doc-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+        <strong class="guarding-doc-number">${escapeHtml(quote.quoteNumber || "Draft")}</strong>
+      </header>
+      <h1>Quotation</h1>
+      <div class="guarding-doc-topline">
+        <strong>${escapeHtml([quote.clientName, details.siteName].filter(Boolean).join(" - ") || "Client / Site")}</strong>
+        <strong>${escapeHtml(quoteDate || "-")}</strong>
+      </div>
+      <div class="guarding-info-grid">
+        <div>
+          <small>Client details</small>
+          <strong>${escapeHtml(quote.clientName || "-")}</strong>
+          <span>${escapeHtml(quote.clientAddress || "-")}</span>
+          <span>${escapeHtml([quote.contactPerson, quote.contactEmail, quote.contactNumber].filter(Boolean).join(" / ") || "-")}</span>
+        </div>
+        <div>
+          <small>Quotation details</small>
+          <strong>${escapeHtml(quote.quoteNumber || "-")}</strong>
+          <span>Date: ${escapeHtml(quoteDate || "-")}</span>
+          <span>Sales representative: ${escapeHtml([salesRep?.name, salesRep?.email].filter(Boolean).join(" / ") || "-")}</span>
+        </div>
+        <div>
+          <small>Deployment details</small>
+          <strong>${escapeHtml(`${lineItems.reduce((sum, row) => sum + Number(row.quantity || 0), 0) || details.guardCount || 0} officer(s)`)}</strong>
+          <span>Shift: ${escapeHtml(Array.from(new Set(lineItems.map((row) => row.shiftType).filter(Boolean))).join(" / ") || "-")}</span>
+          <span>Billing: ${escapeHtml(Array.from(new Set(lineItems.map((row) => row.billingType).filter(Boolean))).join(" / ") || "-")}</span>
+        </div>
+      </div>
+      <table class="guarding-main-table">
+        <thead>
+          <tr><th colspan="4">Price Quotations and Details</th></tr>
+          <tr><th>Description</th><th>Experience</th><th>Equipment and Duties</th><th>Schedule</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <table class="guarding-summary-table guarding-total-table">
+        <tbody>
+          <tr><td>Subtotal excluding VAT</td><td>${money.format(monthlySubtotal)}</td></tr>
+          <tr><td>VAT 15%</td><td>${money.format(vat)}</td></tr>
+          <tr class="total-row"><td>Total including VAT</td><td>${money.format(monthlyTotal)}</td></tr>
+        </tbody>
+      </table>
+      <section class="guarding-terms-section">
+        <h2>Terms and Conditions</h2>
+        <p>This quotation is valid for 7 days from quotation date. Service commencement is subject to signed acceptance, site access, final operational confirmation, and payment terms agreed by Interactive Security. Pricing excludes work outside the agreed guarding scope unless approved in writing by the client.</p>
+      </section>
+      <section class="guarding-signature-section">
+        <h2>Acceptance</h2>
+        <div><span>Accepted by client</span><span>Signature</span><span>Date</span></div>
+      </section>
+    </div>
+  `;
+}
+
+function guardingQuotationFullHtml(quote) {
+  return `
+    <!doctype html>
+    <html>
+      <head>
+        <title>${escapeHtml(quote.quoteNumber || "Guarding Quotation")} Client Quotation</title>
+        <style>
+          body { font-family: Arial, Helvetica, sans-serif; color: #17212b; margin: 18px; font-size: 10.5px; }
+          button { margin-bottom: 12px; padding: 8px 12px; border: 1px solid #dce3ea; background: #fff; border-radius: 6px; cursor: pointer; }
+          .guarding-document { max-width: 980px; margin: 0 auto; }
+          .guarding-doc-header { display: grid; grid-template-columns: 1fr 2fr 1fr; align-items: center; gap: 12px; }
+          .guarding-doc-logo { width: 430px; max-width: 100%; height: auto; display: block; margin: 0 auto; }
+          .guarding-doc-number { justify-self: end; font-size: 18px; }
+          h1 { text-align: center; text-transform: uppercase; font-size: 13px; margin: 4px 0 16px; }
+          .guarding-doc-topline { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 4px; font-size: 12px; }
+          .guarding-info-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0; }
+          .guarding-info-grid div { border: 1px solid #17212b; padding: 7px; min-height: 62px; }
+          .guarding-info-grid small { display: block; text-transform: uppercase; color: #5d6a78; font-weight: 700; margin-bottom: 3px; }
+          .guarding-info-grid strong, .guarding-info-grid span { display: block; line-height: 1.35; }
+          table { width: 100%; border-collapse: collapse; margin: 0 0 10px; }
+          th, td { border: 2px solid #000; padding: 6px; vertical-align: top; }
+          th { background: #d9d9d9; text-transform: uppercase; text-align: center; font-weight: 800; }
+          td small, td div { display: block; line-height: 1.35; }
+          .right { text-align: right; }
+          .guarding-main-table td:first-child { text-align: center; font-weight: 700; text-transform: uppercase; width: 20%; }
+          .guarding-main-table tr.guarding-night-row td { background: #f1f1f1; }
+          .guarding-main-table td:nth-child(2) { width: 24%; }
+          .guarding-main-table td:nth-child(3) { width: 29%; }
+          .guarding-main-table td:nth-child(4) { text-align: center; width: 27%; }
+          .guarding-summary-table td:last-child { text-align: right; font-weight: 700; }
+          .guarding-summary-table .total-row td { background: #f3f7f8; font-weight: 800; }
+          .guarding-total-table { width: 330px; margin-left: auto; }
+          .guarding-terms-section, .guarding-signature-section { border: 1px solid #17212b; margin: 10px 0; }
+          .guarding-terms-section h2, .guarding-signature-section h2 { margin: 0; padding: 6px 8px; background: #17212b; color: #fff; font-size: 11px; text-transform: uppercase; }
+          .guarding-terms-section p { margin: 0; padding: 8px; line-height: 1.45; }
+          .guarding-signature-section div { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; padding: 28px 8px 8px; }
+          .guarding-signature-section span { border-top: 1px solid #17212b; padding-top: 5px; min-height: 18px; }
+          @media print { button { display: none; } body { margin: 9mm; } .guarding-document { max-width: none; } }
+          @media (max-width: 760px) { .guarding-doc-header, .guarding-info-grid { grid-template-columns: 1fr; } .guarding-total-table { width: 100%; } .guarding-doc-number { justify-self: center; } table { font-size: 9px; } }
+        </style>
+      </head>
+      <body>
+        <button onclick="window.print()">Print / Save as PDF</button>
+        ${guardingQuotationDocumentHtml(quote)}
+      </body>
+    </html>
+  `;
+}
+
 function clientQuotationHtml(quote) {
   const company = companies[quote.selectedCompany];
   const salesRep = salesReps[quote.salesRep];
+  if (quote.quotationType === "Guarding Quotation") return guardingQuotationFullHtml(quote);
+  if (quote.quotationType === "Monthly Armed Response Quotation") {
+    const pricing = quote.armedResponsePricing || {};
+    const services = quote.armedResponseServices || [];
+    const charges = quote.armedResponseOnceOffCharges || [];
+    return `
+      <!doctype html>
+      <html>
+        <head>
+          <title>${escapeHtml(quote.quoteNumber)} Client Quotation</title>
+          <style>
+            body { font-family: Arial, Helvetica, sans-serif; color: #17212b; margin: 22px; font-size: 11px; }
+            .logo { width: 260px; display: block; margin: 0 auto 5px; }
+            .brand, .contact { text-align: center; }
+            .brand strong { font-size: 13px; line-height: 1.15; }
+            .rule { border-top: 2px solid #17212b; margin: 10px 0; }
+            .meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
+            .box { border: 1px solid #dce3ea; background: #f3f7f8; padding: 8px; border-radius: 6px; white-space: pre-line; }
+            .box small { display: block; font-weight: 800; color: #5d6a78; }
+            h1 { text-transform: uppercase; font-size: 18px; margin-bottom: 4px; }
+            table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+            th, td { border: 1px solid #17212b; padding: 7px; }
+            th { background: #17212b; color: #fff; text-align: left; }
+            .right { text-align: right; }
+            .totals { margin-left: auto; width: 310px; }
+            .totals div { display: flex; justify-content: space-between; border: 1px solid #17212b; border-top: 0; padding: 7px; }
+            .section-title { background: #17212b; color: #fff; padding: 7px; font-weight: 800; }
+            .yellow { background: #fff2a8; padding: 2px 6px; font-size: 10.5px; line-height: 1.15; }
+            @media print { button { display: none; } }
+          </style>
+        </head>
+        <body>
+          <button onclick="window.print()">Print / Save as PDF</button>
+          <img class="logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+          <div class="brand"><strong>${escapeHtml(company?.name || "Interactive Security")}</strong><br><span class="yellow">Reg no: ${escapeHtml(company?.registration || "-")} | VAT No: ${escapeHtml(company?.vat || "-")}</span></div>
+          <div class="rule"></div>
+          <div class="contact">${escapeHtml(company?.address || "-")}<br>Tel: ${escapeHtml(company?.phone || "-")} / Email: ${escapeHtml(company?.email || "-")} / Website: ${escapeHtml(company?.website || "-")}</div>
+          <h1>Monthly Armed Response Quotation</h1>
+          <h2>${escapeHtml(quote.quoteNumber)}</h2>
+          <div class="meta">
+            <div class="box"><small>Client Detail</small><strong>${escapeHtml([quote.clientName, quote.clientAddress].filter(Boolean).join("\n") || "-")}</strong></div>
+            <div class="box"><small>Contact Detail</small><strong>${escapeHtml([quote.contactPerson, quote.contactEmail, quote.contactNumber].filter(Boolean).join("\n") || "-")}</strong></div>
+            <div class="box"><small>Sales Rep</small><strong>${escapeHtml([salesRep?.name, salesRep?.email, salesRep?.phone].filter(Boolean).join("\n") || "-")}</strong></div>
+            <div class="box"><small>Date</small><strong>${escapeHtml(formatDate(quote.quoteDate))}</strong></div>
+          </div>
+          <div class="section-title">Scope of Armed Response Services</div>
+          <p>${escapeHtml([quote.armedResponseDetails?.packageDescription, quote.armedResponseDetails?.specialInstructions].filter(Boolean).join(" | ") || "Monthly armed response services as requested.")}</p>
+          <table>
+            <thead><tr><th>Service</th><th>Quantity</th><th>Monthly Selling</th></tr></thead>
+            <tbody>
+              <tr><td>${escapeHtml(quote.armedResponseDetails?.packageName || "Monthly armed response package")}</td><td class="right">${escapeHtml(quote.armedResponseDetails?.packageSiteCount || 1)}</td><td class="right">${money.format(Number(quote.armedResponseDetails?.monthlyPerSite || 0) * Number(quote.armedResponseDetails?.packageSiteCount || 1))}</td></tr>
+              ${services.map((row) => `<tr><td>${escapeHtml(row.description || "-")}</td><td class="right">${escapeHtml(row.quantity || 0)}</td><td class="right">${money.format(Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0))}</td></tr>`).join("")}
+            </tbody>
+          </table>
+          <table>
+            <thead><tr><th>Equipment / Once-off Charges</th><th>Quantity</th><th>Once-off Selling</th></tr></thead>
+            <tbody>${charges.map((row) => `<tr><td>${escapeHtml(row.item || "-")}</td><td class="right">${escapeHtml(row.quantity || 0)}</td><td class="right">${money.format(Number(row.quantity || 0) * Number(row.onceOffSellingPrice || 0))}</td></tr>`).join("") || `<tr><td colspan="3">No once-off charges</td></tr>`}</tbody>
+          </table>
+          <div class="totals">
+            <div><span>Monthly selling price</span><strong>${money.format(Number(pricing.monthlySelling || 0))}</strong></div>
+            <div><span>Once-off charges</span><strong>${money.format(Number(pricing.onceOffSelling || 0))}</strong></div>
+            <div><span>Annual contract value</span><strong>${money.format(Number(pricing.annualValue || 0))}</strong></div>
+          </div>
+          <h3>Terms</h3>
+          <p>This quotation is valid for 7 days from quotation date. Pricing excludes work outside the agreed scope unless approved in writing by the client.</p>
+          <p><strong>Please use quotation number ${escapeHtml(quote.quoteNumber)} as your reference.</strong></p>
+        </body>
+      </html>
+    `;
+  }
   const subtotal = quoteSubtotal(quote);
   const vat = subtotal * state.taxRate;
   const total = subtotal + vat;
@@ -869,8 +1224,9 @@ function clientQuotationHtml(quote) {
         <title>${escapeHtml(quote.quoteNumber)} Client Quotation</title>
         <style>
           body { font-family: Arial, Helvetica, sans-serif; color: #17212b; margin: 22px; font-size: 11px; }
-          .logo { width: 190px; display: block; margin: 0 auto 8px; }
+          .logo { width: 260px; display: block; margin: 0 auto 5px; }
           .brand, .contact { text-align: center; }
+          .brand strong { font-size: 13px; line-height: 1.15; }
           .rule { border-top: 2px solid #17212b; margin: 10px 0; }
           .meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
           .box { border: 1px solid #dce3ea; background: #f3f7f8; padding: 8px; border-radius: 6px; white-space: pre-line; }
@@ -883,7 +1239,7 @@ function clientQuotationHtml(quote) {
           .totals { margin-left: auto; width: 280px; }
           .totals div { display: flex; justify-content: space-between; border: 1px solid #17212b; border-top: 0; padding: 7px; }
           .section-title { background: #17212b; color: #fff; padding: 7px; font-weight: 800; }
-          .yellow { background: #fff2a8; padding: 3px 6px; }
+          .yellow { background: #fff2a8; padding: 2px 6px; font-size: 10.5px; line-height: 1.15; }
           @media print { button { display: none; } }
         </style>
       </head>
@@ -1154,18 +1510,30 @@ function currentUser() {
 }
 
 function isSignedIn() {
-  return Boolean(currentUser());
+  const session = currentSession();
+  if (!session?.email) return Boolean(currentUser());
+  const lastActivity = new Date(session.lastActivityAt || session.signedInAt || 0).getTime();
+  const idleLimit = 30 * 60 * 1000;
+  if (Date.now() - lastActivity > idleLimit) {
+    clearSharedSession();
+    return false;
+  }
+  session.lastActivityAt = new Date().toISOString();
+  localStorage.setItem(sharedSessionDetailsKey, JSON.stringify(session));
+  return true;
 }
 
 function saveSharedSession(member, email) {
   const normalizedEmail = normalizeEmail(email || member?.email || "");
+  const role = normalizeRole(member?.access || member?.role || "Read Only");
   const session = {
     userId: member?.id || slugify(normalizedEmail),
     email: normalizedEmail,
     name: member?.name || displayNameFromUser(normalizedEmail),
-    role: member?.access || "Admin",
-    permissions: member?.permissions || Array.from(memberPermissions(member || { email: normalizedEmail, access: "Admin", id: slugify(normalizedEmail) })),
+    role,
+    permissions: member?.permissions || Array.from(memberPermissions(member || { email: normalizedEmail, access: role, id: slugify(normalizedEmail) })),
     signedInAt: new Date().toISOString(),
+    lastActivityAt: new Date().toISOString(),
   };
   localStorage.setItem(sharedSessionStorageKey, normalizedEmail);
   localStorage.setItem(sharedSessionDetailsKey, JSON.stringify(session));
@@ -1176,13 +1544,15 @@ function saveSharedSession(member, email) {
 function saveSharedSessionObject(session) {
   if (!session?.email) return null;
   const normalizedEmail = normalizeEmail(session.email);
+  const role = normalizeRole(session.role || session.access || "Read Only");
   const normalizedSession = {
     userId: session.userId || slugify(normalizedEmail),
     email: normalizedEmail,
     name: session.name || displayNameFromUser(normalizedEmail),
-    role: session.role || session.access || "Admin",
-    permissions: session.permissions || [],
+    role,
+    permissions: Array.isArray(session.permissions) ? session.permissions : roleDefaultPermissions[role] || [],
     signedInAt: session.signedInAt || new Date().toISOString(),
+    lastActivityAt: session.lastActivityAt || new Date().toISOString(),
   };
   localStorage.setItem(sharedSessionStorageKey, normalizedEmail);
   localStorage.setItem(sharedSessionDetailsKey, JSON.stringify(normalizedSession));
@@ -1244,6 +1614,7 @@ async function consumeHubSsoTokenIfPresent() {
   if (!isQuotationHubSsoRoute()) return false;
   const params = new URLSearchParams(window.location.search);
   const token = params.get("token");
+  const targetSection = params.get("section") || "dashboard";
   console.log("Token received by Quote Hub", { token });
   if (!token) {
     showSsoExpiredMessage("token not found");
@@ -1267,9 +1638,14 @@ async function consumeHubSsoTokenIfPresent() {
       email: data.user.email,
       name: data.user.name,
       role: data.user.role,
+      permissions: data.user.permissions,
+      permissionsExplicit: data.user.permissionsExplicit,
     });
     console.log("Quote Hub session created", data.user);
-    window.location.replace("/hubs/quotation-hub#dashboard");
+    const section = ["dashboard", "builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "approvals", "library", "projectTimeline", "settings", "audit"].includes(targetSection)
+      ? targetSection
+      : "dashboard";
+    window.location.replace(`/hubs/quotation-hub#${section}`);
     return true;
   } catch (error) {
     console.warn("SSO token validation failed", error);
@@ -1302,23 +1678,40 @@ function clearSharedSession() {
   sessionStorage.removeItem(sessionStorageKey);
 }
 
-async function syncBackendLogin(session) {
-  if (!session?.email || window.location.protocol === "file:") return null;
+async function backendLogin(email, password) {
+  if (window.location.protocol === "file:") throw new Error("Secure login requires the local server.");
   try {
     const response = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify(session),
+      body: JSON.stringify({ email, password }),
     });
-    if (!response.ok) throw new Error(`Auth sync failed: ${response.status}`);
-    const data = await response.json();
-    console.log("Backend session created", data.user);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(data.error || `Login failed: ${response.status}`);
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+    console.log("Backend session created", { email: data.user?.email, role: data.user?.role });
     return data.user;
   } catch (error) {
-    console.warn("Backend session could not be created", error);
-    return null;
+    console.warn("Backend login failed", error);
+    throw error;
   }
+}
+
+async function changeBackendPassword(currentPassword, newPassword) {
+  const response = await fetch("/api/auth/change-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Password could not be changed.");
+  return data;
 }
 
 function currentUserName() {
@@ -1359,32 +1752,176 @@ function saveStorageList(key, list) {
   localStorage.setItem(key, JSON.stringify(list));
 }
 
+const companyHubs = [
+  {
+    id: "quotation-hub",
+    name: "Quotation Hub",
+    slug: "quotation-hub",
+    description: "Build, approve, send, and track technical, guarding, and armed response quotations.",
+    icon: "quoteHub",
+    status: "active",
+    features: ["Technical", "Guarding", "Approvals"],
+  },
+  {
+    id: "cost-hub",
+    name: "Cost Hub",
+    slug: "cost-hub",
+    description: "Central workspace for costing controls, cost checks, and supplier cost visibility.",
+    icon: "cost",
+    status: "placeholder",
+    features: ["Costing", "Margins", "Controls"],
+  },
+  {
+    id: "finance-age-analysis",
+    name: "Finance - Age Analysis",
+    slug: "finance-age-analysis",
+    description: "Finance hub for debtor age analysis, outstanding balances, and collections oversight.",
+    icon: "finance",
+    status: "placeholder",
+    features: ["Ageing", "Debtors", "Balances"],
+  },
+  {
+    id: "fleet",
+    name: "Fleet",
+    slug: "fleet",
+    description: "Manage company vehicles, service schedules, fuel records, and fleet compliance.",
+    icon: "fleet",
+    status: "placeholder",
+    features: ["Vehicles", "Services", "Fuel"],
+  },
+  {
+    id: "living-resources",
+    name: "Living Resources",
+    slug: "living-resources",
+    description: "Operational resource hub for living quarters, accommodation, and related resources.",
+    icon: "resources",
+    status: "placeholder",
+    features: ["Resources", "Allocation", "Records"],
+  },
+  {
+    id: "accounts-sales",
+    name: "Accounts & Sales",
+    slug: "accounts-sales",
+    description: "Track sales activity, client accounts, opportunities, and account handovers.",
+    icon: "accounts",
+    status: "placeholder",
+    features: ["Clients", "Sales", "Accounts"],
+  },
+  {
+    id: "hr",
+    name: "HR",
+    slug: "hr",
+    description: "Human resources hub for staff records, HR workflows, and employee administration.",
+    icon: "team",
+    status: "placeholder",
+    features: ["Staff", "HR", "Records"],
+  },
+  {
+    id: "technical-maintenance",
+    name: "Technical & Maintenance",
+    slug: "technical-maintenance",
+    description: "Coordinate technical jobs, maintenance requests, site work, and service follow-ups.",
+    icon: "maintenance",
+    status: "placeholder",
+    features: ["Jobs", "Maintenance", "Sites"],
+  },
+  {
+    id: "payroll",
+    name: "Payroll",
+    slug: "payroll",
+    description: "Payroll hub for salary processing, payroll controls, and pay-related administration.",
+    icon: "payroll",
+    status: "placeholder",
+    features: ["Payroll", "Salaries", "Controls"],
+  },
+  {
+    id: "overtime",
+    name: "Overtime",
+    slug: "overtime",
+    description: "Capture, review, approve, and report overtime across operational teams.",
+    icon: "overtime",
+    status: "placeholder",
+    features: ["Claims", "Approval", "Hours"],
+  },
+  {
+    id: "control-room-it",
+    name: "Control Room & IT",
+    slug: "control-room-it",
+    description: "Manage control room, IT support, monitoring tools, and operational technology tasks.",
+    icon: "controlRoom",
+    status: "placeholder",
+    features: ["Control Room", "IT", "Support"],
+  },
+  {
+    id: "uniforms-stores",
+    name: "Uniforms & Stores",
+    slug: "uniforms-stores",
+    description: "Track uniforms, stock, stores issuing, returns, and inventory movement.",
+    icon: "stores",
+    status: "placeholder",
+    features: ["Uniforms", "Stock", "Stores"],
+  },
+  {
+    id: "employee-files",
+    name: "Employee Files",
+    slug: "employee-files",
+    description: "Secure document hub for employee files, supporting documents, and compliance records.",
+    icon: "employeeFiles",
+    status: "placeholder",
+    features: ["Files", "Documents", "Compliance"],
+  },
+];
+
 function seedPortalTables() {
   const existingHubs = storageList(hubsStorageKey);
-  if (!existingHubs.some((hub) => hub.slug === "quotation-hub")) {
-    saveStorageList(hubsStorageKey, [
-      ...existingHubs,
-      {
-        id: "quotation-hub",
-        name: "Interactive Security Quote Hub",
-        slug: "quotation-hub",
-        description: "Create, manage, approve and track quotations",
-        url: `${window.location.href.split("#")[0]}#dashboard`,
-        icon: "./interactive-security-logo.jpg",
-        status: "active",
-        opensInNewTab: true,
-        sortOrder: 1,
-      },
-    ]);
-  }
+  const mergedHubs = [...existingHubs];
+  companyHubs.forEach((hub, index) => {
+    const existing = mergedHubs.find((item) => item.slug === hub.slug);
+    const url = window.location.protocol === "file:"
+      ? `${window.location.href.split("#")[0]}#portal`
+      : `${window.location.origin}/hubs/${hub.slug}`;
+    const record = {
+      ...hub,
+      name: hub.name,
+      url,
+      icon: "./interactive-security-logo.jpg",
+      opensInNewTab: true,
+      sortOrder: index + 1,
+    };
+    if (existing) Object.assign(existing, record);
+    else mergedHubs.push(record);
+  });
+  saveStorageList(hubsStorageKey, mergedHubs);
 
   if (!localStorage.getItem(hubPermissionsStorageKey)) {
+    const adminHubPermissions = companyHubs.flatMap((hub) => [
+      { hubSlug: hub.slug, accessLevel: "Super Admin" },
+      { hubSlug: hub.slug, accessLevel: "Admin" },
+    ]);
     saveStorageList(hubPermissionsStorageKey, [
-      { hubSlug: "quotation-hub", accessLevel: "Admin" },
-      { hubSlug: "quotation-hub", accessLevel: "Full Access Member" },
-      { hubSlug: "quotation-hub", accessLevel: "Quotation Builder Only" },
+      ...adminHubPermissions,
+      { hubSlug: "quotation-hub", accessLevel: "Quotation Builder" },
+      { hubSlug: "quotation-hub", accessLevel: "Sales Representative" },
+      { hubSlug: "quotation-hub", accessLevel: "Read Only" },
     ]);
   }
+  const existingPermissions = storageList(hubPermissionsStorageKey);
+  const requiredPermissions = [
+    ...companyHubs.flatMap((hub) => [
+      { hubSlug: hub.slug, accessLevel: "Super Admin" },
+      { hubSlug: hub.slug, accessLevel: "Admin" },
+    ]),
+    { hubSlug: "quotation-hub", accessLevel: "Quotation Builder" },
+    { hubSlug: "quotation-hub", accessLevel: "Sales Representative" },
+    { hubSlug: "quotation-hub", accessLevel: "Read Only" },
+  ];
+  const mergedPermissions = [...existingPermissions];
+  requiredPermissions.forEach((permission) => {
+    if (!mergedPermissions.some((item) => item.hubSlug === permission.hubSlug && item.accessLevel === permission.accessLevel)) {
+      mergedPermissions.push(permission);
+    }
+  });
+  saveStorageList(hubPermissionsStorageKey, mergedPermissions);
 
   if (!localStorage.getItem(userHubAccessStorageKey)) {
     saveStorageList(userHubAccessStorageKey, []);
@@ -1451,17 +1988,33 @@ function normalizeEmail(value = "") {
   return value.trim().toLowerCase();
 }
 
-async function hashPassword(password) {
-  const data = new TextEncoder().encode(password);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+function passwordPolicyErrors(password = "") {
+  return [
+    [password.length >= 12, "at least 12 characters"],
+    [/[A-Z]/.test(password), "one uppercase letter"],
+    [/[a-z]/.test(password), "one lowercase letter"],
+    [/[0-9]/.test(password), "one number"],
+    [/[^A-Za-z0-9]/.test(password), "one special character"],
+  ].filter(([passed]) => !passed).map(([, message]) => message);
+}
+
+function isStrongPassword(password = "") {
+  return passwordPolicyErrors(password).length === 0;
+}
+
+function strongPasswordMessage(password = "") {
+  const errors = passwordPolicyErrors(password);
+  return errors.length ? `Password must contain ${errors.join(", ")}.` : "";
 }
 
 function generatePassword() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
-  const bytes = new Uint8Array(14);
+  const required = ["A", "a", "7", "!"];
+  const bytes = new Uint8Array(12);
   crypto.getRandomValues(bytes);
-  return Array.from(bytes).map((byte) => alphabet[byte % alphabet.length]).join("");
+  return [...required, ...Array.from(bytes).map((byte) => alphabet[byte % alphabet.length])]
+    .sort(() => crypto.getRandomValues(new Uint8Array(1))[0] - 128)
+    .join("");
 }
 
 function memberByEmail(email) {
@@ -1494,9 +2047,11 @@ function sendInviteEmail(member, temporaryPassword, isResend = false) {
 
 function saveMemberRecord(member) {
   const members = storageList(membersStorageKey);
+  const role = normalizeRole(member.access || member.role || "Read Only");
+  const normalizedMember = { ...member, access: role, role };
   const index = members.findIndex((item) => item.id === member.id);
-  if (index >= 0) members[index] = member;
-  else members.push(member);
+  if (index >= 0) members[index] = normalizedMember;
+  else members.push(normalizedMember);
   saveStorageList(membersStorageKey, members);
 }
 
@@ -1515,12 +2070,14 @@ function salesRepsList() {
 function renderSalesRepOptions() {
   fields.salesRep.innerHTML = `<option value="">Select sales rep</option>`;
   if (guardingFields.salesRep) guardingFields.salesRep.innerHTML = `<option value="">Select sales rep</option>`;
+  if (armedResponseFields.salesRep) armedResponseFields.salesRep.innerHTML = `<option value="">Select sales rep</option>`;
   salesRepsList().forEach((rep) => {
     const option = document.createElement("option");
     option.value = rep.id;
     option.textContent = rep.name;
     fields.salesRep.appendChild(option);
     if (guardingFields.salesRep) guardingFields.salesRep.appendChild(option.cloneNode(true));
+    if (armedResponseFields.salesRep) armedResponseFields.salesRep.appendChild(option.cloneNode(true));
   });
 }
 
@@ -1536,11 +2093,19 @@ function currentMember() {
   }
   const members = storageList(membersStorageKey);
   const member = members.find((item) => normalizeEmail(item.email) === email);
-  return member || {
-    id: slugify(email),
-    name: currentUserName(),
+  const session = currentSession();
+  if (member) {
+    const role = normalizeRole(member.access || member.role || "Read Only");
+    return { ...member, access: role, role };
+  }
+  const role = normalizeRole(session?.role || session?.access || "Read Only");
+  return {
+    id: session?.userId || slugify(email),
+    name: session?.name || currentUserName(),
     email,
-    access: "Admin",
+    access: role,
+    role,
+    permissions: Array.isArray(session?.permissions) ? session.permissions : [],
   };
 }
 
@@ -1550,9 +2115,11 @@ function permissionKeyForSection(section) {
     dashboard: "dashboard",
     builder: "build_quotation",
     guardingBuilder: "build_guarding_quotation",
+    armedResponseBuilder: "build_armed_response_quotation",
     approvals: "approval",
     approval: "approval",
     library: "quote_library",
+    projectTimeline: "project_timeline",
     settings: "setup",
     audit: "audit_trail",
     salesRequests: "sales_quotation_requests",
@@ -1560,7 +2127,8 @@ function permissionKeyForSection(section) {
 }
 
 function memberPermissions(member = currentMember()) {
-  const defaults = roleDefaultPermissions[member.access] || ["build_quotation", "quotation_hub"];
+  const role = normalizeRole(member.access || member.role || "Read Only");
+  const defaults = roleDefaultPermissions[role] || [];
   const explicit = Array.isArray(member.permissions) ? member.permissions : null;
   const stored = storageList(userPermissionsStorageKey)
     .filter((permission) => permission.user_id === member.id || normalizeEmail(permission.user_email) === normalizeEmail(member.email))
@@ -1571,9 +2139,11 @@ function memberPermissions(member = currentMember()) {
 
 function hasPermission(permissionKey, member = currentMember()) {
   if (!isSignedIn()) return false;
-  if (["Super Admin"].includes(member.access)) return true;
+  const role = normalizeRole(member.access || member.role || "Read Only");
+  if (["Super Admin", "Admin"].includes(role)) return true;
   const permissions = memberPermissions(member);
   if (permissionKey === "build_guarding_quotation" && permissions.has("build_quotation")) return true;
+  if (permissionKey === "build_armed_response_quotation" && permissions.has("build_quotation")) return true;
   return permissions.has(permissionKey);
 }
 
@@ -1583,6 +2153,11 @@ function canAccess(section) {
   if (section === "settings") return ["setup", "supplier_prices", "member_access_management"].some((permission) => hasPermission(permission));
   const permissionKey = permissionKeyForSection(section);
   return hasPermission(permissionKey);
+}
+
+function firstAccessibleQuotationSection() {
+  return ["builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "library", "projectTimeline", "approvals", "settings", "audit"]
+    .find((section) => canAccess(section)) || "portal";
 }
 
 function enforceAccess(section) {
@@ -1595,7 +2170,8 @@ function enforceAccess(section) {
 
 function applyPermissions() {
   document.querySelectorAll(".nav-item").forEach((button) => {
-    const allowed = canAccess(button.dataset.section);
+    const section = button.dataset.section;
+    const allowed = canAccess(section) && !["portal", "dashboard"].includes(section);
     button.hidden = !allowed;
     button.disabled = !allowed;
   });
@@ -1620,6 +2196,7 @@ function moduleFromAction(action = "") {
   if (normalized.includes("sales rep")) return "Setup - Sales reps";
   if (normalized.includes("supplier")) return "Setup - Supplier prices";
   if (normalized.includes("client")) return "Setup - Client information";
+  if (normalized.includes("armed response")) return "Building Armed Response Quotation";
   if (normalized.includes("guarding")) return "Building Guarding Quotation";
   if (normalized.includes("quotation")) return "Building Technical Quotation";
   return "System";
@@ -1777,6 +2354,7 @@ function quoteReportDate(quote) {
 
 function quoteTotalValue(quote) {
   if (quote.quotationType === "Guarding Quotation") return quoteAnnualValue(quote);
+  if (quote.quotationType === "Monthly Armed Response Quotation") return quoteAnnualValue(quote) + Number(quote.armedResponsePricing?.onceOffSelling || quote.onceOffValue || 0);
   return quoteSubtotal(quote) * (1 + state.taxRate);
 }
 
@@ -1841,6 +2419,7 @@ function dashboardData() {
     outstanding,
     technical: quotes.filter((quote) => (quote.quotationType || "Technical Quotation") === "Technical Quotation"),
     guarding: quotes.filter((quote) => quote.quotationType === "Guarding Quotation"),
+    armedResponse: quotes.filter((quote) => quote.quotationType === "Monthly Armed Response Quotation"),
     lost: quotes.filter((quote) => ["client_declined", "lost"].includes(normalizedStatus(quote.status)) || quote.clientOutcome === "Rejected by client"),
     bySalesRep: Array.from(bySalesRep.values()).sort((a, b) => a.salesRep.localeCompare(b.salesRep)),
     totalValue: quotes.reduce((sum, quote) => sum + quoteTotalValue(quote), 0),
@@ -1896,6 +2475,7 @@ function renderDashboard() {
     renderSummaryCard("Total quotations created", String(data.quotes.length)),
     renderSummaryCard("Technical quotations", String(data.technical.length)),
     renderSummaryCard("Guarding quotations", String(data.guarding.length)),
+    renderSummaryCard("Armed response quotations", String(data.armedResponse.length)),
     renderSummaryCard("Approved internally", String(data.approved.length)),
     renderSummaryCard("Accepted by clients", String(data.accepted.length)),
     renderSummaryCard("Lost quotations", String(data.lost.length)),
@@ -1927,7 +2507,7 @@ function isManagementPortalUser() {
 
 function hasHubAccess(hub) {
   if (!isSignedIn()) return false;
-  if (!hub || hub.status !== "active") return false;
+  if (!hub || !["active", "placeholder"].includes(hub.status)) return false;
   const member = currentMember();
   if ((member.inviteStatus || "") === "Disabled") return false;
 
@@ -1937,112 +2517,99 @@ function hasHubAccess(hub) {
   if (explicitAccess) return explicitAccess.status === "active";
 
   if (hub.slug === "quotation-hub") return hasPermission("quotation_hub", member);
-  if (hub.slug === "cost-hub") return hasPermission("cost_hub", member);
   return storageList(hubPermissionsStorageKey).some((permission) => (
     permission.hubSlug === hub.slug && permission.accessLevel === member.access
   ));
 }
 
-function portalQuotes() {
-  const quotes = loadApprovals();
-  if (isManagementPortalUser()) return quotes;
-  const email = normalizeEmail(currentUser());
-  const memberName = currentUserName();
-  return quotes.filter((quote) => {
-    const rep = salesReps[quote.salesRep];
-    return normalizeEmail(rep?.email || "") === email || quote.createdBy === email || quote.submittedBy === email || quote.decidedBy === email || salesRepNameForQuote(quote) === memberName;
-  });
+function currentCompanyHubSlug() {
+  const match = window.location.pathname.match(/^\/hubs\/([^/]+)/);
+  return match ? match[1] : "";
 }
 
-function portalData() {
-  const quotes = portalQuotes();
-  const pending = quotes.filter(isApprovalPendingQuote);
-  const approved = quotes.filter(isInternallyApproved);
-  const rejected = quotes.filter((quote) => normalizedStatus(quote.status) === "rejected");
-  const accepted = quotes.filter(isClientAccepted);
-  const byMonth = new Map();
-  const bySalesRep = new Map();
+function companyHubBySlug(slug) {
+  return companyHubs.find((hub) => hub.slug === slug) || null;
+}
 
-  quotes.forEach((quote) => {
-    const month = (quoteReportDate(quote) || todayInputValue()).slice(0, 7);
-    const monthRow = byMonth.get(month) || { month, count: 0, value: 0 };
-    monthRow.count += 1;
-    monthRow.value += quoteTotalValue(quote);
-    byMonth.set(month, monthRow);
+function isPlaceholderHubRoute() {
+  const slug = currentCompanyHubSlug();
+  return Boolean(slug && slug !== "quotation-hub" && companyHubBySlug(slug));
+}
 
-    const rep = salesRepNameForQuote(quote);
-    const repRow = bySalesRep.get(rep) || { salesRep: rep, total: 0, pending: 0, approved: 0, rejected: 0, accepted: 0, value: 0 };
-    repRow.total += 1;
-    repRow.pending += pending.includes(quote) ? 1 : 0;
-    repRow.approved += approved.includes(quote) ? 1 : 0;
-    repRow.rejected += rejected.includes(quote) ? 1 : 0;
-    repRow.accepted += accepted.includes(quote) ? 1 : 0;
-    repRow.value += quoteTotalValue(quote);
-    bySalesRep.set(rep, repRow);
-  });
-
-  return {
-    quotes,
-    pending,
-    approved,
-    rejected,
-    accepted,
-    totalValue: quotes.reduce((sum, quote) => sum + quoteTotalValue(quote), 0),
-    acceptedValue: accepted.reduce((sum, quote) => sum + quoteTotalValue(quote), 0),
-    byMonth: Array.from(byMonth.values()).sort((a, b) => a.month.localeCompare(b.month)).slice(-6),
-    bySalesRep: Array.from(bySalesRep.values()).sort((a, b) => a.salesRep.localeCompare(b.salesRep)),
+function moduleIcon(type) {
+  const icons = {
+    quoteHub: `<svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"></path><path d="M8 9h8"></path><path d="M8 13h5"></path><path d="m15 15 2 2 3-4"></path></svg>`,
+    cost: `<svg viewBox="0 0 24 24"><path d="M4 7h16v13H4z"></path><path d="M8 7V5h8v2"></path><path d="M8 12h8"></path><path d="M8 16h5"></path></svg>`,
+    finance: `<svg viewBox="0 0 24 24"><path d="M4 19h16"></path><path d="M6 17V9"></path><path d="M12 17V5"></path><path d="M18 17v-7"></path><path d="M8 11l4-4 4 4"></path></svg>`,
+    fleet: `<svg viewBox="0 0 24 24"><path d="M5 16h14l-1.5-5h-11z"></path><path d="M7 16v2"></path><path d="M17 16v2"></path><path d="M7 18h.1"></path><path d="M17 18h.1"></path><path d="M8 11l1.5-4h5L16 11"></path></svg>`,
+    resources: `<svg viewBox="0 0 24 24"><path d="M4 20V9l8-5 8 5v11"></path><path d="M9 20v-7h6v7"></path><path d="M7 11h2"></path><path d="M15 11h2"></path></svg>`,
+    accounts: `<svg viewBox="0 0 24 24"><path d="M4 6h16v14H4z"></path><path d="M8 10h8"></path><path d="M8 14h5"></path><path d="M16 18l2-2 2 2"></path></svg>`,
+    maintenance: `<svg viewBox="0 0 24 24"><path d="M14 7 8 13"></path><path d="m6 15 3 3 9-9-3-3z"></path><path d="M4 20h8"></path><path d="M17 14l3 3"></path></svg>`,
+    payroll: `<svg viewBox="0 0 24 24"><path d="M6 4h12v18H6z"></path><path d="M9 8h6"></path><path d="M9 12h6"></path><path d="M9 16h3"></path></svg>`,
+    overtime: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><path d="M12 7v5l3 2"></path><path d="M4 4l3 3"></path><path d="M20 4l-3 3"></path></svg>`,
+    controlRoom: `<svg viewBox="0 0 24 24"><path d="M4 5h16v10H4z"></path><path d="M8 21h8"></path><path d="M12 15v6"></path><path d="M8 9h2"></path><path d="M12 9h2"></path><path d="M16 9h2"></path></svg>`,
+    stores: `<svg viewBox="0 0 24 24"><path d="M4 8h16l-1 12H5z"></path><path d="M7 8V6a5 5 0 0 1 10 0v2"></path><path d="M8 13h8"></path></svg>`,
+    employeeFiles: `<svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"></path><path d="M14 3v5h5"></path><circle cx="12" cy="13" r="2"></circle><path d="M9 19a3 3 0 0 1 6 0"></path></svg>`,
+    dashboard: `<svg viewBox="0 0 24 24"><path d="M4 19V5"></path><path d="M4 19h16"></path><path d="M8 16v-5"></path><path d="M12 16V8"></path><path d="M16 16v-3"></path></svg>`,
+    projects: `<svg viewBox="0 0 24 24"><path d="M4 6h6l2 2h8v10H4z"></path><path d="M8 13h8"></path><path d="M8 16h5"></path></svg>`,
+    milestones: `<svg viewBox="0 0 24 24"><path d="M5 5v14"></path><path d="M5 7h13l-2 4 2 4H5"></path></svg>`,
+    team: `<svg viewBox="0 0 24 24"><path d="M16 11a4 4 0 1 0-8 0"></path><path d="M4 21a8 8 0 0 1 16 0"></path><path d="M19 8a3 3 0 0 1 2 5"></path></svg>`,
+    status: `<svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"></path><path d="M8 8h8"></path><path d="M8 12h5"></path><path d="m8 16 2 2 4-5"></path></svg>`,
+    critical: `<svg viewBox="0 0 24 24"><path d="M4 18h16"></path><path d="M6 16l4-5 3 3 5-8"></path><path d="M18 6h2v2"></path></svg>`,
+    slides: `<svg viewBox="0 0 24 24"><path d="M4 5h16v12H4z"></path><path d="M9 21h6"></path><path d="M12 17v4"></path><path d="M8 9h8"></path></svg>`,
+    file: `<svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"></path><path d="M14 3v5h5"></path><path d="M9.5 13h5"></path><path d="M9.5 17h5"></path></svg>`,
+    shield: `<svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 3 8.5 7 10 4-1.5 7-5.5 7-10V6z"></path><path d="M9 12l2 2 4-5"></path></svg>`,
+    radio: `<svg viewBox="0 0 24 24"><path d="M12 2v20"></path><path d="M5 7h14"></path><path d="M7 7l2 12"></path><path d="M17 7l-2 12"></path><path d="M8 13h8"></path></svg>`,
+    upload: `<svg viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="m8 7 4-4 4 4"></path><path d="M5 15v4h14v-4"></path></svg>`,
+    archive: `<svg viewBox="0 0 24 24"><path d="M4 7h16v13H4z"></path><path d="M4 7l2-4h12l2 4"></path><path d="M9 12h6"></path></svg>`,
+    check: `<svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"></path><path d="M12 3a9 9 0 1 1-8.4 5.8"></path></svg>`,
+    settings: `<svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path><path d="M19.4 15a8 8 0 0 0 .1-2l2-1.5-2-3.4-2.4 1a7.8 7.8 0 0 0-1.7-1L15 5.5h-4l-.4 2.6a7.8 7.8 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.5a8 8 0 0 0 .1 2l-2 1.5 2 3.4 2.4-1a7.8 7.8 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.8 7.8 0 0 0 1.7-1l2.4 1 2-3.4Z"></path></svg>`,
+    audit: `<svg viewBox="0 0 24 24"><path d="M8 6h13"></path><path d="M8 12h13"></path><path d="M8 18h13"></path><path d="m3 6 1 1 2-2"></path><path d="m3 12 1 1 2-2"></path><path d="m3 18 1 1 2-2"></path></svg>`,
   };
+  return icons[type] || icons.file;
 }
 
 function renderPortal() {
-  const hubs = storageList(hubsStorageKey)
-    .filter((hub) => hub.status === "active")
-    .sort((a, b) => Number(a.sortOrder || 99) - Number(b.sortOrder || 99));
-  const accessibleHubs = hubs.filter(hasHubAccess);
-  const data = portalData();
-
-  portalHubGrid.innerHTML = accessibleHubs.length
-    ? accessibleHubs.map((hub) => `
-      <article class="hub-card">
-        <img src="${escapeHtml(hub.icon || "./interactive-security-logo.jpg")}" alt="${escapeHtml(hub.name)}" />
+  const routeHub = companyHubBySlug(currentCompanyHubSlug());
+  if (routeHub && routeHub.slug !== "quotation-hub") {
+    portalHubGrid.innerHTML = `
+      <article class="hub-card portal-module-card hub-placeholder-card">
+        <div class="module-icon" aria-hidden="true">${moduleIcon(routeHub.icon)}</div>
         <div>
+          <mark>Placeholder</mark>
+          <strong>${escapeHtml(routeHub.name)}</strong>
+          <p>${escapeHtml(routeHub.description)} This hub has been reserved and will be built out in a future phase.</p>
+          <ul class="hub-feature-list">
+            ${routeHub.features.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("")}
+          </ul>
+        </div>
+        <button class="secondary-btn" type="button" onclick="window.close()">Close tab</button>
+      </article>
+    `;
+    return;
+  }
+
+  const hubs = storageList(hubsStorageKey)
+    .filter((hub) => companyHubBySlug(hub.slug))
+    .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0))
+    .filter((hub) => hasHubAccess(hub));
+
+  portalHubGrid.innerHTML = hubs.length
+    ? hubs.map((hub) => `
+      <article class="hub-card portal-module-card" data-open-hub="${escapeHtml(hub.slug)}">
+        <div class="module-icon" aria-hidden="true">${moduleIcon(hub.icon)}</div>
+        <div>
+          <mark>${hub.slug === "quotation-hub" ? "Active" : "Placeholder"}</mark>
           <strong>${escapeHtml(hub.name)}</strong>
           <p>${escapeHtml(hub.description)}</p>
-          <span class="status-badge status-complete">Active</span>
+          <ul class="hub-feature-list">
+            ${hub.features.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("")}
+          </ul>
         </div>
         <button class="primary-btn" type="button" data-open-hub="${escapeHtml(hub.slug)}">Open hub</button>
       </article>
     `).join("")
     : `<p class="empty-state">No hubs are available for your access level yet.</p>`;
-
-  portalSummaryTitle.textContent = isManagementPortalUser() ? "Management overview" : "My quotation activity";
-  portalSummaryGrid.innerHTML = [
-    renderSummaryCard("Total quotations", String(data.quotes.length)),
-    renderSummaryCard("Pending quotations", String(data.pending.length)),
-    renderSummaryCard("Approved quotations", String(data.approved.length)),
-    renderSummaryCard("Rejected quotations", String(data.rejected.length)),
-    renderSummaryCard("Accepted by clients", String(data.accepted.length)),
-    renderSummaryCard("Income totals", money.format(data.acceptedValue)),
-  ].join("");
-
-  renderBarChart(portalMonthlyChart, data.byMonth, "value", "month", (value) => money.format(value));
-  portalSalesRepTable.innerHTML = tableHtml(
-    ["Sales rep", "Total", "Pending", "Approved", "Rejected", "Accepted", "Value"],
-    data.bySalesRep.map((row) => [row.salesRep, String(row.total), String(row.pending), String(row.approved), String(row.rejected), String(row.accepted), money.format(row.value)])
-  );
-
-  saveStorageList(hubActivitySummaryStorageKey, [{
-    hubSlug: "quotation-hub",
-    generatedAt: new Date().toISOString(),
-    generatedFor: currentUser(),
-    scope: isManagementPortalUser() ? "management" : "member",
-    totalQuotations: data.quotes.length,
-    pendingQuotations: data.pending.length,
-    approvedQuotations: data.approved.length,
-    rejectedQuotations: data.rejected.length,
-    acceptedByClient: data.accepted.length,
-    incomeTotal: data.acceptedValue,
-  }]);
 }
 
 function exportDashboardCsv(type = "all") {
@@ -2067,6 +2634,10 @@ function exportDashboardCsv(type = "all") {
       ["Total quotations created", data.quotes.length],
       ["Total technical quotations", data.technical.length],
       ["Total guarding quotations", data.guarding.length],
+      ["Total armed response quotations", data.armedResponse.length],
+      ["Monthly armed response value", data.armedResponse.reduce((sum, quote) => sum + Number(quote.armedResponsePricing?.monthlySelling || quote.monthlyValue || 0), 0)],
+      ["Once-off armed response value", data.armedResponse.reduce((sum, quote) => sum + Number(quote.armedResponsePricing?.onceOffSelling || quote.onceOffValue || 0), 0)],
+      ["Armed response annual contract value", data.armedResponse.reduce((sum, quote) => sum + quoteAnnualValue(quote), 0)],
       ["Total quotations approved internally", data.approved.length],
       ["Total quotations accepted by clients", data.accepted.length],
       ["Total quotations outstanding for client approval", data.outstanding.length],
@@ -2107,18 +2678,19 @@ function renderMembers() {
   const members = storageList(membersStorageKey);
   memberList.innerHTML = "";
   if (!members.length) {
-    memberList.innerHTML = `<p class="empty-state">No members saved yet. Unknown sign-ins use Admin access in this local prototype.</p>`;
+    memberList.innerHTML = `<p class="empty-state">No members saved yet. Add members and assign exact role/module access before they can use the platform.</p>`;
     return;
   }
 
   members.forEach((member) => {
     const row = document.createElement("article");
     const inviteStatus = member.inviteStatus || (member.hasLoggedIn ? "Active" : "Pending");
+    const role = normalizeRole(member.access || member.role || "Read Only");
     row.className = "setup-row";
     row.innerHTML = `
       <div>
         <strong>${escapeHtml(member.name)}</strong>
-        <small>${escapeHtml(member.email)} | ${escapeHtml(member.access)} | ${escapeHtml(inviteStatus)}</small>
+        <small>${escapeHtml(member.email)} | ${escapeHtml(role)} | ${escapeHtml(inviteStatus)}</small>
         <small>Permissions: ${escapeHtml(Array.from(memberPermissions(member)).map((key) => permissionDefinitions.find((permission) => permission.key === key)?.label || key).join(", ") || "None selected")}</small>
         <small>${member.inviteSentAt ? `Invite sent: ${escapeHtml(formatDate(member.inviteSentAt.slice(0, 10)))}` : "Invite not sent yet"}</small>
       </div>
@@ -2175,6 +2747,36 @@ function renderClients() {
   });
 }
 
+function renderGuardingPriceManagement() {
+  if (!guardingPriceList) return;
+  const items = loadGuardingMasterPriceList();
+  guardingPriceList.innerHTML = "";
+  if (!items.length) {
+    guardingPriceList.innerHTML = `<p class="empty-state">No guarding price list items saved.</p>`;
+    return;
+  }
+
+  items
+    .slice()
+    .sort((a, b) => (a.itemName || "").localeCompare(b.itemName || ""))
+    .forEach((item) => {
+      const row = document.createElement("div");
+      row.className = `setup-row ${item.active === false ? "muted-row" : ""}`;
+      row.innerHTML = `
+        <div>
+          <strong>${escapeHtml(item.itemName || item.description || "Guarding item")}</strong>
+          <small>${escapeHtml(item.description || "-")}</small>
+          <small>${escapeHtml([item.shiftType, item.billingType, item.category, item.serviceType, item.unitType].filter(Boolean).join(" | ") || "-")} | ${money.format(Number(item.rate || 0))} | ${item.active === false ? "Inactive" : "Active"}</small>
+        </div>
+        <div class="setup-actions">
+          <button class="secondary-btn" type="button" data-edit-guarding-price="${escapeHtml(item.id)}">Edit</button>
+          <button class="secondary-btn" type="button" data-toggle-guarding-price="${escapeHtml(item.id)}">${item.active === false ? "Activate" : "Deactivate"}</button>
+        </div>
+      `;
+      guardingPriceList.appendChild(row);
+    });
+}
+
 function renderSetup() {
   if (!canAccess("settings")) return;
   const settings = quotationSettings();
@@ -2186,6 +2788,7 @@ function renderSetup() {
   renderMembers();
   renderSetupSalesReps();
   renderSupplierPrices();
+  renderGuardingPriceManagement();
   renderClients();
 }
 
@@ -2499,19 +3102,32 @@ function saveSalesRequests(requests) {
   saveStorageList(salesRequestsStorageKey, requests);
 }
 
+const salesRequestStatusFlow = [
+  "New Request",
+  "Accepted for Processing",
+  "Submitted for Approval",
+  "Approved",
+  "Rejected / Needs Changes",
+  "Completed",
+];
+
 function salesRequestStatusLabel(status = "") {
   const normalized = normalizedStatus(status);
+  if (normalized === "new" || normalized === "new_request" || normalized === "") return "New Request";
+  if (normalized === "accepted" || normalized === "accepted_for_processing" || normalized === "processing" || normalized === "in_progress") return "Accepted for Processing";
   if (normalized === "approved") return "Approved";
-  if (normalized === "submitted_for_approval" || normalized === "pending_approval" || normalized === "awaiting_approval" || normalized === "completed") {
-    return "Submitted for Approval";
-  }
-  return "Accepted for Processing";
+  if (normalized === "submitted_for_approval" || normalized === "pending_approval" || normalized === "awaiting_approval") return "Submitted for Approval";
+  if (normalized === "rejected" || normalized === "needs_changes" || normalized === "rejected_needs_changes" || normalized === "rejected_insufficient_information") return "Rejected / Needs Changes";
+  if (normalized === "completed" || normalized === "complete") return "Completed";
+  return "New Request";
 }
 
 function salesRequestStatusClass(status = "") {
   const label = salesRequestStatusLabel(status);
   if (label === "Approved") return "status-badge status-complete";
+  if (label === "Completed") return "status-badge status-complete";
   if (label === "Submitted for Approval") return "status-badge status-info";
+  if (label === "Rejected / Needs Changes") return "status-badge status-rejected";
   return "status-badge status-warning";
 }
 
@@ -2532,6 +3148,50 @@ function migrateSalesRequestStatuses() {
     };
   });
   if (changed) saveSalesRequests(migrated);
+}
+
+function canViewSalesRequestQueue() {
+  return hasPermission("build_quotation") || hasPermission("approval") || ["Admin", "Super Admin"].includes(currentMember().access);
+}
+
+function salesRequestViewedBy(request = {}) {
+  return Array.isArray(request.viewed_by_user_ids) ? request.viewed_by_user_ids : [];
+}
+
+function isUnreadSalesRequest(request = {}) {
+  if (!canViewSalesRequestQueue()) return false;
+  if (salesRequestStatusLabel(request.status) !== "New Request") return false;
+  return !salesRequestViewedBy(request).includes(currentUser()) && !request.accepted_by_user_id;
+}
+
+function unreadSalesRequestCount() {
+  return salesRequestsForCurrentUser().filter(isUnreadSalesRequest).length;
+}
+
+function renderSalesRequestBadge() {
+  if (!salesRequestCount) return;
+  const count = unreadSalesRequestCount();
+  salesRequestCount.textContent = String(count);
+  salesRequestCount.hidden = count <= 0;
+}
+
+function markSalesRequestViewed(id, reason = "Request viewed") {
+  const request = loadSalesRequests().find((item) => item.id === id);
+  if (!request) return null;
+  const viewedBy = new Set(salesRequestViewedBy(request));
+  const wasUnread = isUnreadSalesRequest(request);
+  viewedBy.add(currentUser());
+  const updated = updateSalesRequest(id, {
+    viewed_by_user_ids: Array.from(viewedBy),
+    viewed_at: request.viewed_at || new Date().toISOString(),
+    last_viewed_by_name: currentUserName(),
+    is_new: false,
+  });
+  if (wasUnread) {
+    writeAudit(reason, updated.request_number, "Sales Quotation Requests", updated.request_number, `Viewed by ${currentUserName()}`);
+  }
+  renderSalesRequestBadge();
+  return updated;
 }
 
 function reserveRequestNumber() {
@@ -2723,6 +3383,12 @@ function salesRequestSummaryHtml(request) {
         <div><small>Shift structure</small><strong>${escapeHtml(`Day: ${request.day_shift_required || "-"} / Night: ${request.night_shift_required || "-"}`)}</strong></div>
         <div><small>Guarding notes</small><strong>${escapeHtml([request.equipment_required, request.special_site_instructions].filter(Boolean).join(" / ") || "-")}</strong></div>
       ` : ""}
+      ${request.quotation_type === "Monthly Armed Response Quotation" ? `
+        <div><small>Sites covered</small><strong>${escapeHtml(request.number_of_sites || "-")}</strong></div>
+        <div><small>Area / suburb</small><strong>${escapeHtml([request.area_suburb, request.province].filter(Boolean).join(" / ") || "-")}</strong></div>
+        <div><small>Armed response requirement</small><strong>${escapeHtml(`Monitoring: ${request.alarm_monitoring_required || "-"} / Armed response: ${request.armed_response_required || "-"} / Key holding: ${request.key_holding_required || "-"}`)}</strong></div>
+        <div><small>Special instructions</small><strong>${escapeHtml(request.special_site_instructions || "-")}</strong></div>
+      ` : ""}
       <div><small>Notes to quotation builder</small><strong>${escapeHtml(request.notes_for_builder || "-")}</strong></div>
     </div>
   `;
@@ -2788,6 +3454,292 @@ function populateGuardingCompanyOptions() {
   });
 }
 
+let guardingPriceCatalog = [];
+
+function isAdminMember() {
+  return ["Admin", "Super Admin"].includes(currentMember().access);
+}
+
+function guardingPriceNumber(value) {
+  const cleaned = String(value ?? "").replace(/[^\d,.-]/g, "").replace(",", ".");
+  return Number(cleaned) || 0;
+}
+
+function normalizeGuardingShiftType(item = {}) {
+  const value = `${item.shiftType || item.shift_type || ""} ${item.itemName || item.name || ""} ${item.description || ""} ${item.schedule || ""} ${item.unitType || ""} ${item.category || ""} ${item.serviceType || ""}`.toLowerCase();
+  if (value.includes("night")) return "Night Shift";
+  if (value.includes("day")) return "Day Shift";
+  return "Day Shift";
+}
+
+function normalizeGuardingBillingType(item = {}) {
+  const value = `${item.billingType || item.billing_type || item.cadence || item.unitType || ""}`.toLowerCase();
+  if (value.includes("hourly") || value.includes("hour")) return "Hourly";
+  if (value.includes("daily") || value.includes("day")) return "Daily";
+  if (value.includes("monthly") || value.includes("month")) return "Monthly";
+  return item.billingType || item.cadence || "Monthly";
+}
+
+function normalizeGuardingPriceItem(item = {}, index = 0) {
+  const itemName = item.itemName || item.name || item.description || item.item || "Guarding item";
+  const description = item.description || item.itemDescription || item.duties || itemName;
+  const shiftType = normalizeGuardingShiftType(item);
+  const billingType = normalizeGuardingBillingType(item);
+  const sourceParts = [item.source, item.region, item.cadence].filter(Boolean).join(" - ");
+  return {
+    id: item.id || slugify(`${itemName}-${index}-${Date.now()}`),
+    itemName,
+    shiftType,
+    billingType,
+    description,
+    unitType: item.unitType || item.unit_type || item.unit || "Unit",
+    category: item.category || item.region || item.source || "Guarding",
+    serviceType: item.serviceType || item.service_type || item.source || "Guarding",
+    rate: guardingPriceNumber(item.rate ?? item.unitPrice ?? item.price ?? item.monthlySellingPrice ?? 0),
+    schedule: item.schedule || "",
+    experience: item.experience || "",
+    duties: item.duties || "",
+    source: item.source || sourceParts || "Guarding",
+    active: item.active !== false && String(item.active || "true").toLowerCase() !== "false",
+    updatedAt: item.updatedAt || new Date().toISOString(),
+  };
+}
+
+function loadGuardingMasterPriceList() {
+  const saved = storageList(guardingPriceListStorageKey);
+  guardingPriceCatalog = saved.map(normalizeGuardingPriceItem);
+  return guardingPriceCatalog;
+}
+
+function saveGuardingMasterPriceList(list) {
+  const normalized = list.map(normalizeGuardingPriceItem);
+  saveStorageList(guardingPriceListStorageKey, normalized);
+  guardingPriceCatalog = normalized;
+}
+
+async function loadGuardingPriceCatalog() {
+  try {
+    const response = await fetch("/guarding-price-catalog.generated.json", { cache: "no-store" });
+    if (!response.ok) throw new Error(`Price list request failed: ${response.status}`);
+    const rows = await response.json();
+    const existing = storageList(guardingPriceListStorageKey);
+    if (!existing.length && Array.isArray(rows) && rows.length) {
+      saveGuardingMasterPriceList(rows.map((row, index) => normalizeGuardingPriceItem(row, index)));
+    } else {
+      loadGuardingMasterPriceList();
+    }
+  } catch (error) {
+    console.warn("Guarding price list could not be loaded", error);
+    loadGuardingMasterPriceList();
+  }
+  renderGuardingBuilder();
+  renderGuardingPriceManagement();
+}
+
+function guardingCatalogItem(id) {
+  return loadGuardingMasterPriceList().find((item) => item.id === id);
+}
+
+function activeGuardingPriceItems() {
+  return loadGuardingMasterPriceList().filter((item) => item.active !== false);
+}
+
+function guardingItemLabel(item = {}) {
+  return item.itemName || item.description || "Guarding item";
+}
+
+function guardingItemShiftKey(item = {}) {
+  return `${String(item.itemName || item.description || "").trim().toLowerCase()}|${String(item.shiftType || "Day Shift").trim().toLowerCase()}`;
+}
+
+function guardingSearchOptions() {
+  const seen = new Set();
+  return activeGuardingPriceItems().reduce((options, item) => {
+    const key = String(guardingItemLabel(item)).trim().toLowerCase();
+    if (seen.has(key)) return options;
+    seen.add(key);
+    options.push(item);
+    return options;
+  }, []).sort((a, b) => guardingItemLabel(a).localeCompare(guardingItemLabel(b)));
+}
+
+function findGuardingItemBySearchValue(value = "") {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return null;
+  return guardingSearchOptions().find((item) => guardingItemLabel(item).toLowerCase() === normalized) || null;
+}
+
+function guardingBillingOptionsForRow(row = {}) {
+  return row.itemName ? ["Hourly", "Daily", "Monthly"] : [];
+}
+
+function findGuardingCatalogByBilling(row = {}) {
+  if (!row.itemName || !row.shiftType || !row.billingType) return null;
+  const rowKey = guardingItemShiftKey(row);
+  return activeGuardingPriceItems().find((item) => guardingItemShiftKey(item) === rowKey && item.billingType === row.billingType) || null;
+}
+
+function refreshGuardingPriceForRow(index) {
+  const row = state.guarding.lineItems[index];
+  if (!row?.itemName || !row.shiftType || !row.billingType) return false;
+  const item = findGuardingCatalogByBilling(row);
+  if (!item) {
+    row.catalogId = "";
+    row.rate = 0;
+    row.scheduleText = "";
+    return false;
+  }
+  applyGuardingCatalogItemToRow(index, item);
+  return true;
+}
+
+function guardingLineItemLabel(row = {}) {
+  return row.itemName || row.description || row.position || "Guarding service";
+}
+
+function applyGuardingCatalogItemToRow(index, item) {
+  const row = state.guarding.lineItems[index];
+  if (!row || !item) return;
+  state.guarding.lineItems[index] = {
+    ...row,
+    catalogId: item.id,
+    catalogSearch: guardingItemLabel(item),
+    itemName: item.itemName || item.description,
+    shiftType: item.shiftType || "Day Shift",
+    billingType: item.billingType || "",
+    description: item.itemName || item.description,
+    unitType: item.unitType || "",
+    category: item.category || "",
+    rate: Number(item.rate || 0),
+    serviceDate: row.serviceDate || guardingFields.quoteDate?.value || todayInputValue(),
+    serviceMonth: row.serviceMonth || (guardingFields.quoteDate?.value || todayInputValue()).slice(0, 7),
+    scheduleText: "",
+    unitNotes: "",
+    schedule: item.schedule || "",
+    experience: item.experience || "",
+    duties: item.duties || "",
+    source: item.source || "",
+  };
+}
+
+function applyGuardingItemShiftToRow(index, item) {
+  const row = state.guarding.lineItems[index];
+  if (!row || !item) return;
+  const itemName = item.itemName || item.description;
+  state.guarding.lineItems[index] = {
+    ...row,
+    catalogId: "",
+    catalogSearch: guardingItemLabel(item),
+    itemName,
+    shiftType: row.shiftType || "",
+    billingType: "",
+    description: itemName,
+    unitType: item.unitType || "",
+    category: item.category || "",
+    rate: 0,
+    schedule: item.schedule || "",
+    experience: item.experience || "",
+    duties: item.duties || "",
+    source: item.source || "",
+  };
+  refreshGuardingPriceForRow(index);
+}
+
+function defaultGuardingLineItem() {
+  return {
+    catalogId: "",
+    catalogSearch: "",
+    itemName: "",
+    shiftType: "",
+    billingType: "",
+    description: "",
+    unitType: "",
+    category: "",
+    serviceType: "",
+    rate: 0,
+    quantity: 1,
+    serviceDate: "",
+    serviceMonth: "",
+    scheduleText: "",
+    unitNotes: "",
+    notes: "",
+    schedule: "",
+    experience: "",
+    duties: "",
+    source: "",
+  };
+}
+
+function guardingLineItemTotal(row = {}) {
+  return roundCurrency(Number(row.quantity || 0) * Number(row.rate ?? row.monthlySellingPrice ?? 0));
+}
+
+function guardingLineScheduleDate(row = {}, quote = {}) {
+  const rawDate = row.serviceDate || quote.quoteDate || todayInputValue();
+  const rawMonth = row.serviceMonth || String(rawDate).slice(0, 7);
+  if (row.billingType === "Monthly") {
+    const [year, month] = String(rawMonth || "").split("-");
+    if (year && month) return new Date(Number(year), Number(month) - 1, 1).toLocaleDateString("en-ZA", { month: "long", year: "numeric" });
+  }
+  return formatDate(String(rawDate).slice(0, 10));
+}
+
+function guardingShiftScheduleText(row = {}) {
+  const shift = String(row.shiftType || row.schedule || "Day Shift").toLowerCase().includes("night") ? "night" : "day";
+  if (row.billingType === "Hourly") return `Per hour ${shift} shift`;
+  const hours = String(row.schedule || "").match(/(\d+)\s*hour/i)?.[1] || "12";
+  return `Per ${hours} hour ${shift} shift`;
+}
+
+function guardingScheduleText(row = {}, quote = {}) {
+  if (row.scheduleText) return row.scheduleText;
+  const scheduleLines = [
+    guardingLineScheduleDate(row, quote),
+    row.billingType || "",
+    guardingShiftScheduleText(row),
+    `${money.format(Number(row.rate || row.monthlySellingPrice || 0))} Excl. VAT per officer`,
+  ].filter(Boolean);
+  return scheduleLines.join("\n");
+}
+
+function guardingUnitNotesText(row = {}) {
+  if (row.unitNotes) return row.unitNotes;
+  return [
+    row.shiftType || "",
+    row.billingType || "",
+    guardingShiftScheduleText(row),
+    row.notes || "",
+  ].filter(Boolean).join("\n");
+}
+
+function guardingDisplayLineItems(quote = null) {
+  const directRows = quote ? quote.guardingLineItems : state.guarding.lineItems;
+  const selectedRows = directRows?.filter((row) => row.itemName || row.description || row.catalogId) || [];
+  if (selectedRows.length) return selectedRows;
+  if (quote?.guardingStaffing?.length) {
+    return quote.guardingStaffing.map((row) => ({
+      description: row.position || "Guarding service",
+      unitType: row.grade ? `Grade ${row.grade}` : "Guarding",
+      rate: Number(row.monthlySellingPrice || 0),
+      quantity: Number(row.quantity || 0),
+      schedule: guardingShiftLabel(row),
+      experience: row.experience || "",
+      duties: row.duties || "",
+    }));
+  }
+  return [];
+}
+
+function syncGuardingDerivedFields() {
+  const rows = state.guarding.lineItems || [];
+  const descriptions = rows.map(guardingLineItemLabel).filter(Boolean);
+  const serviceSummary = descriptions.length ? descriptions.join(", ") : "";
+  if (guardingFields.serviceType) guardingFields.serviceType.value = serviceSummary;
+  if (guardingFields.guardCount) guardingFields.guardCount.value = rows.reduce((sum, row) => sum + Number(row.quantity || 0), 0) || "";
+  if (guardingFields.equipmentRequired) guardingFields.equipmentRequired.value = rows.map((row) => row.duties || row.notes).filter(Boolean).join("\n");
+  if (guardingFields.specialInstructions) guardingFields.specialInstructions.value = rows.map((row) => row.schedule).filter(Boolean).join("\n");
+}
+
 function defaultGuardingStaffRow() {
   return {
     position: "Grade C Guard",
@@ -2803,6 +3755,17 @@ function defaultGuardingStaffRow() {
 }
 
 function guardingPricingValues() {
+  if (state.guarding.lineItems?.length) {
+    const monthlySelling = roundCurrency(state.guarding.lineItems.reduce((sum, row) => sum + guardingLineItemTotal(row), 0));
+    return {
+      monthlyCost: monthlySelling,
+      monthlySelling,
+      grossProfit: 0,
+      grossProfitPercent: 0,
+      markupPercent: 0,
+      annualValue: roundCurrency(monthlySelling * 12),
+    };
+  }
   const staffingCost = state.guarding.staffing.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.monthlyCost || 0), 0);
   const staffingSelling = state.guarding.staffing.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0), 0);
   const equipmentCost = state.guarding.equipment.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.monthlyCost || 0), 0);
@@ -2855,6 +3818,62 @@ function renderGuardingSimpleRows(target, rows, type, firstPlaceholder) {
   `).join("");
 }
 
+function guardingCatalogOptions() {
+  return guardingSearchOptions()
+    .map((item) => `<option value="${escapeHtml(guardingItemLabel(item))}"></option>`)
+    .join("");
+}
+
+function renderGuardingLineItemRows() {
+  if (!guardingLineItemRows) return;
+  const rows = state.guarding.lineItems?.length ? state.guarding.lineItems : [];
+  guardingLineItemRows.innerHTML = rows.map((row, index) => `
+    <div class="guarding-price-row ${row.shiftType === "Night Shift" ? "guarding-night-row" : ""}" data-guarding-line-row="${index}" draggable="true">
+      <div class="guarding-search-cell">
+        <label class="mini-label">Guarding Item</label>
+        <input data-guarding-line="${index}" data-field="catalogSearch" value="${escapeHtml(row.catalogSearch || "")}" placeholder="Search guarding item" list="guardingCatalogOptions-${index}" autocomplete="off" />
+        <datalist id="guardingCatalogOptions-${index}">${guardingCatalogOptions()}</datalist>
+      </div>
+      <label class="mini-label">
+        Shift Type
+        <select data-guarding-line="${index}" data-field="shiftType" ${row.itemName ? "" : "disabled"}>
+          <option value="">Select shift type</option>
+          <option value="Day Shift" ${row.shiftType === "Day Shift" ? "selected" : ""}>Day Shift</option>
+          <option value="Night Shift" ${row.shiftType === "Night Shift" ? "selected" : ""}>Night Shift</option>
+        </select>
+      </label>
+      <label class="mini-label">
+        Billing type
+        <select data-guarding-line="${index}" data-field="billingType" ${row.itemName ? "" : "disabled"}>
+          <option value="">Select billing type</option>
+          ${guardingBillingOptionsForRow(row).map((billingType) => `<option value="${escapeHtml(billingType)}"${billingType === row.billingType ? " selected" : ""}>${escapeHtml(billingType)}</option>`).join("")}
+        </select>
+      </label>
+      <div class="guarding-detail-stack">
+        <input data-guarding-line="${index}" data-field="unitType" value="${escapeHtml(row.unitType || "")}" placeholder="Unit type" />
+        <textarea data-guarding-line="${index}" data-field="unitNotes" placeholder="Unit / notes">${escapeHtml(row.unitNotes || guardingUnitNotesText(row))}</textarea>
+        <input data-guarding-line="${index}" data-field="serviceDate" type="date" value="${escapeHtml(row.serviceDate || todayInputValue())}" />
+        <input data-guarding-line="${index}" data-field="serviceMonth" type="month" value="${escapeHtml(row.serviceMonth || todayInputValue().slice(0, 7))}" />
+        <textarea data-guarding-line="${index}" data-field="scheduleText" placeholder="Schedule wording">${escapeHtml(row.scheduleText || guardingScheduleText(row, { quoteDate: guardingFields.quoteDate?.value || todayInputValue() }))}</textarea>
+      </div>
+      <textarea class="guarding-large-textarea" data-guarding-line="${index}" data-field="experience" placeholder="Experience / training">${escapeHtml(row.experience || "")}</textarea>
+      <textarea class="guarding-large-textarea" data-guarding-line="${index}" data-field="duties" placeholder="Equipment and duties">${escapeHtml(row.duties || "")}</textarea>
+      <input data-guarding-line="${index}" data-field="rate" type="number" min="0" step="0.01" value="${escapeHtml(row.rate || 0)}" />
+      <input data-guarding-line="${index}" data-field="quantity" type="number" min="0" step="1" value="${escapeHtml(row.quantity || 1)}" />
+      <div class="guarding-line-actions">
+        <small>Line Item Total</small>
+        <strong class="guarding-line-total">${money.format(guardingLineItemTotal(row))}</strong>
+        <div class="reorder-actions">
+          <button class="secondary-btn small-btn" type="button" data-move-guarding-line-up="${index}" ${index === 0 ? "disabled" : ""}>Move up</button>
+          <button class="secondary-btn small-btn" type="button" data-move-guarding-line-down="${index}" ${index === rows.length - 1 ? "disabled" : ""}>Move down</button>
+        </div>
+        ${isAdminMember() && row.catalogId ? `<button class="secondary-btn small-btn" type="button" data-update-guarding-master="${index}">Update master price list</button>` : ""}
+      </div>
+      <button class="danger-btn" type="button" data-remove-guarding-line="${index}">x</button>
+    </div>
+  `).join("") || `<p class="empty-state">Add a guarding price list item to start the quotation.</p>`;
+}
+
 function renderGuardingRequestDocuments(request) {
   const files = request?.files || [];
   if (!guardingRequestDocumentsPanel || !guardingRequestDocumentsList) return;
@@ -2873,45 +3892,18 @@ function renderGuardingRequestDocuments(request) {
 
 function renderGuardingPreview() {
   if (!guardingFields.company) return;
-  const company = companies[guardingFields.company.value];
-  const salesRep = salesReps[guardingFields.salesRep.value];
   const pricing = guardingPricingValues();
-  document.querySelector("#guardingPreviewCompany").textContent = company?.name || "Select quoting company";
-  document.querySelector("#guardingPreviewReg").textContent = company ? `Reg no: ${company.registration} | VAT No: ${company.vat}` : "Reg no: - | VAT No: -";
-  document.querySelector("#guardingPreviewQuoteNumber").textContent = guardingFields.quoteNumber.value || "Draft";
-  document.querySelector("#guardingPreviewClient").textContent = [guardingFields.clientName.value || "No client yet", guardingFields.email.value].filter(Boolean).join("\n");
-  document.querySelector("#guardingPreviewSite").textContent = [guardingFields.siteName.value || "No site yet", guardingFields.siteAddress.value, guardingFields.province.value].filter(Boolean).join("\n");
-  document.querySelector("#guardingPreviewRep").textContent = [salesRep?.name || "No sales rep selected", salesRep?.email, salesRep?.phone].filter(Boolean).join("\n");
-  document.querySelector("#guardingPreviewDate").textContent = formatDate(guardingFields.quoteDate.value);
-  document.querySelector("#guardingPreviewScope").textContent = [
-    guardingFields.serviceType.value || "Guarding services",
-    `Day shift: ${guardingFields.dayShift.value}`,
-    `Night shift: ${guardingFields.nightShift.value}`,
-    `Supervisor: ${guardingFields.supervisor.value}`,
-    `Armed guards: ${guardingFields.armed.value}`,
-    guardingFields.specialInstructions.value,
-  ].filter(Boolean).join(" | ");
-  document.querySelector("#guardingPreviewStaff").innerHTML = `
-    <div class="quotation-table-header"><span>Position</span><span>Qty</span><span>Shift</span><span>Monthly Selling</span></div>
-    ${state.guarding.staffing.map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.position || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>${escapeHtml(`Day ${row.dayShiftQuantity || 0} / Night ${row.nightShiftQuantity || 0}`)}</span><strong>${money.format(Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>-</span><span>No staffing rows</span><span>-</span><strong>-</strong></div>`}
-  `;
-  document.querySelector("#guardingPreviewEquipment").innerHTML = `
-    <div class="quotation-table-header"><span>Equipment</span><span>Qty</span><span>Included</span><span>Monthly Selling</span></div>
-    ${state.guarding.equipment.map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.item || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>Yes</span><strong>${money.format(Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>-</span><span>No equipment rows</span><span>-</span><strong>-</strong></div>`}
-  `;
   document.querySelector("#guardingTotalCost").textContent = money.format(pricing.monthlyCost);
   document.querySelector("#guardingMarkup").textContent = `${pricing.markupPercent.toFixed(2)}%`;
   document.querySelector("#guardingTotalSelling").textContent = money.format(pricing.monthlySelling);
   document.querySelector("#guardingGrossProfit").textContent = `${pricing.grossProfitPercent.toFixed(2)}%`;
-  document.querySelector("#guardingAnnualValue").textContent = money.format(pricing.annualValue);
-  document.querySelector("#guardingPreviewMonthly").textContent = money.format(pricing.monthlySelling);
-  document.querySelector("#guardingPreviewAnnual").textContent = money.format(pricing.annualValue);
+  document.querySelector("#guardingAnnualValue").textContent = money.format(roundCurrency(pricing.monthlySelling * (1 + state.taxRate)));
+  document.querySelector("#guardingPreview").innerHTML = guardingQuotationDocumentHtml(guardingPayload("Draft"), { preview: true });
 }
 
 function renderGuardingBuilder() {
-  renderGuardingStaffRows();
-  renderGuardingSimpleRows(guardingEquipmentRows, state.guarding.equipment, "equipment", "Equipment item");
-  renderGuardingSimpleRows(guardingCostRows, state.guarding.additionalCosts, "cost", "Description");
+  syncGuardingDerivedFields();
+  renderGuardingLineItemRows();
   renderGuardingPreview();
 }
 
@@ -2924,16 +3916,33 @@ function resetGuardingQuote(reserveNumber = true) {
   guardingFields.quoteDate.value = todayInputValue();
   guardingFields.quoteNumber.value = reserveNumber ? reserveQuoteNumber(todayInputValue()) : "";
   state.guarding.activeSalesRequestId = "";
-  state.guarding.staffing = [defaultGuardingStaffRow()];
+  state.guarding.staffing = [];
   state.guarding.equipment = [];
   state.guarding.additionalCosts = [];
+  state.guarding.lineItems = [defaultGuardingLineItem()];
   renderGuardingRequestDocuments(null);
   if (guardingRequestSummaryPanel) guardingRequestSummaryPanel.hidden = true;
   renderGuardingBuilder();
 }
 
 function guardingPayload(status = "Submitted for approval") {
+  syncGuardingDerivedFields();
   const pricing = guardingPricingValues();
+  const lineItems = (state.guarding.lineItems || []).filter((row) => row.itemName || row.description || row.catalogId).map((row) => ({ ...row, lineTotal: guardingLineItemTotal(row) }));
+  const derivedStaffing = lineItems.map((row) => ({
+    position: guardingLineItemLabel(row),
+    grade: row.unitType,
+    quantity: Number(row.quantity || 0),
+    dayShiftQuantity: 0,
+    nightShiftQuantity: 0,
+    hoursPerShift: 0,
+    daysPerMonth: row.cadence === "Daily" ? 1 : 30,
+    monthlyCost: Number(row.rate || 0),
+    monthlySellingPrice: Number(row.rate || 0),
+    schedule: row.schedule || "",
+    experience: row.experience || "",
+    duties: row.duties || "",
+  }));
   return {
     id: `${guardingFields.quoteNumber.value || "guarding"}-${Date.now()}`,
     quotationType: "Guarding Quotation",
@@ -2956,7 +3965,8 @@ function guardingPayload(status = "Submitted for approval") {
     quoteDate: guardingFields.quoteDate.value,
     salesRep: guardingFields.salesRep.value,
     guardingDetails: Object.fromEntries(Object.entries(guardingFields).map(([key, field]) => [key, field?.value || ""])),
-    guardingStaffing: state.guarding.staffing.map((row) => ({ ...row })),
+    guardingLineItems: lineItems,
+    guardingStaffing: derivedStaffing,
     guardingEquipment: state.guarding.equipment.map((row) => ({ ...row })),
     guardingAdditionalCosts: state.guarding.additionalCosts.map((row) => ({ ...row })),
     guardingPricing: pricing,
@@ -2978,9 +3988,6 @@ function validateGuardingQuote() {
     [guardingFields.siteAddress, "Site address"],
     [guardingFields.province, "Province"],
     [guardingFields.industry, "Industry type"],
-    [guardingFields.serviceType, "Required service type"],
-    [guardingFields.startDate, "Contract start date"],
-    [guardingFields.duration, "Contract duration"],
     [guardingFields.salesRep, "Sales rep"],
   ];
   const missing = required.filter(([field]) => !String(field?.value || "").trim());
@@ -2989,8 +3996,9 @@ function validateGuardingQuote() {
     missing[0][0]?.focus();
     return false;
   }
-  if (!state.guarding.staffing.length || guardingPricingValues().monthlySelling <= 0) {
-    alert("Please add staffing and monthly selling values before submitting the guarding quotation.");
+  const completeLineItems = (state.guarding.lineItems || []).filter((row) => (row.itemName || row.description || row.catalogId) && Number(row.quantity || 0) > 0 && Number(row.rate || 0) >= 0);
+  if (!completeLineItems.length || guardingPricingValues().monthlySelling <= 0) {
+    alert("Please add at least one guarding price list item before submitting the guarding quotation.");
     return false;
   }
   return true;
@@ -3028,19 +4036,20 @@ function createGuardingQuotationFromRequest(id) {
   guardingFields.siteAddress.value = request.site_address || "";
   guardingFields.province.value = request.province || "";
   guardingFields.industry.value = request.industry_type || "";
-  guardingFields.serviceType.value = request.required_service_type || request.description_of_work || "";
-  guardingFields.startDate.value = request.contract_start_date || "";
-  guardingFields.duration.value = request.contract_duration || "";
-  guardingFields.dayShift.value = request.day_shift_required || "Yes";
-  guardingFields.nightShift.value = request.night_shift_required || "No";
-  guardingFields.guardCount.value = request.number_of_guards_required || "";
-  guardingFields.supervisor.value = request.supervisor_required || "No";
-  guardingFields.armed.value = request.armed_guards_required || "No";
-  guardingFields.controlRoom.value = request.control_room_required || "No";
-  guardingFields.patrols.value = request.patrols_required || "No";
-  guardingFields.equipmentRequired.value = request.equipment_required || "";
-  guardingFields.specialInstructions.value = request.special_site_instructions || "";
-  guardingFields.builderNotes.value = request.notes_for_builder || "";
+  if (guardingFields.serviceType) guardingFields.serviceType.value = request.required_service_type || request.description_of_work || "";
+  if (guardingFields.startDate) guardingFields.startDate.value = request.contract_start_date || "";
+  if (guardingFields.duration) guardingFields.duration.value = request.contract_duration || "";
+  if (guardingFields.dayShift) guardingFields.dayShift.value = request.day_shift_required || "Yes";
+  if (guardingFields.nightShift) guardingFields.nightShift.value = request.night_shift_required || "No";
+  if (guardingFields.guardCount) guardingFields.guardCount.value = request.number_of_guards_required || "";
+  if (guardingFields.supervisor) guardingFields.supervisor.value = request.supervisor_required || "No";
+  if (guardingFields.armed) guardingFields.armed.value = request.armed_guards_required || "No";
+  if (guardingFields.controlRoom) guardingFields.controlRoom.value = request.control_room_required || "No";
+  if (guardingFields.patrols) guardingFields.patrols.value = request.patrols_required || "No";
+  if (guardingFields.equipmentRequired) guardingFields.equipmentRequired.value = request.equipment_required || "";
+  if (guardingFields.specialInstructions) guardingFields.specialInstructions.value = request.special_site_instructions || "";
+  if (guardingFields.builderNotes) guardingFields.builderNotes.value = request.notes_for_builder || "";
+  state.guarding.lineItems = [defaultGuardingLineItem()];
   const rep = salesRepsList().find((item) => normalizeEmail(item.email) === normalizeEmail(request.sales_rep_email));
   if (rep) guardingFields.salesRep.value = rep.id;
   updateSalesRequest(id, { linked_quotation_id: guardingFields.quoteNumber.value });
@@ -3057,9 +4066,278 @@ function createGuardingQuotationFromRequest(id) {
   window.history.pushState({}, document.title, `${window.location.pathname}?${params.toString()}#guardingBuilder`);
 }
 
+function populateArmedResponseCompanyOptions() {
+  if (!armedResponseFields.company) return;
+  armedResponseFields.company.innerHTML = `<option value="">Select quoting company</option>`;
+  Object.entries(companies).forEach(([id, company]) => {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = company.name;
+    armedResponseFields.company.appendChild(option);
+  });
+}
+
+function armedResponsePricingValues() {
+  const siteCount = Math.max(1, Number(armedResponseFields.packageSiteCount?.value || armedResponseFields.siteCount?.value || 1));
+  const perSiteSelling = Number(armedResponseFields.monthlyPerSite?.value || 0);
+  const packageSelling = siteCount * perSiteSelling;
+  const serviceCost = state.armed.additionalServices.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.monthlyCost || 0), 0);
+  const serviceSelling = state.armed.additionalServices.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0), 0);
+  const onceOffCost = state.armed.onceOffCharges.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.onceOffCost || 0), 0);
+  const onceOffSelling = state.armed.onceOffCharges.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.onceOffSellingPrice || 0), 0);
+  const monthlyCost = roundCurrency(serviceCost);
+  const monthlySelling = roundCurrency(packageSelling + serviceSelling);
+  const grossProfit = roundCurrency(monthlySelling - monthlyCost);
+  const grossProfitPercent = monthlySelling ? roundCurrency((grossProfit / monthlySelling) * 100) : 0;
+  const markupPercent = monthlyCost ? roundCurrency(((monthlySelling - monthlyCost) / monthlyCost) * 100) : Number(armedResponseFields.markupPercent?.value || 0);
+  return {
+    monthlyCost,
+    monthlySelling,
+    markupPercent,
+    grossProfit,
+    grossProfitPercent,
+    onceOffCost: roundCurrency(onceOffCost),
+    onceOffSelling: roundCurrency(onceOffSelling),
+    annualValue: roundCurrency(monthlySelling * 12),
+    totalMonthlySellingPerSite: roundCurrency(perSiteSelling),
+  };
+}
+
+function renderArmedResponseRows(target, rows, type) {
+  if (!target) return;
+  target.innerHTML = rows.map((row, index) => {
+    const descriptionField = type === "service" ? "description" : "item";
+    const costField = type === "service" ? "monthlyCost" : "onceOffCost";
+    const sellingField = type === "service" ? "monthlySellingPrice" : "onceOffSellingPrice";
+    return `
+      <div class="guarding-simple-row armed-response-row" data-armed-response-${type}-row="${index}">
+        <input data-armed-response-${type}="${index}" data-field="${descriptionField}" value="${escapeHtml(row[descriptionField] || "")}" placeholder="${type === "service" ? "Service description" : "Item description"}" />
+        <input data-armed-response-${type}="${index}" data-field="quantity" type="number" min="0" step="1" value="${escapeHtml(row.quantity || 1)}" />
+        <input data-armed-response-${type}="${index}" data-field="${costField}" type="number" min="0" step="0.01" value="${escapeHtml(row[costField] || 0)}" placeholder="${type === "service" ? "Monthly cost" : "Once-off cost"}" />
+        <input data-armed-response-${type}="${index}" data-field="${sellingField}" type="number" min="0" step="0.01" value="${escapeHtml(row[sellingField] || 0)}" placeholder="${type === "service" ? "Monthly selling" : "Once-off selling"}" />
+        <button class="danger-btn" type="button" data-remove-armed-response-${type}="${index}">x</button>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderArmedResponseRequestDocuments(request) {
+  const files = request?.files || [];
+  if (!armedResponseRequestDocumentsPanel || !armedResponseRequestDocumentsList) return;
+  armedResponseRequestDocumentsPanel.hidden = !request || !files.length;
+  armedResponseRequestDocumentsList.innerHTML = files.map((file) => `
+    <span>
+      <strong>${escapeHtml(file.file_name || file.name || "Document")}</strong>
+      <small>${escapeHtml(file.file_type || file.mime_type || file.type || "Unknown file type")} | ${escapeHtml(formatFileSize(file.file_size || file.size || 0))}</small>
+    </span>
+    <div>
+      <button class="secondary-btn" type="button" data-view-request-file="${escapeHtml(file.id || file.fileId || "")}">View</button>
+      <button class="secondary-btn" type="button" data-download-request-file="${escapeHtml(file.id || file.fileId || "")}">Download</button>
+    </div>
+  `).join("");
+}
+
+function renderArmedResponsePreview() {
+  if (!armedResponseFields.company) return;
+  const company = companies[armedResponseFields.company.value];
+  const salesRep = salesReps[armedResponseFields.salesRep.value];
+  const pricing = armedResponsePricingValues();
+  document.querySelector("#armedResponsePreviewCompany").textContent = company?.name || "Select quoting company";
+  document.querySelector("#armedResponsePreviewReg").textContent = company ? `Reg no: ${company.registration} | VAT No: ${company.vat}` : "Reg no: - | VAT No: -";
+  document.querySelector("#armedResponsePreviewQuoteNumber").textContent = armedResponseFields.quoteNumber.value || "Draft";
+  document.querySelector("#armedResponsePreviewClient").textContent = [armedResponseFields.clientName.value || "No client yet", armedResponseFields.email.value].filter(Boolean).join("\n");
+  document.querySelector("#armedResponsePreviewSite").textContent = [armedResponseFields.siteName.value || "No site yet", armedResponseFields.siteAddress.value, armedResponseFields.area.value, armedResponseFields.province.value].filter(Boolean).join("\n");
+  document.querySelector("#armedResponsePreviewRep").textContent = [salesRep?.name || "No sales rep selected", salesRep?.email, salesRep?.phone].filter(Boolean).join("\n");
+  document.querySelector("#armedResponsePreviewDate").textContent = formatDate(armedResponseFields.quoteDate.value);
+  document.querySelector("#armedResponsePreviewScope").textContent = [
+    armedResponseFields.packageName.value || "Monthly armed response services",
+    `Sites covered: ${armedResponseFields.packageSiteCount.value || armedResponseFields.siteCount.value || 1}`,
+    `Alarm monitoring: ${armedResponseFields.alarmMonitoring.value}`,
+    `Armed response: ${armedResponseFields.armedRequired.value}`,
+    `Key holding: ${armedResponseFields.keyHolding.value}`,
+    armedResponseFields.specialInstructions.value,
+  ].filter(Boolean).join(" | ");
+  document.querySelector("#armedResponsePreviewServices").innerHTML = `
+    <div class="quotation-table-header"><span>Service</span><span>Qty</span><span>Included</span><span>Monthly Selling</span></div>
+    ${state.armed.additionalServices.map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.description || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>Yes</span><strong>${money.format(Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>${escapeHtml(armedResponseFields.packageName.value || "Package")}</span><span>${escapeHtml(armedResponseFields.packageSiteCount.value || armedResponseFields.siteCount.value || 1)}</span><span>Yes</span><strong>${money.format(pricing.monthlySelling)}</strong></div>`}
+  `;
+  document.querySelector("#armedResponsePreviewCharges").innerHTML = `
+    <div class="quotation-table-header"><span>Equipment / Once-off</span><span>Qty</span><span>Type</span><span>Selling</span></div>
+    ${state.armed.onceOffCharges.map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.item || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>Once-off</span><strong>${money.format(Number(row.quantity || 0) * Number(row.onceOffSellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>-</span><span>No once-off charges</span><span>-</span><strong>-</strong></div>`}
+  `;
+  document.querySelector("#armedResponseTotalCost").textContent = money.format(pricing.monthlyCost);
+  document.querySelector("#armedResponseTotalSelling").textContent = money.format(pricing.monthlySelling);
+  document.querySelector("#armedResponseMarkupDisplay").textContent = `${pricing.markupPercent.toFixed(2)}%`;
+  document.querySelector("#armedResponseGrossProfit").textContent = `${pricing.grossProfitPercent.toFixed(2)}%`;
+  document.querySelector("#armedResponseOnceOffCost").textContent = money.format(pricing.onceOffCost);
+  document.querySelector("#armedResponseOnceOffSelling").textContent = money.format(pricing.onceOffSelling);
+  document.querySelector("#armedResponseAnnualValue").textContent = money.format(pricing.annualValue);
+  document.querySelector("#armedResponsePreviewMonthly").textContent = money.format(pricing.monthlySelling);
+  document.querySelector("#armedResponsePreviewOnceOff").textContent = money.format(pricing.onceOffSelling);
+  document.querySelector("#armedResponsePreviewAnnual").textContent = money.format(pricing.annualValue);
+}
+
+function renderArmedResponseBuilder() {
+  renderArmedResponseRows(armedResponseServiceRows, state.armed.additionalServices, "service");
+  renderArmedResponseRows(armedResponseChargeRows, state.armed.onceOffCharges, "charge");
+  renderArmedResponsePreview();
+}
+
+function resetArmedResponseQuote(reserveNumber = true) {
+  Object.values(armedResponseFields).forEach((field) => {
+    if (!field) return;
+    if (field.tagName === "SELECT") field.value = "";
+    else field.value = "";
+  });
+  armedResponseFields.quoteDate.value = todayInputValue();
+  armedResponseFields.quoteNumber.value = reserveNumber ? reserveQuoteNumber(todayInputValue()) : "";
+  armedResponseFields.siteCount.value = 1;
+  armedResponseFields.packageSiteCount.value = 1;
+  armedResponseFields.markupPercent.value = 20;
+  state.armed.activeSalesRequestId = "";
+  state.armed.additionalServices = [];
+  state.armed.onceOffCharges = [];
+  renderArmedResponseRequestDocuments(null);
+  if (armedResponseRequestSummaryPanel) armedResponseRequestSummaryPanel.hidden = true;
+  renderArmedResponseBuilder();
+}
+
+function armedResponsePayload(status = "Submitted for approval") {
+  const pricing = armedResponsePricingValues();
+  return {
+    id: `${armedResponseFields.quoteNumber.value || "armed-response"}-${Date.now()}`,
+    quotationType: "Monthly Armed Response Quotation",
+    status,
+    approvalStatus: status,
+    workflowStatus: status,
+    submittedAt: new Date().toISOString(),
+    createdBy: currentUser(),
+    createdByName: currentUserName(),
+    submittedBy: currentUser(),
+    submittedByName: currentUserName(),
+    sales_request_id: state.armed.activeSalesRequestId || "",
+    selectedCompany: armedResponseFields.company.value,
+    clientName: armedResponseFields.clientName.value,
+    clientAddress: armedResponseFields.siteAddress.value,
+    contactPerson: armedResponseFields.contactPerson.value,
+    contactEmail: armedResponseFields.email.value,
+    contactNumber: armedResponseFields.contactNumber.value,
+    quoteNumber: armedResponseFields.quoteNumber.value,
+    quoteDate: armedResponseFields.quoteDate.value,
+    salesRep: armedResponseFields.salesRep.value,
+    armedResponseDetails: Object.fromEntries(Object.entries(armedResponseFields).map(([key, field]) => [key, field?.value || ""])),
+    armedResponseServices: state.armed.additionalServices.map((row) => ({ ...row })),
+    armedResponseOnceOffCharges: state.armed.onceOffCharges.map((row) => ({ ...row })),
+    armedResponsePricing: pricing,
+    monthlyValue: pricing.monthlySelling,
+    onceOffValue: pricing.onceOffSelling,
+    annualValue: pricing.annualValue,
+    supplierQuotes: [],
+    items: [],
+    revisionHistory: [],
+  };
+}
+
+function validateArmedResponseQuote() {
+  const required = [
+    [armedResponseFields.company, "Quoting company"],
+    [armedResponseFields.clientName, "Client name"],
+    [armedResponseFields.contactPerson, "Contact person"],
+    [armedResponseFields.contactNumber, "Contact number"],
+    [armedResponseFields.email, "Email address"],
+    [armedResponseFields.siteAddress, "Site address"],
+    [armedResponseFields.province, "Province"],
+    [armedResponseFields.area, "Area / suburb"],
+    [armedResponseFields.industry, "Industry type"],
+    [armedResponseFields.siteCount, "Number of sites"],
+    [armedResponseFields.startDate, "Contract start date"],
+    [armedResponseFields.duration, "Contract duration"],
+    [armedResponseFields.salesRep, "Sales rep"],
+    [armedResponseFields.packageName, "Package name"],
+    [armedResponseFields.monthlyPerSite, "Monthly selling price per site"],
+  ];
+  const missing = required.filter(([field]) => !String(field?.value || "").trim());
+  if (missing.length) {
+    alert(`Please complete: ${missing.map(([, label]) => label).join(", ")}`);
+    missing[0][0]?.focus();
+    return false;
+  }
+  if (armedResponsePricingValues().monthlySelling <= 0) {
+    alert("Please add a monthly selling price before submitting the armed response quotation.");
+    return false;
+  }
+  return true;
+}
+
+function submitArmedResponseQuoteForApproval() {
+  if (!enforceAccess("armedResponseBuilder") || !validateArmedResponseQuote()) return;
+  const payload = armedResponsePayload("Submitted for Approval");
+  saveApprovals([payload, ...loadApprovals()]);
+  if (state.armed.activeSalesRequestId) {
+    updateSalesRequest(state.armed.activeSalesRequestId, {
+      status: "Submitted for Approval",
+      linked_quotation_id: payload.id,
+      submitted_for_approval_at: new Date().toISOString(),
+    });
+  }
+  writeAudit("Armed response quotation built", payload.quoteNumber, "Building Armed Response Quotation", payload.quoteNumber, payload.clientName);
+  writeAudit("Submitted for approval", `${payload.quoteNumber} for ${payload.clientName}`, "Building Armed Response Quotation", payload.quoteNumber, "Monthly Armed Response Quotation");
+  alert("Monthly armed response quotation submitted for approval.");
+  resetArmedResponseQuote();
+  renderApprovals();
+}
+
+function createArmedResponseQuotationFromRequest(id) {
+  const request = loadSalesRequests().find((item) => item.id === id);
+  if (!request) return;
+  resetArmedResponseQuote();
+  state.armed.activeSalesRequestId = request.id;
+  state.activeSalesRequestId = request.id;
+  armedResponseFields.clientName.value = request.client_name || "";
+  armedResponseFields.contactPerson.value = request.client_contact_person || "";
+  armedResponseFields.email.value = request.client_email || "";
+  armedResponseFields.contactNumber.value = request.client_phone || "";
+  armedResponseFields.siteName.value = request.site_project_name || "";
+  armedResponseFields.siteAddress.value = request.site_address || "";
+  armedResponseFields.province.value = request.province || "";
+  armedResponseFields.area.value = request.area_suburb || "";
+  armedResponseFields.industry.value = request.industry_type || "";
+  armedResponseFields.siteCount.value = request.number_of_sites || 1;
+  armedResponseFields.packageSiteCount.value = request.number_of_sites || 1;
+  armedResponseFields.existingAlarm.value = request.existing_alarm_system || "Yes";
+  armedResponseFields.alarmMonitoring.value = request.alarm_monitoring_required || "Yes";
+  armedResponseFields.armedRequired.value = request.armed_response_required || "Yes";
+  armedResponseFields.keyHolding.value = request.key_holding_required || "No";
+  armedResponseFields.openingClosing.value = request.opening_closing_required || "No";
+  armedResponseFields.patrolService.value = request.patrol_service_required || "No";
+  armedResponseFields.panicButton.value = request.panic_button_required || "No";
+  armedResponseFields.medical.value = request.medical_response_required || "No";
+  armedResponseFields.fire.value = request.fire_response_required || "No";
+  armedResponseFields.startDate.value = request.contract_start_date || "";
+  armedResponseFields.duration.value = request.contract_duration || "";
+  armedResponseFields.specialInstructions.value = request.special_site_instructions || "";
+  armedResponseFields.builderNotes.value = request.notes_for_builder || "";
+  armedResponseFields.packageName.value = request.alarm_monitoring_required === "Yes" ? "Armed Response with Monitoring" : "Standard Armed Response";
+  armedResponseFields.packageDescription.value = request.description_of_work || "";
+  const rep = salesRepsList().find((item) => normalizeEmail(item.email) === normalizeEmail(request.sales_rep_email));
+  if (rep) armedResponseFields.salesRep.value = rep.id;
+  updateSalesRequest(id, { linked_quotation_id: armedResponseFields.quoteNumber.value });
+  renderArmedResponseRequestDocuments(request);
+  if (armedResponseRequestSummaryPanel && armedResponseRequestSummary) {
+    armedResponseRequestSummaryPanel.hidden = false;
+    armedResponseRequestSummary.innerHTML = salesRequestSummaryHtml(request);
+  }
+  renderArmedResponseBuilder();
+  writeAudit("User redirected to armed response quotation builder", request.request_number, "Sales Quotation Requests", request.request_number, currentUserName());
+  showSection("armedResponseBuilder");
+  const params = new URLSearchParams(window.location.search);
+  params.set("salesRequestId", id);
+  window.history.pushState({}, document.title, `${window.location.pathname}?${params.toString()}#armedResponseBuilder`);
+}
+
 function canProcessSalesRequest(request) {
   if (!hasPermission("build_quotation") && !hasPermission("approval")) return false;
-  if (salesRequestStatusLabel(request.status) !== "Accepted for Processing") return false;
+  if (!["New Request", "Accepted for Processing", "Rejected / Needs Changes"].includes(salesRequestStatusLabel(request.status))) return false;
   return !request.accepted_by_user_id || request.accepted_by_user_id === currentUser() || ["Admin", "Super Admin"].includes(currentMember().access);
 }
 
@@ -3070,47 +4348,102 @@ function salesRequestsForCurrentUser() {
   return requests.filter((request) => normalizeEmail(request.sales_rep_email) === email || normalizeEmail(request.submitted_by_user_id) === email);
 }
 
+function filteredSalesRequests() {
+  const filters = state.salesRequestFilters;
+  return salesRequestsForCurrentUser().filter((request) => {
+    const statusMatch = filters.status === "All" || salesRequestStatusLabel(request.status) === filters.status;
+    const repMatch = !filters.salesRep || String(request.sales_rep_name || "").toLowerCase().includes(filters.salesRep.toLowerCase());
+    const clientMatch = !filters.clientName || String(request.client_name || "").toLowerCase().includes(filters.clientName.toLowerCase());
+    const dateMatch = !filters.submittedDate || String(request.created_at || "").slice(0, 10) === filters.submittedDate;
+    const typeMatch = filters.quotationType === "All" || String(request.quotation_type || "Technical Quotation") === filters.quotationType;
+    return statusMatch && repMatch && clientMatch && dateMatch && typeMatch;
+  });
+}
+
+function salesRequestFilterOptions(requests, field, fallback = "") {
+  return Array.from(new Set(requests.map((request) => request[field] || fallback).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b)));
+}
+
 function renderSalesRequests() {
   if (!canAccess("salesRequests")) return;
   autoPopulateRequestSalesRep();
-  const requests = salesRequestsForCurrentUser().sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+  renderSalesRequestBadge();
+  const allRequests = salesRequestsForCurrentUser().sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+  const requests = filteredSalesRequests().sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+  const unreadCount = unreadSalesRequestCount();
+  const reps = salesRequestFilterOptions(allRequests, "sales_rep_name");
+  const quotationTypes = salesRequestFilterOptions(allRequests, "quotation_type", "Technical Quotation");
   salesRequestList.innerHTML = "";
-  if (!requests.length) {
-    salesRequestList.innerHTML = `<p class="empty-state">No sales quotation requests have been submitted yet.</p>`;
-    return;
-  }
 
   salesRequestList.innerHTML = `
+    ${unreadCount ? `<div class="request-alert">New sales quotation request submitted <strong>${unreadCount}</strong></div>` : ""}
+    <div class="approval-filterbar request-filterbar">
+      <label>
+        Status
+        <select data-request-filter="status">
+          <option value="All"${state.salesRequestFilters.status === "All" ? " selected" : ""}>All statuses</option>
+          ${salesRequestStatusFlow.map((status) => `<option value="${escapeHtml(status)}"${state.salesRequestFilters.status === status ? " selected" : ""}>${escapeHtml(status)}</option>`).join("")}
+        </select>
+      </label>
+      <label>
+        Sales rep
+        <input data-request-filter="salesRep" type="search" list="salesRequestRepFilterOptions" value="${escapeHtml(state.salesRequestFilters.salesRep)}" placeholder="Search sales rep" />
+        <datalist id="salesRequestRepFilterOptions">${reps.map((rep) => `<option value="${escapeHtml(rep)}"></option>`).join("")}</datalist>
+      </label>
+      <label>
+        Client name
+        <input data-request-filter="clientName" type="search" value="${escapeHtml(state.salesRequestFilters.clientName)}" placeholder="Search client" />
+      </label>
+      <label>
+        Date submitted
+        <input data-request-filter="submittedDate" type="date" value="${escapeHtml(state.salesRequestFilters.submittedDate)}" />
+      </label>
+      <label>
+        Quotation type
+        <select data-request-filter="quotationType">
+          <option value="All"${state.salesRequestFilters.quotationType === "All" ? " selected" : ""}>All types</option>
+          ${quotationTypes.map((type) => `<option value="${escapeHtml(type)}"${state.salesRequestFilters.quotationType === type ? " selected" : ""}>${escapeHtml(type)}</option>`).join("")}
+        </select>
+      </label>
+      <button class="secondary-btn" type="button" data-clear-request-filters>Clear filters</button>
+    </div>
+    ${!requests.length ? `<p class="empty-state">No sales quotation requests match the selected filters.</p>` : `
     <div class="approval-table request-table" role="table" aria-label="Sales quotation requests">
       <div class="approval-table-header" role="row">
         <span>Request number</span>
+        <span>Date submitted</span>
+        <span>Sales rep</span>
         <span>Client name</span>
         <span>Site/project</span>
-        <span>Sales rep</span>
+        <span>Quotation type</span>
         <span>Status</span>
-        <span>Accepted by</span>
-        <span>Submitted</span>
-        <span>Due date</span>
+        <span>Documents</span>
+        <span>Notes</span>
+        <span>Assigned / accepted by</span>
+        <span>Last updated</span>
         <span>Actions</span>
       </div>
       ${requests.map((request) => `
-        <div class="approval-table-row" role="row">
-          <span><strong>${escapeHtml(request.request_number)}</strong><small>${escapeHtml(request.quotation_type || "Technical Quotation")}</small></span>
+        <div class="approval-table-row ${isUnreadSalesRequest(request) ? "request-row-new" : ""}" role="row">
+          <span><strong>${escapeHtml(request.request_number)}</strong>${isUnreadSalesRequest(request) ? `<small><mark class="status-badge status-info">New</mark></small>` : ""}</span>
+          <span>${escapeHtml(formatDate((request.created_at || "").slice(0, 10)))}</span>
+          <span><strong>${escapeHtml(request.sales_rep_name)}</strong><small>${escapeHtml([request.sales_rep_email, request.sales_rep_phone].filter(Boolean).join(" | "))}</small></span>
           <span>${escapeHtml(request.client_name)}</span>
           <span>${escapeHtml(request.site_project_name || "-")}</span>
-          <span><strong>${escapeHtml(request.sales_rep_name)}</strong><small>${escapeHtml([request.sales_rep_email, request.sales_rep_phone].filter(Boolean).join(" | "))}</small></span>
+          <span>${escapeHtml(request.quotation_type || "Technical Quotation")}</span>
           <span><mark class="${salesRequestStatusClass(request.status)}">${escapeHtml(salesRequestStatusLabel(request.status))}</mark></span>
+          <span><button class="secondary-btn small-btn" type="button" data-view-request-docs="${escapeHtml(request.id)}">Docs (${(request.files || []).length})</button></span>
+          <span>${escapeHtml(request.notes_for_builder || "-")}</span>
           <span>${escapeHtml(request.accepted_by_name || "-")}</span>
-          <span>${escapeHtml(formatDate((request.created_at || "").slice(0, 10)))}</span>
-          <span>${escapeHtml(formatDate(request.required_due_date))}</span>
+          <span>${escapeHtml(request.updated_at ? new Date(request.updated_at).toLocaleString("en-ZA") : "-")}</span>
           <span class="approval-row-actions">
+            ${isUnreadSalesRequest(request) ? `<button class="secondary-btn small-btn" type="button" data-mark-request-viewed="${escapeHtml(request.id)}">Mark viewed</button>` : ""}
             ${canProcessSalesRequest(request) && !request.accepted_by_user_id ? `<button class="primary-btn" type="button" data-accept-request="${escapeHtml(request.id)}">Accept Request</button>` : ""}
             ${salesRequestStatusLabel(request.status) === "Accepted for Processing" && request.accepted_by_user_id === currentUser() ? `<button class="secondary-btn" type="button" data-create-quote-request="${escapeHtml(request.id)}">Create Quotation from Request</button>` : ""}
-            <button class="secondary-btn" type="button" data-view-request-docs="${escapeHtml(request.id)}">Docs (${(request.files || []).length})</button>
           </span>
         </div>
       `).join("")}
-    </div>
+    </div>`}
   `;
 }
 
@@ -3138,6 +4471,7 @@ function updateSalesRequest(id, updates) {
     return updatedRequest;
   });
   saveSalesRequests(requests);
+  renderSalesRequestBadge();
   return updatedRequest || requests.find((request) => request.id === id);
 }
 
@@ -3146,6 +4480,10 @@ function createQuotationFromRequest(id) {
   if (!request) return;
   if (request.quotation_type === "Guarding Quotation") {
     createGuardingQuotationFromRequest(id);
+    return;
+  }
+  if (request.quotation_type === "Monthly Armed Response Quotation") {
+    createArmedResponseQuotationFromRequest(id);
     return;
   }
   resetQuoteForm();
@@ -3291,10 +4629,47 @@ function loadGuardingQuoteIntoBuilder(quote) {
   guardingFields.quoteNumber.value = quote.quoteNumber || reserveQuoteNumber(todayInputValue());
   guardingFields.quoteDate.value = todayInputValue();
   guardingFields.salesRep.value = quote.salesRep || "";
-  state.guarding.staffing = quote.guardingStaffing?.length ? quote.guardingStaffing.map((row) => ({ ...row })) : [defaultGuardingStaffRow()];
+  state.guarding.lineItems = quote.guardingLineItems?.length ? quote.guardingLineItems.map((row) => ({ ...row })) : guardingDisplayLineItems(quote).map((row) => ({
+    catalogId: row.catalogId || "",
+    description: row.description || row.position || "",
+    unitType: row.unitType || row.grade || "",
+    rate: Number(row.rate || row.monthlySellingPrice || 0),
+    quantity: Number(row.quantity || 1),
+    schedule: row.schedule || "",
+    experience: row.experience || "",
+    duties: row.duties || "",
+    source: row.source || "",
+  }));
+  if (!state.guarding.lineItems.length) state.guarding.lineItems = [defaultGuardingLineItem()];
+  state.guarding.staffing = quote.guardingStaffing?.length ? quote.guardingStaffing.map((row) => ({ ...row })) : [];
   state.guarding.equipment = quote.guardingEquipment?.map((row) => ({ ...row })) || [];
   state.guarding.additionalCosts = quote.guardingAdditionalCosts?.map((row) => ({ ...row })) || [];
   renderGuardingBuilder();
+}
+
+function loadArmedResponseQuoteIntoBuilder(quote) {
+  resetArmedResponseQuote();
+  state.revisingQuoteId = quote.id;
+  state.revisionSourceId = quote.id;
+  state.revisionNumber = Number(quote.revisionNumber || 0) + 1;
+  state.armed.activeSalesRequestId = quote.sales_request_id || "";
+  const details = quote.armedResponseDetails || {};
+  Object.entries(armedResponseFields).forEach(([key, field]) => {
+    if (!field) return;
+    field.value = details[key] || "";
+  });
+  armedResponseFields.company.value = quote.selectedCompany || "";
+  armedResponseFields.clientName.value = quote.clientName || "";
+  armedResponseFields.contactPerson.value = quote.contactPerson || "";
+  armedResponseFields.email.value = quote.contactEmail || "";
+  armedResponseFields.contactNumber.value = quote.contactNumber || "";
+  armedResponseFields.siteAddress.value = quote.clientAddress || "";
+  armedResponseFields.quoteNumber.value = quote.quoteNumber || reserveQuoteNumber(todayInputValue());
+  armedResponseFields.quoteDate.value = todayInputValue();
+  armedResponseFields.salesRep.value = quote.salesRep || "";
+  state.armed.additionalServices = quote.armedResponseServices?.map((row) => ({ ...row })) || [];
+  state.armed.onceOffCharges = quote.armedResponseOnceOffCharges?.map((row) => ({ ...row })) || [];
+  renderArmedResponseBuilder();
 }
 
 function reviseRejectedQuote(id) {
@@ -3312,6 +4687,15 @@ function reviseRejectedQuote(id) {
     state.selectedApprovalId = "";
     showSection("guardingBuilder");
     window.location.hash = "guardingBuilder";
+    return;
+  }
+  if (quote.quotationType === "Monthly Armed Response Quotation") {
+    loadArmedResponseQuoteIntoBuilder(quote);
+    writeAudit("Rejected armed response quotation opened for revision", quote.quoteNumber, "Building Armed Response Quotation", quote.quoteNumber, `Revision ${state.revisionNumber}`);
+    state.selectedLibraryId = "";
+    state.selectedApprovalId = "";
+    showSection("armedResponseBuilder");
+    window.location.hash = "armedResponseBuilder";
     return;
   }
   loadQuoteIntoBuilder(quote);
@@ -3436,6 +4820,470 @@ function paymentStatusBadge(quote) {
     label: "Payment outstanding",
     className: "status-badge status-payment-outstanding",
   };
+}
+
+const projectTimelineStages = [
+  { key: "quotation_approved", label: "Quotation Approved", percent: 5 },
+  { key: "client_accepted", label: "Client Accepted", percent: 10 },
+  { key: "invoice_issued", label: "Invoice Issued", percent: 20 },
+  { key: "deposit_requested", label: "Deposit Requested", percent: 25 },
+  { key: "deposit_received", label: "Deposit Received", percent: 35 },
+  { key: "stock_ordered", label: "Stock Ordered", percent: 50 },
+  { key: "stock_received", label: "Stock Received", percent: 60 },
+  { key: "installation_booked", label: "Installation Booked", percent: 75 },
+  { key: "installation_completed", label: "Installation Completed", percent: 90 },
+  { key: "final_invoice_issued", label: "Final Invoice Issued", percent: 95 },
+  { key: "paid_in_full", label: "Paid In Full", percent: 100 },
+  { key: "project_closed", label: "Project Closed", percent: 100 },
+];
+
+const timelineStageStatuses = ["Not started", "In progress", "Completed", "Overdue"];
+
+function loadProjectTimelines() {
+  try {
+    return JSON.parse(localStorage.getItem(projectTimelineStorageKey) || "{}");
+  } catch {
+    localStorage.removeItem(projectTimelineStorageKey);
+    return {};
+  }
+}
+
+function saveProjectTimelines(timelines) {
+  localStorage.setItem(projectTimelineStorageKey, JSON.stringify(timelines));
+}
+
+function timelineAcceptedDateForQuote(quote) {
+  return quote.clientAcceptedAt || quote.acceptedAt || quote.convertedAt || quote.clientOutcomeDate || quote.updatedAt || "";
+}
+
+function timelineApprovedDateForQuote(quote) {
+  return quote.approvedDate || quote.decidedAt || quote.submittedAt || quote.quoteDate || "";
+}
+
+function siteProjectNameForQuote(quote) {
+  return quote.siteName || quote.projectName || quote.guardingDetails?.siteName || quote.armedResponseDetails?.siteName || quote.projectSummary || quote.clientAddress || "-";
+}
+
+function timelineRequestForQuote(quote) {
+  if (!quote?.sales_request_id) return null;
+  return loadSalesRequests().find((request) => request.id === quote.sales_request_id || request.linked_quotation_id === quote.id) || null;
+}
+
+function timelineQuoteLineItems(quote) {
+  if (quote.quotationType === "Guarding Quotation") {
+    return guardingDisplayLineItems(quote).map((row) => ({
+      description: guardingLineItemLabel(row),
+      detail: [row.shiftType, row.billingType, row.unitType].filter(Boolean).join(" | "),
+      quantity: row.quantity,
+      total: guardingLineItemTotal(row),
+    }));
+  }
+  if (quote.quotationType === "Monthly Armed Response Quotation") {
+    return [
+      ...(quote.armedResponseServices || []).map((row) => ({
+        description: row.description || "Armed response service",
+        detail: "Monthly armed response",
+        quantity: row.quantity,
+        total: Number(row.monthlySellingPrice || 0) * Number(row.quantity || 0),
+      })),
+      ...(quote.armedResponseCharges || []).map((row) => ({
+        description: row.item || "Once-off charge",
+        detail: "Once-off",
+        quantity: row.quantity,
+        total: Number(row.onceOffSellingPrice || 0) * Number(row.quantity || 0),
+      })),
+    ];
+  }
+  return (quote.items || []).map((item) => ({
+    description: item.description || item.stockCode || "Quotation item",
+    detail: item.stockCode || "Technical quotation",
+    quantity: item.quantity,
+    total: quoteItemTotal(quote, item),
+  }));
+}
+
+function timelineDepositAmount(quote) {
+  const explicit = Number(quote.depositAmount || quote.depositValue || 0);
+  if (explicit > 0) return roundCurrency(explicit);
+  return roundCurrency(quoteTotalValue(quote) * 0.7);
+}
+
+function timelineOutstandingBalance(quote) {
+  if (quote.paidInFull) return 0;
+  const total = quoteTotalValue(quote);
+  return roundCurrency(quote.depositReceived ? Math.max(total - timelineDepositAmount(quote), 0) : total);
+}
+
+function isTimelineEligibleQuote(quote) {
+  const statuses = approvalStatusCandidates(quote).map(normalizedStatus);
+  if (statuses.includes("client_declined") || statuses.includes("rejected") || quote.clientOutcome === "Rejected by client" || quote.rejectionSource === "client") return false;
+  return isClientAccepted(quote) || statuses.some((status) => ["approved", "sent_to_client", "client_accepted"].includes(status));
+}
+
+function defaultTimelineForQuote(quote) {
+  const approvedAt = timelineApprovedDateForQuote(quote) || new Date().toISOString();
+  const acceptedAt = timelineAcceptedDateForQuote(quote);
+  const timeline = {
+    quoteId: quote.id,
+    quoteNumber: quote.quoteNumber,
+    responsibleMember: quote.responsibleMember || quote.approvedByName || quote.createdByName || salesRepNameForQuote(quote),
+    stages: projectTimelineStages.reduce((acc, stage) => {
+      const isApprovedStage = stage.key === "quotation_approved";
+      const isAcceptedStage = stage.key === "client_accepted" && isClientAccepted(quote);
+      acc[stage.key] = {
+        status: isApprovedStage || isAcceptedStage ? "Completed" : "Not started",
+        dateCompleted: isApprovedStage ? String(approvedAt).slice(0, 10) : isAcceptedStage ? String(acceptedAt).slice(0, 10) : "",
+        notes: "",
+        updatedBy: isApprovedStage ? (quote.approvedByName || quote.decidedByName || "System") : isAcceptedStage ? (quote.clientAcceptedByName || "System") : "",
+        updatedAt: isApprovedStage ? new Date(approvedAt).toISOString() : isAcceptedStage ? new Date(acceptedAt).toISOString() : "",
+      };
+      return acc;
+    }, {}),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  if (quote.depositReceived) {
+    timeline.stages.deposit_received = {
+      status: "Completed",
+      dateCompleted: String(quote.depositReceivedAt || quote.updatedAt || new Date().toISOString()).slice(0, 10),
+      notes: "Pulled through from Quote Library payment tracking.",
+      updatedBy: quote.updatedByName || "System",
+      updatedAt: quote.updatedAt || new Date().toISOString(),
+    };
+  }
+  if (quote.paidInFull) {
+    timeline.stages.paid_in_full = {
+      status: "Completed",
+      dateCompleted: String(quote.paidInFullAt || quote.updatedAt || new Date().toISOString()).slice(0, 10),
+      notes: "Pulled through from Quote Library payment tracking.",
+      updatedBy: quote.updatedByName || "System",
+      updatedAt: quote.updatedAt || new Date().toISOString(),
+    };
+  }
+  return timeline;
+}
+
+function timelineForQuote(quote) {
+  const timelines = loadProjectTimelines();
+  const existing = timelines[quote.id] || {};
+  const base = defaultTimelineForQuote(quote);
+  const merged = {
+    ...base,
+    ...existing,
+    stages: { ...base.stages, ...(existing.stages || {}) },
+  };
+  projectTimelineStages.forEach((stage) => {
+    merged.stages[stage.key] = {
+      ...base.stages[stage.key],
+      ...(existing.stages?.[stage.key] || {}),
+    };
+  });
+  timelines[quote.id] = merged;
+  saveProjectTimelines(timelines);
+  return merged;
+}
+
+function timelineEligibleQuotes() {
+  return loadApprovals().filter(isTimelineEligibleQuote);
+}
+
+function timelineStage(timeline, key) {
+  return timeline.stages?.[key] || { status: "Not started", dateCompleted: "", notes: "", updatedBy: "", updatedAt: "" };
+}
+
+function timelineCurrentStage(timeline) {
+  const overdue = projectTimelineStages.find((item) => timelineStage(timeline, item.key).status === "Overdue");
+  if (overdue) return overdue.label;
+  const inProgress = projectTimelineStages.find((item) => timelineStage(timeline, item.key).status === "In progress");
+  if (inProgress) return inProgress.label;
+  const stage = projectTimelineStages.find((item) => timelineStage(timeline, item.key).status !== "Completed");
+  return stage ? stage.label : "Project Closed";
+}
+
+function timelineCompletionPercent(timeline) {
+  const completed = projectTimelineStages
+    .filter((stage) => timelineStage(timeline, stage.key).status === "Completed")
+    .map((stage) => stage.percent);
+  return completed.length ? Math.max(...completed) : 0;
+}
+
+function timelineLastUpdated(timeline) {
+  const dates = Object.values(timeline.stages || {}).map((stage) => stage.updatedAt).filter(Boolean).sort();
+  return dates.at(-1) || timeline.updatedAt || timeline.createdAt || "";
+}
+
+function daysBetween(dateValue, endDate = new Date()) {
+  if (!dateValue) return 0;
+  const start = new Date(String(dateValue).slice(0, 10) + "T00:00:00");
+  const end = new Date(dateInputValue(endDate) + "T00:00:00");
+  return Math.floor((end - start) / (24 * 60 * 60 * 1000));
+}
+
+function timelineOverdueReasons(quote, timeline) {
+  const reasons = [];
+  const acceptedDate = timelineAcceptedDateForQuote(quote);
+  if (acceptedDate && timelineStage(timeline, "deposit_received").status !== "Completed" && daysBetween(acceptedDate) > 7) {
+    reasons.push("Deposit not received within 7 days");
+  }
+  const stockOrdered = timelineStage(timeline, "stock_ordered");
+  if (stockOrdered.status === "Completed" && stockOrdered.dateCompleted && timelineStage(timeline, "stock_received").status !== "Completed" && daysBetween(stockOrdered.dateCompleted) > 14) {
+    reasons.push("Stock not received within 14 days");
+  }
+  const installationBooked = timelineStage(timeline, "installation_booked");
+  if (installationBooked.status === "Completed" && installationBooked.dateCompleted && timelineStage(timeline, "installation_completed").status !== "Completed" && daysBetween(installationBooked.dateCompleted) > 0) {
+    reasons.push("Installation not completed after booked date");
+  }
+  return reasons;
+}
+
+function timelineStatusClass(status, overdue = false) {
+  if (overdue || status === "Overdue") return "timeline-status timeline-overdue";
+  if (status === "Completed") return "timeline-status timeline-complete";
+  if (status === "In progress") return "timeline-status timeline-progress";
+  return "timeline-status timeline-not-started";
+}
+
+function renderProjectTimelineSummary(rows) {
+  const countStage = (key, status = "Completed") => rows.filter(({ timeline }) => timelineStage(timeline, key).status === status).length;
+  const awaitingDeposit = rows.filter(({ timeline }) => timelineStage(timeline, "deposit_received").status !== "Completed").length;
+  const overdue = rows.filter(({ quote, timeline }) => timelineOverdueReasons(quote, timeline).length).length;
+  return `
+    <div class="dashboard-summary-grid timeline-summary-grid">
+      ${renderSummaryCard("Timeline projects", String(rows.length))}
+      ${renderSummaryCard("Awaiting deposit", String(awaitingDeposit))}
+      ${renderSummaryCard("Deposit received", String(countStage("deposit_received")))}
+      ${renderSummaryCard("Stock ordered", String(countStage("stock_ordered")))}
+      ${renderSummaryCard("Installation booked", String(countStage("installation_booked")))}
+      ${renderSummaryCard("Installation completed", String(countStage("installation_completed")))}
+      ${renderSummaryCard("Paid in full", String(countStage("paid_in_full")))}
+      ${renderSummaryCard("Overdue projects", String(overdue))}
+    </div>
+  `;
+}
+
+function projectTimelineRows() {
+  return timelineEligibleQuotes().map((quote) => ({
+    quote,
+    timeline: timelineForQuote(quote),
+    request: timelineRequestForQuote(quote),
+  }));
+}
+
+function renderProjectTimelineDetail(quote) {
+  if (!quote) {
+    projectTimelineDetail.innerHTML = `<p class="empty-state">Select an accepted quotation to update project progress.</p>`;
+    return;
+  }
+  const timeline = timelineForQuote(quote);
+  const request = timelineRequestForQuote(quote);
+  const lineItems = timelineQuoteLineItems(quote);
+  const salesRepProfile = salesReps[quote.salesRep] || {};
+  const responsibleProfile = storageList(membersStorageKey).find((member) => member.name === timeline.responsibleMember || normalizeEmail(member.email) === normalizeEmail(quote.approvedByUserId || quote.createdBy || quote.submittedBy || ""));
+  const overdueReasons = timelineOverdueReasons(quote, timeline);
+  const installationComplete = timelineStage(timeline, "installation_completed").status === "Completed";
+  const paidInFull = timelineStage(timeline, "paid_in_full").status === "Completed";
+  const projectClosed = timelineStage(timeline, "project_closed").status === "Completed";
+  const percent = timelineCompletionPercent(timeline);
+  projectTimelineDetail.innerHTML = `
+    <div class="approval-detail-header">
+      <div>
+        <p class="eyebrow">Project timeline</p>
+        <h3>${escapeHtml(quote.quoteNumber)}</h3>
+        <p>${escapeHtml(quote.clientName || "-")} | ${escapeHtml(siteProjectNameForQuote(quote))}</p>
+      </div>
+      <span class="${timelineStatusClass(timelineStage(timeline, "project_closed").status, overdueReasons.length > 0)}">${overdueReasons.length ? "Overdue" : timelineCurrentStage(timeline)}</span>
+    </div>
+    <div class="timeline-progressbar" aria-label="Project completion">
+      <span style="width:${percent}%"></span>
+    </div>
+    <div class="approval-review-metrics timeline-review-metrics">
+      <div><small>Quotation value</small><strong>${money.format(quoteTotalValue(quote))}</strong></div>
+      <div><small>Deposit value</small><strong>${money.format(timelineDepositAmount(quote))}</strong></div>
+      <div><small>Outstanding balance</small><strong>${money.format(timelineOutstandingBalance(quote))}</strong></div>
+      <div><small>Date approved</small><strong>${escapeHtml(formatDate(String(timelineApprovedDateForQuote(quote)).slice(0, 10)))}</strong></div>
+      <div><small>Date accepted by client</small><strong>${escapeHtml(timelineAcceptedDateForQuote(quote) ? formatDate(String(timelineAcceptedDateForQuote(quote)).slice(0, 10)) : "-")}</strong></div>
+      <div><small>Sales rep</small><strong>${escapeHtml(salesRepNameForQuote(quote))}</strong></div>
+      <div><small>Quotation type</small><strong>${escapeHtml(quote.quotationType || "Technical Quotation")}</strong></div>
+      <div><small>Completion</small><strong>${percent}%</strong></div>
+      <div><small>Responsible member</small><strong>${escapeHtml(timeline.responsibleMember || "-")}</strong></div>
+      <div><small>Last updated</small><strong>${escapeHtml(timelineLastUpdated(timeline) ? new Date(timelineLastUpdated(timeline)).toLocaleString("en-ZA") : "-")}</strong></div>
+    </div>
+    <section class="timeline-source-panel">
+      <h4>Information pulled from Quotation Hub</h4>
+      <div class="timeline-source-grid">
+        <div><small>Current quotation status</small><strong>${escapeHtml(quote.status || quote.workflowStatus || "-")}</strong></div>
+        <div><small>Approved by</small><strong>${escapeHtml(quote.approvedByName || quote.decidedByName || "-")}</strong></div>
+        <div><small>Approval notes</small><strong>${escapeHtml(quote.approvalNotes || quote.decisionNotes || "-")}</strong></div>
+        <div><small>Sales rep details</small><strong>${escapeHtml([salesRepProfile.email, salesRepProfile.phone].filter(Boolean).join(" / ") || "-")}</strong></div>
+        <div><small>Responsible role</small><strong>${escapeHtml(responsibleProfile?.access || responsibleProfile?.role || "-")}</strong></div>
+        <div><small>Permission level</small><strong>${escapeHtml(responsibleProfile ? memberPermissions(responsibleProfile).length + " permissions" : "-")}</strong></div>
+        <div><small>Sales request</small><strong>${escapeHtml(request?.request_number || quote.sales_request_id || "-")}</strong></div>
+        <div><small>Request notes</small><strong>${escapeHtml(request?.notes_for_builder || request?.notes || "-")}</strong></div>
+        <div><small>Request documents</small><strong>${escapeHtml(request?.files?.length ? `${request.files.length} uploaded` : "-")}</strong></div>
+      </div>
+      <div class="timeline-line-items">
+        <strong>Quotation line items</strong>
+        ${lineItems.length ? lineItems.slice(0, 8).map((item) => `<span>${escapeHtml(item.description)} <small>${escapeHtml(item.detail || "")} | Qty ${escapeHtml(item.quantity || "-")} | ${money.format(Number(item.total || 0))}</small></span>`).join("") : `<span>No line items found.</span>`}
+      </div>
+    </section>
+    ${overdueReasons.length ? `<div class="timeline-overdue-panel"><strong>Overdue:</strong> ${escapeHtml(overdueReasons.join(" | "))}</div>` : ""}
+    <div class="timeline-stage-list">
+      ${projectTimelineStages.map((stage, index) => {
+        const record = timelineStage(timeline, stage.key);
+        const isLockedClosed = stage.key === "project_closed" && (!installationComplete || !paidInFull);
+        const isOverdue = overdueReasons.some((reason) => (
+          (stage.key === "deposit_received" && reason.includes("Deposit")) ||
+          (stage.key === "stock_received" && reason.includes("Stock")) ||
+          (stage.key === "installation_completed" && reason.includes("Installation"))
+        ));
+        return `
+          <article class="timeline-stage-card timeline-vertical-card ${isOverdue ? "stage-overdue" : ""}">
+            <div class="timeline-stage-marker ${record.status === "Completed" ? "marker-complete" : record.status === "In progress" ? "marker-progress" : isOverdue || record.status === "Overdue" ? "marker-overdue" : ""}">${index + 1}</div>
+            <div class="timeline-stage-fields">
+              <div class="timeline-stage-title">
+                <strong>${escapeHtml(stage.label)}</strong>
+                <span class="${timelineStatusClass(record.status, isOverdue)}">${escapeHtml(isOverdue ? "Overdue" : record.status)}</span>
+              </div>
+              <div class="timeline-stage-form">
+                <label>Status
+                  <select data-timeline-status="${escapeHtml(stage.key)}" ${isLockedClosed ? "disabled" : ""}>
+                    ${timelineStageStatuses.map((status) => `<option value="${status}" ${record.status === status || (isOverdue && status === "Overdue") ? "selected" : ""}>${status}</option>`).join("")}
+                  </select>
+                </label>
+                <label>${stage.key === "installation_booked" ? "Booked date" : "Date completed"}
+                  <input type="date" data-timeline-date="${escapeHtml(stage.key)}" value="${escapeHtml(record.dateCompleted || "")}" ${isLockedClosed ? "disabled" : ""} />
+                </label>
+                <label>Notes
+                  <textarea rows="2" data-timeline-notes="${escapeHtml(stage.key)}" ${isLockedClosed ? "disabled" : ""}>${escapeHtml(record.notes || "")}</textarea>
+                </label>
+                <div class="timeline-stage-meta">
+                  <small>Completed by: ${escapeHtml(record.updatedBy || "-")}</small>
+                  <small>${record.updatedAt ? escapeHtml(new Date(record.updatedAt).toLocaleString("en-ZA")) : "No update yet"}</small>
+                  <button class="secondary-btn" type="button" data-save-timeline-stage="${escapeHtml(stage.key)}" ${isLockedClosed ? "disabled" : ""}>Save stage</button>
+                </div>
+              </div>
+              ${isLockedClosed ? `<p class="timeline-lock-note">Project can only be closed once Installation completed and Paid in full are completed.</p>` : ""}
+            </div>
+          </article>
+        `;
+      }).join("")}
+    </div>
+    ${installationComplete && paidInFull && !projectClosed ? `<button class="primary-btn" type="button" data-close-project="${escapeHtml(quote.id)}">Mark project as Closed</button>` : ""}
+    <button class="secondary-btn" type="button" data-back-timeline="true">Back to timelines</button>
+  `;
+}
+
+function renderProjectTimeline() {
+  let rows = projectTimelineRows();
+  projectTimelineList.innerHTML = "";
+  projectTimelineDetail.innerHTML = "";
+
+  if (state.selectedTimelineId) {
+    const selected = timelineEligibleQuotes().find((quote) => quote.id === state.selectedTimelineId);
+    if (selected) {
+      projectTimelineList.hidden = true;
+      projectTimelineDetail.hidden = false;
+      renderProjectTimelineDetail(selected);
+      return;
+    }
+    state.selectedTimelineId = "";
+  }
+
+  projectTimelineList.hidden = false;
+  projectTimelineDetail.hidden = true;
+
+  if (!rows.length) {
+    projectTimelineList.innerHTML = `<p class="empty-state">No approved or client-accepted quotations are available for the Project Timeline yet.</p>`;
+    return;
+  }
+
+  const salesReps = Array.from(new Set(rows.map(({ quote }) => salesRepNameForQuote(quote)).filter(Boolean))).sort();
+  const stages = projectTimelineStages.map((stage) => stage.label);
+  projectTimelineList.innerHTML = `
+    ${renderProjectTimelineSummary(rows)}
+    <div class="approval-filterbar timeline-filterbar">
+      <label>Search client name<input id="timelineClientSearch" type="search" placeholder="Client name" /></label>
+      <label>Search quotation number<input id="timelineQuoteSearch" type="search" placeholder="Q-2026-0001" /></label>
+      <label>Sales rep<select id="timelineSalesRepFilter"><option value="">All sales reps</option>${salesReps.map((rep) => `<option value="${escapeHtml(rep)}">${escapeHtml(rep)}</option>`).join("")}</select></label>
+      <label>Current stage<select id="timelineStageFilter"><option value="">All stages</option>${stages.map((stage) => `<option value="${escapeHtml(stage)}">${escapeHtml(stage)}</option>`).join("")}</select></label>
+      <label>Date accepted<input id="timelineAcceptedDateFilter" type="date" /></label>
+      <label>Overdue items<select id="timelineOverdueFilter"><option value="">All</option><option value="yes">Overdue only</option><option value="no">Not overdue</option></select></label>
+      <button class="secondary-btn" type="button" id="timelineClearFilters">Clear filters</button>
+    </div>
+    <div class="timeline-card-grid" id="timelineRows"></div>
+  `;
+
+  const timelineRows = projectTimelineList.querySelector("#timelineRows");
+  const renderRows = (filteredRows) => {
+    timelineRows.innerHTML = "";
+    if (!filteredRows.length) {
+      timelineRows.innerHTML = `<p class="empty-state approval-table-empty">No project timelines match this filter.</p>`;
+      return;
+    }
+    filteredRows.forEach(({ quote, timeline }) => {
+      const overdueReasons = timelineOverdueReasons(quote, timeline);
+      const currentStage = timelineCurrentStage(timeline);
+      const percent = timelineCompletionPercent(timeline);
+      const card = document.createElement("article");
+      card.className = `timeline-project-card ${overdueReasons.length ? "timeline-row-overdue" : ""}`;
+      card.innerHTML = `
+        <div class="timeline-project-head">
+          <div>
+            <p class="eyebrow">${escapeHtml(quote.quotationType || "Technical Quotation")}</p>
+            <h3>${escapeHtml(quote.quoteNumber || "-")}</h3>
+            <p>${escapeHtml(quote.clientName || "-")} | ${escapeHtml(siteProjectNameForQuote(quote))}</p>
+          </div>
+          <span class="${timelineStatusClass("", overdueReasons.length > 0)}">${escapeHtml(overdueReasons.length ? "Overdue" : currentStage)}</span>
+        </div>
+        <div class="timeline-progressbar"><span style="width:${percent}%"></span></div>
+        <div class="timeline-card-facts">
+          <div><small>Quotation value</small><strong>${money.format(quoteTotalValue(quote))}</strong></div>
+          <div><small>Deposit value</small><strong>${money.format(timelineDepositAmount(quote))}</strong></div>
+          <div><small>Outstanding balance</small><strong>${money.format(timelineOutstandingBalance(quote))}</strong></div>
+          <div><small>Date approved</small><strong>${escapeHtml(formatDate(String(timelineApprovedDateForQuote(quote)).slice(0, 10)))}</strong></div>
+          <div><small>Date accepted by client</small><strong>${escapeHtml(timelineAcceptedDateForQuote(quote) ? formatDate(String(timelineAcceptedDateForQuote(quote)).slice(0, 10)) : "-")}</strong></div>
+          <div><small>Sales rep</small><strong>${escapeHtml(salesRepNameForQuote(quote))}</strong></div>
+          <div><small>Completion</small><strong>${percent}%</strong></div>
+          <div><small>Responsible member</small><strong>${escapeHtml(timeline.responsibleMember || "-")}</strong></div>
+        </div>
+        <button class="secondary-btn" type="button" data-view-timeline="${escapeHtml(quote.id)}">Open timeline</button>
+      `;
+      timelineRows.appendChild(card);
+    });
+  };
+
+  const applyFilters = () => {
+    const clientQuery = projectTimelineList.querySelector("#timelineClientSearch").value.trim().toLowerCase();
+    const quoteQuery = projectTimelineList.querySelector("#timelineQuoteSearch").value.trim().toLowerCase();
+    const salesRep = projectTimelineList.querySelector("#timelineSalesRepFilter").value;
+    const stage = projectTimelineList.querySelector("#timelineStageFilter").value;
+    const acceptedDate = projectTimelineList.querySelector("#timelineAcceptedDateFilter").value;
+    const overdueFilter = projectTimelineList.querySelector("#timelineOverdueFilter").value;
+    const filtered = rows.filter(({ quote, timeline }) => {
+      const overdue = timelineOverdueReasons(quote, timeline).length > 0;
+      return (
+        (!clientQuery || (quote.clientName || "").toLowerCase().includes(clientQuery)) &&
+        (!quoteQuery || (quote.quoteNumber || "").toLowerCase().includes(quoteQuery)) &&
+        (!salesRep || salesRepNameForQuote(quote) === salesRep) &&
+        (!stage || timelineCurrentStage(timeline) === stage) &&
+        (!acceptedDate || String(timelineAcceptedDateForQuote(quote)).slice(0, 10) === acceptedDate) &&
+        (!overdueFilter || (overdueFilter === "yes" ? overdue : !overdue))
+      );
+    });
+    renderRows(filtered);
+  };
+
+  ["timelineClientSearch", "timelineQuoteSearch", "timelineSalesRepFilter", "timelineStageFilter", "timelineAcceptedDateFilter", "timelineOverdueFilter"].forEach((id) => {
+    projectTimelineList.querySelector(`#${id}`).addEventListener("input", applyFilters);
+    projectTimelineList.querySelector(`#${id}`).addEventListener("change", applyFilters);
+  });
+  projectTimelineList.querySelector("#timelineClearFilters").addEventListener("click", () => {
+    ["timelineClientSearch", "timelineQuoteSearch", "timelineSalesRepFilter", "timelineStageFilter", "timelineAcceptedDateFilter", "timelineOverdueFilter"].forEach((id) => {
+      projectTimelineList.querySelector(`#${id}`).value = "";
+    });
+    applyFilters();
+  });
+  renderRows(rows);
 }
 
 function fileMetadata(file) {
@@ -3584,7 +5432,7 @@ async function submitCurrentQuoteForApproval() {
 function decideQuote(id, status, rejectionReason = "") {
   if (normalizedStatus(status) === "approved") {
     const quoteToApprove = loadApprovals().find((quote) => quote.id === id);
-    if (quoteToApprove?.quotationType !== "Guarding Quotation" && quoteToApprove && quoteCostingValues(quoteToApprove).totalQuotationProfit <= 0) {
+    if (!["Guarding Quotation", "Monthly Armed Response Quotation"].includes(quoteToApprove?.quotationType) && quoteToApprove && quoteCostingValues(quoteToApprove).totalQuotationProfit <= 0) {
       alert("This quotation does not make a profit and cannot be approved.");
       return;
     }
@@ -3629,6 +5477,14 @@ function decideQuote(id, status, rejectionReason = "") {
         approved_at: new Date().toISOString(),
       });
     }
+    if (normalizedStatus(status) === "rejected" && quote.sales_request_id) {
+      updateSalesRequest(quote.sales_request_id, {
+        status: "Rejected / Needs Changes",
+        rejection_reason: rejectionReason,
+        rejected_at: new Date().toISOString(),
+        rejected_by_name: currentUserName(),
+      });
+    }
     writeAudit(
       normalizedStatus(status) === "rejected" ? "Rejected quotation" : "Approved quotation",
       `${quote.quoteNumber} for ${quote.clientName}`,
@@ -3668,11 +5524,8 @@ function sendQuoteToClient(id) {
 }
 
 function renderGuardingApprovalDetail(quote) {
-  const company = companies[quote.selectedCompany];
   const salesRep = salesReps[quote.salesRep];
   const pricing = quote.guardingPricing || {};
-  const staffing = quote.guardingStaffing || [];
-  const equipment = quote.guardingEquipment || [];
   const canDecide = isApprovalPendingQuote(quote);
   approvalDetail.innerHTML = `
     <div class="approval-detail-header">
@@ -3686,8 +5539,45 @@ function renderGuardingApprovalDetail(quote) {
       <div><small>Client</small><strong>${escapeHtml(quote.clientName || "-")}</strong></div>
       <div><small>Site</small><strong>${escapeHtml(quote.guardingDetails?.siteName || quote.clientAddress || "-")}</strong></div>
       <div><small>Sales rep</small><strong>${escapeHtml(salesRep?.name || "-")}</strong></div>
+      <div><small>Subtotal excluding VAT</small><strong>${money.format(Number(pricing.monthlySelling || 0))}</strong></div>
+      <div><small>Total including VAT</small><strong>${money.format(roundCurrency(Number(pricing.monthlySelling || 0) * (1 + state.taxRate)))}</strong></div>
+      <div><small>Gross profit %</small><strong>${Number(pricing.grossProfitPercent || 0).toFixed(2)}%</strong></div>
+    </div>
+    <div class="quote-preview approval-quote">${guardingQuotationDocumentHtml(quote, { preview: true })}</div>
+    <div class="approval-detail-actions">
+      <button class="secondary-btn" type="button" data-back-approvals="true">Back to approval list</button>
+      ${canDecide ? `<button class="primary-btn" type="button" data-approve="${quote.id}">Approve</button>` : ""}
+      ${canDecide ? `<button class="danger-btn" type="button" data-start-reject="${quote.id}">Reject</button>` : ""}
+    </div>
+    <div class="rejection-panel">
+      <label>Reason for rejection<textarea id="rejectionReason" rows="3" placeholder="Add the reason before rejecting this quotation..." spellcheck="false"></textarea></label>
+      ${canDecide ? `<button class="danger-btn" type="button" data-reject="${quote.id}">Reject quotation</button>` : ""}
+    </div>
+  `;
+}
+
+function renderArmedResponseApprovalDetail(quote) {
+  const company = companies[quote.selectedCompany];
+  const salesRep = salesReps[quote.salesRep];
+  const pricing = quote.armedResponsePricing || {};
+  const services = quote.armedResponseServices || [];
+  const charges = quote.armedResponseOnceOffCharges || [];
+  const canDecide = isApprovalPendingQuote(quote);
+  approvalDetail.innerHTML = `
+    <div class="approval-detail-header">
+      <div>
+        <p class="eyebrow">Monthly Armed Response Approval</p>
+        <h3>${escapeHtml(quote.quoteNumber || quote.id)}</h3>
+      </div>
+      <span class="status-badge status-info">Monthly Armed Response</span>
+    </div>
+    <div class="approval-review-metrics">
+      <div><small>Client</small><strong>${escapeHtml(quote.clientName || "-")}</strong></div>
+      <div><small>Site</small><strong>${escapeHtml(quote.armedResponseDetails?.siteName || quote.clientAddress || "-")}</strong></div>
+      <div><small>Sales rep</small><strong>${escapeHtml(salesRep?.name || "-")}</strong></div>
       <div><small>Monthly value</small><strong>${money.format(Number(pricing.monthlySelling || 0))}</strong></div>
-      <div><small>Annual value</small><strong>${money.format(Number(pricing.annualValue || 0))}</strong></div>
+      <div><small>Once-off value</small><strong>${money.format(Number(pricing.onceOffSelling || 0))}</strong></div>
+      <div><small>Annual contract value</small><strong>${money.format(Number(pricing.annualValue || 0))}</strong></div>
       <div><small>Gross profit %</small><strong>${Number(pricing.grossProfitPercent || 0).toFixed(2)}%</strong></div>
     </div>
     <div class="quote-preview approval-quote">
@@ -3700,24 +5590,25 @@ function renderGuardingApprovalDetail(quote) {
       </div>
       <div class="preview-meta">
         <div><small>Client</small><strong>${escapeHtml(quote.clientName || "-")}</strong></div>
-        <div><small>Site</small><strong>${escapeHtml([quote.guardingDetails?.siteName, quote.clientAddress].filter(Boolean).join("\n") || "-")}</strong></div>
-        <div><small>Service</small><strong>${escapeHtml(quote.guardingDetails?.serviceType || "-")}</strong></div>
+        <div><small>Site</small><strong>${escapeHtml([quote.armedResponseDetails?.siteName, quote.clientAddress].filter(Boolean).join("\n") || "-")}</strong></div>
+        <div><small>Package</small><strong>${escapeHtml(quote.armedResponseDetails?.packageName || "-")}</strong></div>
         <div><small>Date</small><strong>${escapeHtml(formatDate(quote.quoteDate))}</strong></div>
       </div>
       <div class="equipment-description">
-        <h3>Scope of Guarding Services</h3>
-        <p>${escapeHtml([quote.guardingDetails?.serviceType, quote.guardingDetails?.specialInstructions].filter(Boolean).join(" | ") || "Guarding services as requested.")}</p>
+        <h3>Scope of Armed Response Services</h3>
+        <p>${escapeHtml([quote.armedResponseDetails?.packageDescription, quote.armedResponseDetails?.specialInstructions].filter(Boolean).join(" | ") || "Monthly armed response services as requested.")}</p>
       </div>
       <div class="quotation-table guarding-preview-table">
-        <div class="quotation-table-header"><span>Position</span><span>Qty</span><span>Shift</span><span>Monthly Selling</span></div>
-        ${staffing.map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.position || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>${escapeHtml(`Day ${row.dayShiftQuantity || 0} / Night ${row.nightShiftQuantity || 0}`)}</span><strong>${money.format(Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>-</span><span>No staffing</span><span>-</span><strong>-</strong></div>`}
+        <div class="quotation-table-header"><span>Service</span><span>Qty</span><span>Included</span><span>Monthly Selling</span></div>
+        ${services.map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.description || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>Yes</span><strong>${money.format(Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>${escapeHtml(quote.armedResponseDetails?.packageName || "Package")}</span><span>${escapeHtml(quote.armedResponseDetails?.packageSiteCount || 1)}</span><span>Yes</span><strong>${money.format(Number(pricing.monthlySelling || 0))}</strong></div>`}
       </div>
       <div class="quotation-table guarding-preview-table">
-        <div class="quotation-table-header"><span>Equipment</span><span>Qty</span><span>Included</span><span>Monthly Selling</span></div>
-        ${equipment.map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.item || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>Yes</span><strong>${money.format(Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>-</span><span>No equipment</span><span>-</span><strong>-</strong></div>`}
+        <div class="quotation-table-header"><span>Once-off item</span><span>Qty</span><span>Type</span><span>Selling</span></div>
+        ${charges.map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.item || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>Once-off</span><strong>${money.format(Number(row.quantity || 0) * Number(row.onceOffSellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>-</span><span>No once-off charges</span><span>-</span><strong>-</strong></div>`}
       </div>
       <div class="totals">
         <div><span>Monthly selling price</span><strong>${money.format(Number(pricing.monthlySelling || 0))}</strong></div>
+        <div><span>Once-off charges</span><strong>${money.format(Number(pricing.onceOffSelling || 0))}</strong></div>
         <div class="grand-total"><span>Annual contract value</span><strong>${money.format(Number(pricing.annualValue || 0))}</strong></div>
       </div>
     </div>
@@ -3742,7 +5633,10 @@ function renderApprovalDetail(quote) {
     renderGuardingApprovalDetail(quote);
     return;
   }
-
+  if (quote.quotationType === "Monthly Armed Response Quotation") {
+    renderArmedResponseApprovalDetail(quote);
+    return;
+  }
   const company = companies[quote.selectedCompany];
   const salesRep = salesReps[quote.salesRep];
   const supplierSubtotal = quoteSupplierSubtotal(quote);
@@ -3924,6 +5818,7 @@ function renderApprovals() {
           <option value="">All</option>
           <option value="Technical Quotation">Technical</option>
           <option value="Guarding Quotation">Guarding</option>
+          <option value="Monthly Armed Response Quotation">Monthly Armed Response</option>
         </select>
       </label>
       <label>
@@ -4042,18 +5937,48 @@ function renderQuoteLibraryDetail(quote) {
         <div><small>Quotation type</small><strong>Guarding Quotation</strong></div>
         <div><small>Client</small><strong>${escapeHtml(quote.clientName || "-")}</strong></div>
         <div><small>Sales rep</small><strong>${escapeHtml(salesRep?.name || "-")}</strong></div>
-        <div><small>Monthly value</small><strong>${money.format(Number(quote.guardingPricing?.monthlySelling || 0))}</strong></div>
-        <div><small>Annual value</small><strong>${money.format(quoteAnnualValue(quote))}</strong></div>
+        <div><small>Subtotal excluding VAT</small><strong>${money.format(Number(quote.guardingPricing?.monthlySelling || 0))}</strong></div>
+        <div><small>Total including VAT</small><strong>${money.format(roundCurrency(Number(quote.guardingPricing?.monthlySelling || 0) * (1 + state.taxRate)))}</strong></div>
+        <div><small>Client outcome</small><strong><span class="${statusBadge.className}">${escapeHtml(libraryClientOutcomeLabel(quote))}</span></strong></div>
+      </div>
+      <div class="quote-preview approval-quote">${guardingQuotationDocumentHtml(quote, { preview: true })}</div>
+      <div class="approval-detail-actions">
+        <button class="secondary-btn" type="button" data-back-library="true">Back to quote library</button>
+        ${canReviseQuote(quote) ? `<button class="primary-btn" type="button" data-revise-quote="${quote.id}">Edit / Revise Quotation</button>` : ""}
+      </div>
+    `;
+    return;
+  }
+  if (quote.quotationType === "Monthly Armed Response Quotation") {
+    const salesRep = salesReps[quote.salesRep];
+    const internalBadge = internalStatusBadge(quote);
+    const statusBadge = libraryStatusBadge(quote);
+    const pricing = quote.armedResponsePricing || {};
+    quoteLibraryDetail.innerHTML = `
+      <div class="approval-detail-header">
+        <div>
+          <p class="eyebrow">Quote Library</p>
+          <h3>${escapeHtml(quote.quoteNumber)}</h3>
+        </div>
+        <span class="${internalBadge.className}">${escapeHtml(internalBadge.label)}</span>
+      </div>
+      <div class="approval-review-metrics">
+        <div><small>Quotation type</small><strong>Monthly Armed Response Quotation</strong></div>
+        <div><small>Client</small><strong>${escapeHtml(quote.clientName || "-")}</strong></div>
+        <div><small>Sales rep</small><strong>${escapeHtml(salesRep?.name || "-")}</strong></div>
+        <div><small>Monthly value</small><strong>${money.format(Number(pricing.monthlySelling || 0))}</strong></div>
+        <div><small>Once-off value</small><strong>${money.format(Number(pricing.onceOffSelling || 0))}</strong></div>
+        <div><small>Annual contract value</small><strong>${money.format(quoteAnnualValue(quote))}</strong></div>
         <div><small>Client outcome</small><strong><span class="${statusBadge.className}">${escapeHtml(libraryClientOutcomeLabel(quote))}</span></strong></div>
       </div>
       <div class="quote-preview approval-quote">
         <div class="equipment-description">
-          <h3>Scope of Guarding Services</h3>
-          <p>${escapeHtml([quote.guardingDetails?.serviceType, quote.guardingDetails?.specialInstructions].filter(Boolean).join(" | ") || "Guarding services as requested.")}</p>
+          <h3>Scope of Armed Response Services</h3>
+          <p>${escapeHtml([quote.armedResponseDetails?.packageDescription, quote.armedResponseDetails?.specialInstructions].filter(Boolean).join(" | ") || "Monthly armed response services as requested.")}</p>
         </div>
         <div class="quotation-table guarding-preview-table">
-          <div class="quotation-table-header"><span>Position</span><span>Qty</span><span>Shift</span><span>Monthly Selling</span></div>
-          ${(quote.guardingStaffing || []).map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.position || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>${escapeHtml(`Day ${row.dayShiftQuantity || 0} / Night ${row.nightShiftQuantity || 0}`)}</span><strong>${money.format(Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>-</span><span>No staffing</span><span>-</span><strong>-</strong></div>`}
+          <div class="quotation-table-header"><span>Service</span><span>Qty</span><span>Included</span><span>Monthly Selling</span></div>
+          ${(quote.armedResponseServices || []).map((row) => `<div class="quotation-table-row"><span>${escapeHtml(row.description || "-")}</span><span>${escapeHtml(row.quantity || 0)}</span><span>Yes</span><strong>${money.format(Number(row.quantity || 0) * Number(row.monthlySellingPrice || 0))}</strong></div>`).join("") || `<div class="quotation-table-row"><span>${escapeHtml(quote.armedResponseDetails?.packageName || "Package")}</span><span>${escapeHtml(quote.armedResponseDetails?.packageSiteCount || 1)}</span><span>Yes</span><strong>${money.format(Number(pricing.monthlySelling || 0))}</strong></div>`}
         </div>
       </div>
       <div class="approval-detail-actions">
@@ -4267,6 +6192,7 @@ function renderQuoteLibrary() {
           <option value="">All</option>
           <option value="Technical Quotation">Technical</option>
           <option value="Guarding Quotation">Guarding</option>
+          <option value="Monthly Armed Response Quotation">Monthly Armed Response</option>
         </select>
       </label>
       <label>
@@ -4358,7 +6284,10 @@ function renderQuoteLibrary() {
           <strong>${escapeHtml(salesRep?.name || "Unknown")}</strong>
           <small>${escapeHtml(salesRep?.email || currentUser())}</small>
         </span>
-        <span>${money.format(quoteTotalValue(quote))}</span>
+        <span>
+          <strong>${money.format(quoteTotalValue(quote))}</strong>
+          ${quote.quotationType === "Monthly Armed Response Quotation" ? `<small>Monthly ${money.format(Number(quote.armedResponsePricing?.monthlySelling || 0))} | Once-off ${money.format(Number(quote.armedResponsePricing?.onceOffSelling || 0))} | Annual ${money.format(quoteAnnualValue(quote))}</small>` : ""}
+        </span>
         <span><mark class="${internalBadge.className}">${escapeHtml(internalBadge.label)}</mark></span>
         <span><mark class="${statusBadge.className}">${escapeHtml(libraryClientOutcomeLabel(quote))}</mark></span>
         <span>${showPayment ? `<mark class="${paymentBadge.className}">${escapeHtml(paymentBadge.label)}</mark>` : "-"}</span>
@@ -4957,13 +6886,23 @@ quoteLibraryDetail.addEventListener("click", (event) => {
   if (reviseQuoteId) reviseRejectedQuote(reviseQuoteId);
 
   if (clientApprovedId) {
-    updateStoredQuote(clientApprovedId, {
+    const updatedQuote = updateStoredQuote(clientApprovedId, {
       status: "Client Accepted",
       approvalStatus: "Client Accepted",
       workflowStatus: "Client Accepted",
       clientOutcome: "Approved by client",
+      clientAcceptedAt: new Date().toISOString(),
+      clientAcceptedByName: currentUserName(),
       clientRejectionReason: "",
     });
+    if (updatedQuote?.sales_request_id) {
+      updateSalesRequest(updatedQuote.sales_request_id, {
+        status: "Completed",
+        completed_at: new Date().toISOString(),
+        completed_by_name: currentUserName(),
+      });
+      writeAudit("Request completed", updatedQuote.sales_request_id, "Sales Quotation Requests", updatedQuote.sales_request_id, `Completed by ${currentUserName()}`);
+    }
     writeAudit("Client approved quotation", clientApprovedId);
     renderQuoteLibrary();
   }
@@ -5004,6 +6943,11 @@ quoteLibraryDetail.addEventListener("change", async (event) => {
     if (paymentField === "paidInFull" && event.target.checked) {
       updates.depositReceived = true;
     }
+    if (paymentField === "depositReceived" && event.target.checked) updates.depositReceivedAt = new Date().toISOString();
+    if (paymentField === "paidInFull" && event.target.checked) {
+      updates.paidInFullAt = new Date().toISOString();
+      updates.depositReceivedAt = quote.depositReceivedAt || new Date().toISOString();
+    }
     updateStoredQuote(state.selectedLibraryId, updates);
     writeAudit("Updated payment tracking", `${quote.quoteNumber} ${paymentField}`, "Quote Library", quote.quoteNumber, event.target.checked ? "Checked" : "Unchecked");
     renderQuoteLibrary();
@@ -5027,6 +6971,78 @@ quoteLibraryDetail.addEventListener("change", async (event) => {
   renderQuoteLibrary();
 });
 
+projectTimelineList.addEventListener("click", (event) => {
+  if (!enforceAccess("projectTimeline")) return;
+  const row = event.target.closest("[data-view-timeline]");
+  if (!row) return;
+  state.selectedTimelineId = row.dataset.viewTimeline;
+  renderProjectTimeline();
+});
+
+projectTimelineDetail.addEventListener("click", (event) => {
+  if (!enforceAccess("projectTimeline")) return;
+  if (event.target.dataset.backTimeline) {
+    state.selectedTimelineId = "";
+    renderProjectTimeline();
+    return;
+  }
+
+  const quote = timelineEligibleQuotes().find((item) => item.id === state.selectedTimelineId);
+  if (!quote) return;
+
+  const closeProjectId = event.target.dataset.closeProject;
+  if (closeProjectId) {
+    const timelines = loadProjectTimelines();
+    const timeline = timelineForQuote(quote);
+    const oldStatus = timelineStage(timeline, "project_closed").status;
+    timeline.stages.project_closed = {
+      ...timelineStage(timeline, "project_closed"),
+      status: "Completed",
+      dateCompleted: todayInputValue(),
+      notes: "Project closed after installation completion and full payment.",
+      updatedBy: currentUserName(),
+      updatedAt: new Date().toISOString(),
+    };
+    timeline.responsibleMember = currentUserName();
+    timeline.updatedAt = new Date().toISOString();
+    timelines[quote.id] = timeline;
+    saveProjectTimelines(timelines);
+    writeAudit("Updated project timeline", currentUserName(), "Project Timeline", quote.quoteNumber, `Project closed: ${oldStatus} -> Completed | Project closed after installation completion and full payment.`);
+    renderProjectTimeline();
+    return;
+  }
+
+  const stageKey = event.target.dataset.saveTimelineStage;
+  if (!stageKey) return;
+  const stageDefinition = projectTimelineStages.find((stage) => stage.key === stageKey);
+  if (!stageDefinition) return;
+  const timelines = loadProjectTimelines();
+  const timeline = timelineForQuote(quote);
+  const previous = { ...timelineStage(timeline, stageKey) };
+  const status = projectTimelineDetail.querySelector(`[data-timeline-status="${stageKey}"]`)?.value || "Not started";
+  const dateCompleted = projectTimelineDetail.querySelector(`[data-timeline-date="${stageKey}"]`)?.value || "";
+  const notes = projectTimelineDetail.querySelector(`[data-timeline-notes="${stageKey}"]`)?.value.trim() || "";
+  timeline.stages[stageKey] = {
+    status,
+    dateCompleted,
+    notes,
+    updatedBy: currentUserName(),
+    updatedAt: new Date().toISOString(),
+  };
+  timeline.responsibleMember = currentUserName();
+  timeline.updatedAt = new Date().toISOString();
+  timelines[quote.id] = timeline;
+  saveProjectTimelines(timelines);
+  writeAudit(
+    "Updated project timeline",
+    currentUserName(),
+    "Project Timeline",
+    quote.quoteNumber,
+    `${stageDefinition.label}: ${previous.status || "Not started"} -> ${status}${notes ? ` | Notes: ${notes}` : ""}`
+  );
+  renderProjectTimelineDetail(quote);
+});
+
 memberForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!enforceAccess("settings")) return;
@@ -5048,23 +7064,42 @@ memberForm.addEventListener("submit", async (event) => {
     markInvalid(memberTempPassword);
     return;
   }
+  if (temporaryPassword && !isStrongPassword(temporaryPassword)) {
+    alert(strongPasswordMessage(temporaryPassword));
+    markInvalid(memberTempPassword);
+    return;
+  }
 
   const id = memberForm.dataset.editId || slugify(email);
+  const selectedRole = normalizeRole(memberAccess.value);
   const payload = {
     ...(existing || {}),
     id,
     name: memberName.value.trim(),
     email,
-    access: memberAccess.value,
+    access: selectedRole,
+    role: selectedRole,
     permissions: selectedPermissionKeys(),
     inviteStatus: memberInviteStatus.value,
   };
   if (temporaryPassword) {
-    payload.passwordHash = await hashPassword(temporaryPassword);
     payload.mustChangePassword = true;
     payload.hasLoggedIn = false;
     payload.inviteStatus = "Invite Sent";
     payload.inviteSentAt = new Date().toISOString();
+  }
+  try {
+    const response = await fetch("/api/members", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ ...payload, role: payload.access, temporaryPassword }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "Member could not be saved securely.");
+  } catch (error) {
+    alert(error.message || "Member could not be saved securely.");
+    return;
   }
   const existingIndex = members.findIndex((member) => member.id === id);
   if (existingIndex >= 0) members[existingIndex] = payload;
@@ -5098,7 +7133,7 @@ memberList.addEventListener("click", async (event) => {
     memberForm.dataset.editId = member.id;
     memberName.value = member.name;
     memberEmail.value = member.email;
-    memberAccess.value = member.access;
+    memberAccess.value = normalizeRole(member.access || member.role);
     renderPermissionChecklist(member.permissions || Array.from(memberPermissions(member)));
     memberInviteStatus.value = member.inviteStatus || (member.hasLoggedIn ? "Active" : "Pending");
     memberTempPassword.value = "";
@@ -5109,12 +7144,24 @@ memberList.addEventListener("click", async (event) => {
     const temporaryPassword = generatePassword();
     const updated = {
       ...member,
-      passwordHash: await hashPassword(temporaryPassword),
       mustChangePassword: true,
       hasLoggedIn: false,
       inviteStatus: "Invite Sent",
       inviteSentAt: new Date().toISOString(),
     };
+    try {
+      const response = await fetch("/api/members", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ ...updated, role: updated.access, temporaryPassword }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Invite could not be resent securely.");
+    } catch (error) {
+      alert(error.message || "Invite could not be resent securely.");
+      return;
+    }
     saveMemberRecord(updated);
     sendInviteEmail(updated, temporaryPassword, true);
     writeAudit("Invite resent", updated.email, "Setup - Member access", updated.email, `Access level: ${updated.access}`);
@@ -5124,15 +7171,46 @@ memberList.addEventListener("click", async (event) => {
     const member = members.find((item) => item.id === toggleId);
     if (!member) return;
     const disabled = (member.inviteStatus || "") === "Disabled";
-    saveMemberRecord({
+    const updated = {
       ...member,
       inviteStatus: disabled ? (member.hasLoggedIn ? "Active" : "Pending") : "Disabled",
-    });
+    };
+    try {
+      const response = await fetch("/api/members", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ ...updated, role: normalizeRole(updated.access || updated.role) }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Member status could not be updated securely.");
+    } catch (error) {
+      alert(error.message || "Member status could not be updated securely.");
+      return;
+    }
+    saveMemberRecord(updated);
     writeAudit(disabled ? "Enabled member access" : "Disabled member access", member.email);
     applyPermissions();
     renderSetup();
   }
   if (deleteId) {
+    const member = members.find((item) => item.id === deleteId);
+    if (member) {
+      const disabledMember = { ...member, inviteStatus: "Disabled" };
+      try {
+        const response = await fetch("/api/members", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ ...disabledMember, role: normalizeRole(disabledMember.access || disabledMember.role) }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || "Member could not be disabled securely.");
+      } catch (error) {
+        alert(error.message || "Member could not be disabled securely.");
+        return;
+      }
+    }
     saveStorageList(membersStorageKey, members.filter((item) => item.id !== deleteId));
     saveStorageList(userPermissionsStorageKey, storageList(userPermissionsStorageKey).filter((permission) => permission.user_id !== deleteId));
     writeAudit("Deleted member access", deleteId);
@@ -5234,6 +7312,181 @@ supplierPriceList.addEventListener("click", (event) => {
     writeAudit("Deleted supplier price", deleteId);
     renderSetup();
   }
+});
+
+guardingPriceForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!enforceAccess("settings") || !isAdminMember()) return;
+  if (!guardingPriceItemName.value.trim() || !guardingPriceDescription.value.trim()) return;
+
+  const items = loadGuardingMasterPriceList();
+  const id = guardingPriceForm.dataset.editId || slugify(`${guardingPriceItemName.value}-${Date.now()}`);
+  const existingIndex = items.findIndex((item) => item.id === id);
+  const oldItem = existingIndex >= 0 ? { ...items[existingIndex] } : null;
+  const payload = normalizeGuardingPriceItem({
+    id,
+    itemName: guardingPriceItemName.value.trim(),
+    shiftType: guardingPriceShiftType.value,
+    billingType: guardingPriceBillingType.value,
+    description: guardingPriceDescription.value.trim(),
+    unitType: guardingPriceUnitType.value.trim(),
+    category: guardingPriceCategory.value.trim(),
+    serviceType: guardingPriceServiceType.value.trim(),
+    rate: Number(guardingPriceRate.value || 0),
+    active: guardingPriceActive.checked,
+    updatedAt: new Date().toISOString(),
+  });
+  if (existingIndex >= 0) items[existingIndex] = payload;
+  else items.push(payload);
+  saveGuardingMasterPriceList(items);
+  guardingPriceForm.reset();
+  guardingPriceShiftType.value = "Day Shift";
+  guardingPriceBillingType.value = "Daily";
+  guardingPriceActive.checked = true;
+  delete guardingPriceForm.dataset.editId;
+  writeAudit(
+    oldItem ? "Guarding price item edited" : "Guarding price item added",
+    payload.itemName,
+    "Setup - Guarding price list",
+    payload.id,
+    `Old price: ${oldItem ? money.format(Number(oldItem.rate || 0)) : "-"}; New price: ${money.format(Number(payload.rate || 0))}; Old description: ${oldItem?.description || "-"}; New description: ${payload.description || "-"}`
+  );
+  renderSetup();
+  renderGuardingBuilder();
+});
+
+guardingPriceList?.addEventListener("click", (event) => {
+  if (!enforceAccess("settings") || !isAdminMember()) return;
+  const editId = event.target.dataset.editGuardingPrice;
+  const toggleId = event.target.dataset.toggleGuardingPrice;
+  const items = loadGuardingMasterPriceList();
+  if (editId) {
+    const item = items.find((priceItem) => priceItem.id === editId);
+    if (!item) return;
+    guardingPriceForm.dataset.editId = item.id;
+    guardingPriceItemName.value = item.itemName || "";
+    guardingPriceShiftType.value = item.shiftType || "Day Shift";
+    guardingPriceBillingType.value = item.billingType || "Monthly";
+    guardingPriceDescription.value = item.description || "";
+    guardingPriceUnitType.value = item.unitType || "";
+    guardingPriceCategory.value = item.category || "";
+    guardingPriceServiceType.value = item.serviceType || "";
+    guardingPriceRate.value = item.rate || 0;
+    guardingPriceActive.checked = item.active !== false;
+  }
+  if (toggleId) {
+    const itemIndex = items.findIndex((priceItem) => priceItem.id === toggleId);
+    if (itemIndex < 0) return;
+    const oldItem = { ...items[itemIndex] };
+    items[itemIndex] = { ...items[itemIndex], active: items[itemIndex].active === false, updatedAt: new Date().toISOString() };
+    saveGuardingMasterPriceList(items);
+    writeAudit(
+      items[itemIndex].active ? "Guarding price item activated" : "Guarding price item deactivated",
+      items[itemIndex].itemName,
+      "Setup - Guarding price list",
+      items[itemIndex].id,
+      `Old price: ${money.format(Number(oldItem.rate || 0))}; New price: ${money.format(Number(items[itemIndex].rate || 0))}; Old description: ${oldItem.description || "-"}; New description: ${items[itemIndex].description || "-"}`
+    );
+    renderSetup();
+    renderGuardingBuilder();
+  }
+});
+
+guardingPriceImportFile?.addEventListener("change", async (event) => {
+  if (!enforceAccess("settings") || !isAdminMember()) return;
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const extension = file.name.split(".").pop().toLowerCase();
+  if (["xls", "xlsx"].includes(extension)) {
+    guardingPriceImportSummary.innerHTML = `<span class="import-error">Excel files need the live backend spreadsheet parser. For this local prototype, please save the sheet as CSV and upload the CSV.</span>`;
+    writeAudit("Guarding price import blocked", file.name, "Setup - Guarding price list", file.name, "Excel parser unavailable in local static prototype");
+    event.target.value = "";
+    return;
+  }
+  const text = await file.text();
+  const rows = parseCsv(text);
+  if (rows.length < 2) {
+    guardingPriceImportSummary.innerHTML = `<span class="import-error">The uploaded CSV does not contain enough rows to import.</span>`;
+    return;
+  }
+  const headers = rows[0].map((header) => header.trim());
+  const headerIndex = (keywords) => {
+    const normalized = headers.map((header) => header.toLowerCase());
+    return normalized.findIndex((header) => keywords.some((keyword) => header.includes(keyword)));
+  };
+  const indexes = {
+    itemName: headerIndex(["itemname", "item name", "name", "service"]),
+    shiftType: headerIndex(["shift", "day night"]),
+    billingType: headerIndex(["billing", "cadence", "hourly", "daily", "monthly"]),
+    description: headerIndex(["description", "duties", "details"]),
+    unitType: headerIndex(["unit", "type"]),
+    category: headerIndex(["category", "region", "group"]),
+    serviceType: headerIndex(["service type", "cadence", "service"]),
+    rate: headerIndex(["rate", "price", "cost"]),
+    active: headerIndex(["active", "status"]),
+  };
+  const existing = loadGuardingMasterPriceList();
+  let imported = 0;
+  let updated = 0;
+  let skipped = 0;
+  rows.slice(1).forEach((row, rowIndex) => {
+    const itemName = row[indexes.itemName] || row[indexes.description] || "";
+    const description = row[indexes.description] || itemName;
+    const shiftType = indexes.shiftType >= 0 ? row[indexes.shiftType] : "";
+    const billingType = indexes.billingType >= 0 ? row[indexes.billingType] : "";
+    const rate = guardingPriceNumber(row[indexes.rate]);
+    if (!itemName.trim() || !description.trim()) {
+      skipped += 1;
+      return;
+    }
+    const id = slugify(`${itemName}-${shiftType || "Day Shift"}-${billingType || "Monthly"}-${row[indexes.unitType] || ""}-${row[indexes.category] || ""}`) || `guarding-import-${rowIndex}`;
+    const payload = normalizeGuardingPriceItem({
+      id,
+      itemName,
+      shiftType,
+      billingType,
+      description,
+      unitType: row[indexes.unitType] || "Unit",
+      category: row[indexes.category] || "Guarding",
+      serviceType: row[indexes.serviceType] || "Guarding",
+      rate,
+      active: indexes.active >= 0 ? !["false", "inactive", "no", "0"].includes(String(row[indexes.active]).toLowerCase()) : true,
+      updatedAt: new Date().toISOString(),
+    });
+    const existingIndex = existing.findIndex((item) => item.id === id);
+    if (existingIndex >= 0) {
+      existing[existingIndex] = payload;
+      updated += 1;
+    } else {
+      existing.push(payload);
+      imported += 1;
+    }
+  });
+  saveGuardingMasterPriceList(existing);
+  guardingPriceImportSummary.textContent = `${imported} items imported, ${updated} updated, ${skipped} skipped.`;
+  writeAudit("Guarding price list imported", `${imported} imported, ${updated} updated, ${skipped} skipped`, "Setup - Guarding price list", file.name, "CSV import");
+  event.target.value = "";
+  renderSetup();
+  renderGuardingBuilder();
+});
+
+exportGuardingPriceList?.addEventListener("click", () => {
+  if (!enforceAccess("settings") || !isAdminMember()) return;
+  const headers = ["itemName", "shiftType", "billingType", "description", "unitType", "category", "serviceType", "rate", "active"];
+  const rows = loadGuardingMasterPriceList().map((item) => [
+    item.itemName,
+    item.shiftType,
+    item.billingType,
+    item.description,
+    item.unitType,
+    item.category,
+    item.serviceType,
+    item.rate,
+    item.active !== false,
+  ]);
+  const csv = [headers.map(csvEscape).join(","), ...rows.map((row) => row.map(csvEscape).join(","))].join("\n");
+  downloadBlobFile(new Blob([csv], { type: "text/csv;charset=utf-8" }), `guarding-price-list-${todayInputValue()}.csv`);
+  writeAudit("Guarding price list exported", `${rows.length} rows`, "Setup - Guarding price list", "Guarding price list", "CSV export");
 });
 
 clientForm.addEventListener("submit", (event) => {
@@ -5361,6 +7614,7 @@ requestSalesRepName.addEventListener("change", () => {
 
 requestQuotationType.addEventListener("change", () => {
   guardingRequestFields.hidden = requestQuotationType.value !== "Guarding Quotation";
+  if (armedResponseRequestFields) armedResponseRequestFields.hidden = requestQuotationType.value !== "Monthly Armed Response Quotation";
 });
 
 salesRequestForm.addEventListener("submit", (event) => {
@@ -5389,6 +7643,16 @@ salesRequestForm.addEventListener("submit", (event) => {
       ["requestNumberOfGuards", "Number of guards required"]
     );
   }
+  if (quotationType === "Monthly Armed Response Quotation") {
+    required.push(
+      ["requestArmedProvince", "Province"],
+      ["requestArmedArea", "Area / suburb"],
+      ["requestArmedIndustryType", "Industry type"],
+      ["requestArmedNumberOfSites", "Number of sites"],
+      ["requestArmedContractStartDate", "Contract start date"],
+      ["requestArmedContractDuration", "Contract duration"]
+    );
+  }
   const missing = required.filter(([id]) => !document.querySelector(`#${id}`)?.value.trim());
   if (missing.length) {
     alert(`Please complete: ${missing.map(([, label]) => label).join(", ")}`);
@@ -5410,11 +7674,12 @@ salesRequestForm.addEventListener("submit", (event) => {
     sales_rep_phone: requestSalesRepPhone.value.trim(),
     required_due_date: document.querySelector("#requestDueDate").value,
     description_of_work: document.querySelector("#requestDescription").value.trim(),
-    province: document.querySelector("#requestProvince")?.value.trim() || "",
-    industry_type: document.querySelector("#requestIndustryType")?.value.trim() || "",
+    province: document.querySelector("#requestProvince")?.value.trim() || document.querySelector("#requestArmedProvince")?.value.trim() || "",
+    area_suburb: document.querySelector("#requestArmedArea")?.value.trim() || "",
+    industry_type: document.querySelector("#requestIndustryType")?.value.trim() || document.querySelector("#requestArmedIndustryType")?.value.trim() || "",
     required_service_type: document.querySelector("#requestServiceType")?.value.trim() || "",
-    contract_start_date: document.querySelector("#requestContractStartDate")?.value || "",
-    contract_duration: document.querySelector("#requestContractDuration")?.value.trim() || "",
+    contract_start_date: document.querySelector("#requestContractStartDate")?.value || document.querySelector("#requestArmedContractStartDate")?.value || "",
+    contract_duration: document.querySelector("#requestContractDuration")?.value.trim() || document.querySelector("#requestArmedContractDuration")?.value.trim() || "",
     day_shift_required: document.querySelector("#requestDayShiftRequired")?.value || "",
     night_shift_required: document.querySelector("#requestNightShiftRequired")?.value || "",
     number_of_guards_required: document.querySelector("#requestNumberOfGuards")?.value || "",
@@ -5423,9 +7688,21 @@ salesRequestForm.addEventListener("submit", (event) => {
     control_room_required: document.querySelector("#requestControlRoomRequired")?.value || "",
     patrols_required: document.querySelector("#requestPatrolsRequired")?.value || "",
     equipment_required: document.querySelector("#requestEquipmentRequired")?.value.trim() || "",
-    special_site_instructions: document.querySelector("#requestSpecialInstructions")?.value.trim() || "",
+    special_site_instructions: document.querySelector("#requestSpecialInstructions")?.value.trim() || document.querySelector("#requestArmedSpecialInstructions")?.value.trim() || "",
+    number_of_sites: document.querySelector("#requestArmedNumberOfSites")?.value || "",
+    existing_alarm_system: document.querySelector("#requestExistingAlarmSystem")?.value || "",
+    alarm_monitoring_required: document.querySelector("#requestAlarmMonitoringRequired")?.value || "",
+    armed_response_required: document.querySelector("#requestArmedResponseRequired")?.value || "",
+    key_holding_required: document.querySelector("#requestKeyHoldingRequired")?.value || "",
+    opening_closing_required: document.querySelector("#requestOpeningClosingRequired")?.value || "",
+    patrol_service_required: document.querySelector("#requestPatrolServiceRequired")?.value || "",
+    panic_button_required: document.querySelector("#requestPanicButtonRequired")?.value || "",
+    medical_response_required: document.querySelector("#requestMedicalResponseRequired")?.value || "",
+    fire_response_required: document.querySelector("#requestFireResponseRequired")?.value || "",
     notes_for_builder: document.querySelector("#requestNotes").value.trim(),
-    status: "Accepted for Processing",
+    status: "New Request",
+    is_new: true,
+    viewed_by_user_ids: [],
     submitted_by_user_id: currentUser(),
     files: state.salesRequestFiles,
     created_at: new Date().toISOString(),
@@ -5437,6 +7714,7 @@ salesRequestForm.addEventListener("submit", (event) => {
   state.selectedRequestSalesRepId = "";
   salesRequestForm.reset();
   guardingRequestFields.hidden = true;
+  if (armedResponseRequestFields) armedResponseRequestFields.hidden = true;
   renderRequestSalesRepOptions();
   autoPopulateRequestSalesRep(true);
   renderRequestFileList();
@@ -5448,17 +7726,31 @@ salesRequestList.addEventListener("click", (event) => {
   const acceptId = event.target.dataset.acceptRequest;
   const createId = event.target.dataset.createQuoteRequest;
   const docsId = event.target.dataset.viewRequestDocs;
+  const viewedId = event.target.dataset.markRequestViewed;
+  const clearFilters = event.target.dataset.clearRequestFilters !== undefined;
+  if (clearFilters) {
+    state.salesRequestFilters = { status: "All", salesRep: "", clientName: "", submittedDate: "", quotationType: "All" };
+    renderSalesRequests();
+    return;
+  }
+  if (viewedId) {
+    markSalesRequestViewed(viewedId);
+    renderSalesRequests();
+    return;
+  }
   if (acceptId) {
     const existingRequest = loadSalesRequests().find((item) => item.id === acceptId);
     if (existingRequest?.accepted_by_user_id && existingRequest.accepted_by_user_id !== currentUser() && !["Admin", "Super Admin"].includes(currentMember().access)) {
       alert(`This request is already being processed by ${existingRequest.accepted_by_name || "another user"}.`);
       return;
     }
+    markSalesRequestViewed(acceptId, "Request viewed before acceptance");
     const request = updateSalesRequest(acceptId, {
       status: "Accepted for Processing",
       accepted_by_user_id: currentUser(),
       accepted_by_name: currentUserName(),
       accepted_at: new Date().toISOString(),
+      is_new: false,
     });
     writeAudit("Sales request accepted", request.request_number, "Sales Quotation Requests", request.request_number, `Accepted by ${currentUserName()}`);
     createQuotationFromRequest(acceptId);
@@ -5466,9 +7758,26 @@ salesRequestList.addEventListener("click", (event) => {
   }
   if (createId) createQuotationFromRequest(createId);
   if (docsId) {
+    markSalesRequestViewed(docsId);
     const request = loadSalesRequests().find((item) => item.id === docsId);
     alert((request?.files || []).map((file) => `${file.file_name} (${formatFileSize(file.file_size)})`).join("\n") || "No documents uploaded.");
+    renderSalesRequests();
   }
+});
+
+salesRequestList.addEventListener("input", (event) => {
+  const filter = event.target.dataset.requestFilter;
+  if (!filter) return;
+  state.salesRequestFilters[filter] = event.target.value;
+  clearTimeout(window.salesRequestFilterTimer);
+  window.salesRequestFilterTimer = setTimeout(renderSalesRequests, 250);
+});
+
+salesRequestList.addEventListener("change", (event) => {
+  const filter = event.target.dataset.requestFilter;
+  if (!filter) return;
+  state.salesRequestFilters[filter] = event.target.value;
+  renderSalesRequests();
 });
 
 document.querySelector("#addGuardingStaff")?.addEventListener("click", () => {
@@ -5486,6 +7795,11 @@ document.querySelector("#addGuardingCost")?.addEventListener("click", () => {
   renderGuardingBuilder();
 });
 
+document.querySelector("#addGuardingLineItem")?.addEventListener("click", () => {
+  state.guarding.lineItems.push(defaultGuardingLineItem());
+  renderGuardingBuilder();
+});
+
 document.querySelector("#guardingNewQuote")?.addEventListener("click", resetGuardingQuote);
 document.querySelector("#submitGuardingQuote")?.addEventListener("click", submitGuardingQuoteForApproval);
 document.querySelector("#saveGuardingDraft")?.addEventListener("click", () => {
@@ -5494,11 +7808,31 @@ document.querySelector("#saveGuardingDraft")?.addEventListener("click", () => {
 });
 
 document.querySelector("#guardingQuoteForm")?.addEventListener("input", (event) => {
+  const lineIndex = event.target.dataset.guardingLine;
   const staffIndex = event.target.dataset.guardingStaff;
   const equipmentIndex = event.target.dataset.guardingEquipment;
   const costIndex = event.target.dataset.guardingCost;
   const field = event.target.dataset.field;
-  if (staffIndex !== undefined && field) {
+  if (lineIndex !== undefined && field) {
+    const row = state.guarding.lineItems[Number(lineIndex)];
+    if (!row) return;
+    if (field === "catalogSearch") {
+      row.catalogSearch = event.target.value;
+      row.itemName = event.target.value;
+      row.description = event.target.value;
+      const item = findGuardingItemBySearchValue(event.target.value);
+      if (item) {
+        applyGuardingItemShiftToRow(Number(lineIndex), item);
+        renderGuardingBuilder();
+      }
+      return;
+    }
+    row[field] = ["itemName", "description", "unitType", "category", "shiftType", "billingType", "experience", "duties", "serviceDate", "serviceMonth", "scheduleText", "unitNotes", "notes"].includes(field) ? event.target.value : Number(event.target.value || 0);
+    if (["rate", "quantity"].includes(field)) {
+      const lineTotal = event.target.closest("[data-guarding-line-row]")?.querySelector(".guarding-line-total");
+      if (lineTotal) lineTotal.textContent = money.format(guardingLineItemTotal(row));
+    }
+  } else if (staffIndex !== undefined && field) {
     state.guarding.staffing[Number(staffIndex)][field] = ["position", "grade"].includes(field) ? event.target.value : Number(event.target.value || 0);
   } else if (equipmentIndex !== undefined && field) {
     state.guarding.equipment[Number(equipmentIndex)][field] = field === "item" ? event.target.value : Number(event.target.value || 0);
@@ -5508,16 +7842,163 @@ document.querySelector("#guardingQuoteForm")?.addEventListener("input", (event) 
   renderGuardingPreview();
 });
 
-document.querySelector("#guardingQuoteForm")?.addEventListener("change", renderGuardingPreview);
+document.querySelector("#guardingQuoteForm")?.addEventListener("change", (event) => {
+  if (event.target.dataset.guardingLine !== undefined && event.target.dataset.field === "catalogSearch") {
+    const item = findGuardingItemBySearchValue(event.target.value);
+    if (item) {
+      applyGuardingItemShiftToRow(Number(event.target.dataset.guardingLine), item);
+      renderGuardingBuilder();
+      return;
+    }
+  }
+  if (event.target.dataset.guardingLine !== undefined && event.target.dataset.field === "shiftType") {
+    const lineIndex = Number(event.target.dataset.guardingLine);
+    const row = state.guarding.lineItems[lineIndex];
+    if (!row) return;
+    row.shiftType = event.target.value;
+    row.scheduleText = "";
+    refreshGuardingPriceForRow(lineIndex);
+    renderGuardingBuilder();
+    return;
+  }
+  if (event.target.dataset.guardingLine !== undefined && event.target.dataset.field === "billingType") {
+    const lineIndex = Number(event.target.dataset.guardingLine);
+    const row = state.guarding.lineItems[lineIndex];
+    if (!row) return;
+    row.billingType = event.target.value;
+    row.scheduleText = "";
+    refreshGuardingPriceForRow(lineIndex);
+    renderGuardingBuilder();
+    return;
+  }
+  renderGuardingPreview();
+});
 
 document.querySelector("#guardingQuoteForm")?.addEventListener("click", (event) => {
+  const removeLine = event.target.dataset.removeGuardingLine;
+  const moveLineUp = event.target.dataset.moveGuardingLineUp;
+  const moveLineDown = event.target.dataset.moveGuardingLineDown;
   const removeStaff = event.target.dataset.removeGuardingStaff;
   const removeEquipment = event.target.dataset.removeGuardingEquipment;
   const removeCost = event.target.dataset.removeGuardingCost;
+  const updateMasterIndex = event.target.dataset.updateGuardingMaster;
+  if (updateMasterIndex !== undefined) {
+    if (!isAdminMember()) {
+      alert("Only admin users can update the master guarding price list.");
+      return;
+    }
+    const row = state.guarding.lineItems[Number(updateMasterIndex)];
+    if (!row?.catalogId) return;
+    const items = loadGuardingMasterPriceList();
+    const itemIndex = items.findIndex((item) => item.id === row.catalogId);
+    if (itemIndex < 0) return;
+    const oldItem = { ...items[itemIndex] };
+    items[itemIndex] = normalizeGuardingPriceItem({
+      ...items[itemIndex],
+      itemName: row.itemName || row.description,
+      shiftType: row.shiftType || "Day Shift",
+      billingType: row.billingType || "Monthly",
+      description: row.description || row.itemName,
+      unitType: row.unitType || "",
+      category: row.category || "",
+      serviceType: row.serviceType || "",
+      rate: Number(row.rate || 0),
+      updatedAt: new Date().toISOString(),
+    });
+    saveGuardingMasterPriceList(items);
+    writeAudit(
+      "Guarding price item edited",
+      items[itemIndex].itemName,
+      "Setup - Guarding price list",
+      items[itemIndex].id,
+      `Old price: ${money.format(Number(oldItem.rate || 0))}; New price: ${money.format(Number(items[itemIndex].rate || 0))}; Old description: ${oldItem.description || "-"}; New description: ${items[itemIndex].description || "-"}`
+    );
+    alert("Master guarding price list item updated.");
+    renderGuardingBuilder();
+    renderSetup();
+    return;
+  }
+  if (removeLine !== undefined) state.guarding.lineItems.splice(Number(removeLine), 1);
+  if (moveLineUp !== undefined) {
+    const index = Number(moveLineUp);
+    if (index > 0) {
+      const [item] = state.guarding.lineItems.splice(index, 1);
+      state.guarding.lineItems.splice(index - 1, 0, item);
+    }
+  }
+  if (moveLineDown !== undefined) {
+    const index = Number(moveLineDown);
+    if (index < state.guarding.lineItems.length - 1) {
+      const [item] = state.guarding.lineItems.splice(index, 1);
+      state.guarding.lineItems.splice(index + 1, 0, item);
+    }
+  }
   if (removeStaff !== undefined) state.guarding.staffing.splice(Number(removeStaff), 1);
   if (removeEquipment !== undefined) state.guarding.equipment.splice(Number(removeEquipment), 1);
   if (removeCost !== undefined) state.guarding.additionalCosts.splice(Number(removeCost), 1);
-  if (removeStaff !== undefined || removeEquipment !== undefined || removeCost !== undefined) renderGuardingBuilder();
+  if (removeLine !== undefined || moveLineUp !== undefined || moveLineDown !== undefined || removeStaff !== undefined || removeEquipment !== undefined || removeCost !== undefined) renderGuardingBuilder();
+});
+
+document.querySelector("#guardingQuoteForm")?.addEventListener("dragstart", (event) => {
+  const row = event.target.closest("[data-guarding-line-row]");
+  if (!row) return;
+  event.dataTransfer.setData("text/plain", row.dataset.guardingLineRow);
+  event.dataTransfer.effectAllowed = "move";
+});
+
+document.querySelector("#guardingQuoteForm")?.addEventListener("dragover", (event) => {
+  if (event.target.closest("[data-guarding-line-row]")) event.preventDefault();
+});
+
+document.querySelector("#guardingQuoteForm")?.addEventListener("drop", (event) => {
+  const row = event.target.closest("[data-guarding-line-row]");
+  if (!row) return;
+  event.preventDefault();
+  const fromIndex = Number(event.dataTransfer.getData("text/plain"));
+  const toIndex = Number(row.dataset.guardingLineRow);
+  if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex) || fromIndex === toIndex) return;
+  const [item] = state.guarding.lineItems.splice(fromIndex, 1);
+  state.guarding.lineItems.splice(toIndex, 0, item);
+  renderGuardingBuilder();
+});
+
+document.querySelector("#addArmedResponseService")?.addEventListener("click", () => {
+  state.armed.additionalServices.push({ description: "", quantity: 1, monthlyCost: 0, monthlySellingPrice: 0 });
+  renderArmedResponseBuilder();
+});
+
+document.querySelector("#addArmedResponseCharge")?.addEventListener("click", () => {
+  state.armed.onceOffCharges.push({ item: "", quantity: 1, onceOffCost: 0, onceOffSellingPrice: 0 });
+  renderArmedResponseBuilder();
+});
+
+document.querySelector("#armedResponseNewQuote")?.addEventListener("click", resetArmedResponseQuote);
+document.querySelector("#submitArmedResponseQuote")?.addEventListener("click", submitArmedResponseQuoteForApproval);
+document.querySelector("#saveArmedResponseDraft")?.addEventListener("click", () => {
+  localStorage.setItem("interactiveSecurityArmedResponseDraft", JSON.stringify(armedResponsePayload("Draft")));
+  alert("Monthly armed response quotation draft saved.");
+});
+
+document.querySelector("#armedResponseQuoteForm")?.addEventListener("input", (event) => {
+  const serviceIndex = event.target.dataset.armedResponseService;
+  const chargeIndex = event.target.dataset.armedResponseCharge;
+  const field = event.target.dataset.field;
+  if (serviceIndex !== undefined && field) {
+    state.armed.additionalServices[Number(serviceIndex)][field] = field === "description" ? event.target.value : Number(event.target.value || 0);
+  } else if (chargeIndex !== undefined && field) {
+    state.armed.onceOffCharges[Number(chargeIndex)][field] = field === "item" ? event.target.value : Number(event.target.value || 0);
+  }
+  renderArmedResponsePreview();
+});
+
+document.querySelector("#armedResponseQuoteForm")?.addEventListener("change", renderArmedResponsePreview);
+
+document.querySelector("#armedResponseQuoteForm")?.addEventListener("click", (event) => {
+  const removeService = event.target.dataset.removeArmedResponseService;
+  const removeCharge = event.target.dataset.removeArmedResponseCharge;
+  if (removeService !== undefined) state.armed.additionalServices.splice(Number(removeService), 1);
+  if (removeCharge !== undefined) state.armed.onceOffCharges.splice(Number(removeCharge), 1);
+  if (removeService !== undefined || removeCharge !== undefined) renderArmedResponseBuilder();
 });
 
 generateTempPassword.addEventListener("click", () => {
@@ -5631,6 +8112,13 @@ guardingRequestDocumentsList?.addEventListener("click", (event) => {
   if (downloadId) openRequestDocument(downloadId, "download");
 });
 
+armedResponseRequestDocumentsList?.addEventListener("click", (event) => {
+  const viewId = event.target.dataset.viewRequestFile;
+  const downloadId = event.target.dataset.downloadRequestFile;
+  if (viewId) openRequestDocument(viewId, "view");
+  if (downloadId) openRequestDocument(downloadId, "download");
+});
+
 [costingStockCost, costingConsumablesCost, costingLabourCost].forEach((input) => {
   input.addEventListener("input", () => {
     state.costing = {
@@ -5651,60 +8139,85 @@ loginForm.addEventListener("submit", async (event) => {
   if (!loginEmail.value.trim() || !loginPassword.value.trim()) return;
 
   const email = normalizeEmail(loginEmail.value);
-  const member = memberByEmail(email);
-  if (member) {
-    if ((member.inviteStatus || "") === "Disabled") {
-      alert("This member account has been disabled. Please contact an admin.");
-      return;
+  let user;
+  try {
+    user = await backendLogin(email, loginPassword.value);
+  } catch (error) {
+    if (error.data?.code === "ACCOUNT_LOCKED") {
+      alert(`This account is locked until ${new Date(error.data.lockedUntil).toLocaleString("en-ZA")}.`);
+    } else if (error.data?.code === "PASSWORD_RESET_REQUIRED") {
+      alert("This account needs a password reset before it can sign in. Please use Forgot password.");
+    } else if (error.data?.remainingAttempts !== undefined) {
+      alert(`${error.message} Remaining attempts before lockout: ${error.data.remainingAttempts}`);
+    } else {
+      alert(error.message || "The email address or password is incorrect.");
     }
-    if (member.passwordHash) {
-      const enteredHash = await hashPassword(loginPassword.value);
-      if (enteredHash !== member.passwordHash) {
-        alert("The email address or password is incorrect.");
-        return;
-      }
-    }
+    return;
   }
-
-  if (member?.mustChangePassword) {
-    const newPassword = prompt("Please create a new password before continuing.");
-    if (!newPassword || newPassword.trim().length < 8) {
-      alert("Please use a password of at least 8 characters.");
+  if (user.mustChangePassword) {
+    const newPassword = prompt("Please create a new password before continuing. It must be at least 12 characters and include uppercase, lowercase, a number, and a special character.");
+    if (!newPassword || !isStrongPassword(newPassword.trim())) {
+      alert(strongPasswordMessage(newPassword || ""));
       clearSharedSession();
       loginScreen.hidden = false;
       return;
     }
-    const updatedMember = {
-      ...member,
-      passwordHash: await hashPassword(newPassword.trim()),
-      mustChangePassword: false,
-      hasLoggedIn: true,
-      inviteStatus: "Active",
-      activatedAt: new Date().toISOString(),
-    };
-    saveMemberRecord(updatedMember);
-    const session = saveSharedSession(updatedMember, email);
-    await syncBackendLogin(session);
-    writeAudit("Changed temporary password", email, "Authentication", email, "First login password change");
-  } else if (member && !member.hasLoggedIn) {
-    const updatedMember = {
-      ...member,
-      hasLoggedIn: true,
-      inviteStatus: "Active",
-      activatedAt: new Date().toISOString(),
-    };
-    saveMemberRecord(updatedMember);
-    const session = saveSharedSession(updatedMember, email);
-    await syncBackendLogin(session);
-  } else {
-    const session = saveSharedSession(member, email);
-    await syncBackendLogin(session);
+    try {
+      await changeBackendPassword(loginPassword.value, newPassword.trim());
+      user.mustChangePassword = false;
+      writeAudit("Changed temporary password", email, "Authentication", email, "First login password change");
+    } catch (error) {
+      alert(error.message || "Password could not be changed.");
+      clearSharedSession();
+      loginScreen.hidden = false;
+      return;
+    }
+  }
+  saveSharedSessionObject(user);
+  const member = memberByEmail(email);
+  if (member) {
+    saveMemberRecord({ ...member, ...user, access: user.role, hasLoggedIn: true, inviteStatus: "Active", passwordHash: undefined, legacyPasswordHash: member.legacyPasswordHash });
   }
   loginScreen.hidden = true;
   writeAudit("Signed in", email);
   applyPermissions();
-  const route = window.location.hash.slice(1) === "approval" ? "approvals" : window.location.hash.slice(1);
-  showSection(canAccess(route) ? route || "portal" : "portal");
+  window.location.hash = "portal";
+  showSection("portal");
+});
+
+forgotPassword?.addEventListener("click", async () => {
+  const email = normalizeEmail(prompt("Enter your email address for the password reset link:", loginEmail.value.trim()) || "");
+  if (!email) return;
+  try {
+    const response = await fetch("/api/auth/request-password-reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ email }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "Password reset could not be requested.");
+    if (data.resetToken) {
+      const newPassword = prompt("Development reset token was created. Enter a new strong password for this account:");
+      if (!newPassword || !isStrongPassword(newPassword.trim())) {
+        alert(strongPasswordMessage(newPassword || ""));
+        return;
+      }
+      const resetResponse = await fetch("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ token: data.resetToken, newPassword: newPassword.trim() }),
+      });
+      const resetData = await resetResponse.json().catch(() => ({}));
+      if (!resetResponse.ok) throw new Error(resetData.error || "Password reset failed.");
+      alert("Password reset complete. Please sign in with your new password.");
+      return;
+    }
+    alert(data.message || "If the account exists, a password reset link will be sent.");
+  } catch (error) {
+    alert(error.message || "Password reset could not be requested.");
+  }
 });
 
 Object.values(fields).forEach((field) => {
@@ -5751,13 +8264,14 @@ function showSection(sectionName) {
   document.querySelectorAll(".nav-item").forEach((item) => {
     item.classList.toggle("active", item.dataset.section === activeSection);
   });
+  renderSalesRequestBadge();
 
-  ["portal", "dashboard", "builder", "guardingBuilder", "salesRequests", "approvals", "library", "settings", "audit"].forEach((section) => {
+  ["portal", "dashboard", "builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "approvals", "library", "projectTimeline", "settings", "audit"].forEach((section) => {
     const sectionElement = document.querySelector(`#${section}-section`);
     const isActive = section === activeSection;
     if (!sectionElement) return;
     sectionElement.hidden = !isActive;
-    sectionElement.style.display = isActive ? (["builder", "guardingBuilder"].includes(section) ? "grid" : "block") : "none";
+    sectionElement.style.display = isActive ? (["builder", "guardingBuilder", "armedResponseBuilder"].includes(section) ? "grid" : "block") : "none";
     sectionElement.setAttribute("aria-hidden", String(!isActive));
   });
 
@@ -5767,9 +8281,14 @@ function showSection(sectionName) {
     if (!guardingFields.quoteNumber.value) guardingFields.quoteNumber.value = reserveQuoteNumber(todayInputValue());
     renderGuardingBuilder();
   }
+  if (activeSection === "armedResponseBuilder") {
+    if (!armedResponseFields.quoteNumber.value) armedResponseFields.quoteNumber.value = reserveQuoteNumber(todayInputValue());
+    renderArmedResponseBuilder();
+  }
   if (activeSection === "salesRequests") renderSalesRequests();
   if (activeSection === "approvals") renderApprovals();
   if (activeSection === "library") renderQuoteLibrary();
+  if (activeSection === "projectTimeline") renderProjectTimeline();
   if (activeSection === "settings") renderSetup();
   if (activeSection === "audit" && canAccess("audit")) renderAudit();
 }
@@ -5781,7 +8300,7 @@ document.querySelectorAll(".nav-item").forEach((button) => {
   });
 });
 
-async function openHub(hubSlug) {
+async function openHub(hubSlug, targetSection = "dashboard") {
   if (!isSignedIn()) {
     loginScreen.hidden = false;
     window.location.hash = "portal";
@@ -5823,9 +8342,11 @@ async function openHub(hubSlug) {
     }
 
     const data = await response.json();
-    console.log("SSO redirect URL generated", data.redirectUrl);
+    const redirectUrl = new URL(data.redirectUrl, window.location.origin);
+    if (targetSection) redirectUrl.searchParams.set("section", targetSection);
+    console.log("SSO redirect URL generated", redirectUrl.toString());
     writeAudit("Opened hub", hub.name, "Portal", hub.slug, "Opened from company portal with one-time SSO token");
-    targetWindow.location.href = data.redirectUrl;
+    targetWindow.location.href = redirectUrl.toString();
   } catch (error) {
     console.error("SSO handoff failed", error);
     if (hubWindow) hubWindow.close();
@@ -5833,12 +8354,45 @@ async function openHub(hubSlug) {
   }
 }
 
+function openPlaceholderHub(hubSlug) {
+  if (!isSignedIn()) {
+    loginScreen.hidden = false;
+    window.location.hash = "portal";
+    return;
+  }
+  const hub = storageList(hubsStorageKey).find((item) => item.slug === hubSlug);
+  if (!hasHubAccess(hub)) {
+    alert("Access denied");
+    return;
+  }
+  if (window.location.protocol === "file:") {
+    alert("Please open http://localhost:3100 to use hub routing.");
+    return;
+  }
+  window.open(`${window.location.origin}/hubs/${hubSlug}`, "_blank", "noopener,noreferrer");
+  writeAudit("Opened hub", hub.name, "Portal", hub.slug, "Opened placeholder company hub");
+}
+
 portalHubGrid.addEventListener("click", (event) => {
+  const moduleCard = event.target.closest("[data-open-section]");
+  const section = moduleCard?.dataset.openSection;
+  if (section) {
+    showSection(section);
+    window.location.hash = section;
+    writeAudit("Opened module", sectionHeadings[section]?.title || section, "Portal", section, "Opened from portal dashboard");
+    return;
+  }
   const button = event.target.closest("[data-open-hub]");
   const slug = button?.dataset.openHub;
   if (!slug) return;
   console.log("Hub card clicked", { hubSlug: slug });
-  openHub(slug);
+  if (slug === "quotation-hub") {
+    const section = firstAccessibleQuotationSection();
+    openHub(slug, section);
+    writeAudit("Opened hub", "Quotation Hub", "Portal", "quotation-hub", `Opened ${sectionHeadings[section]?.title || section} in a new tab`);
+    return;
+  }
+  openPlaceholderHub(slug);
 });
 
 seedPortalTables();
@@ -5846,11 +8400,21 @@ migrateSalesRequestStatuses();
 renderPermissionChecklist(roleDefaultPermissions[memberAccess.value] || []);
 renderRequestSalesRepOptions();
 autoPopulateRequestSalesRep(true);
-hydrateSharedSessionFromUrl();
+const hasSsoParamOnLoad = new URLSearchParams(window.location.search).has("sso");
+const isQuotationHubRouteOnLoad = window.location.pathname.startsWith("/hubs/quotation-hub");
+const isCompanyHubRouteOnLoad = window.location.pathname.startsWith("/hubs/");
+if (isQuotationHubSsoRoute() || hasSsoParamOnLoad || isCompanyHubRouteOnLoad) {
+  hydrateSharedSessionFromUrl();
+} else {
+  clearSharedSession();
+}
 loadSalesRepsFromStorage();
 renderSalesRepOptions();
 populateGuardingCompanyOptions();
+populateArmedResponseCompanyOptions();
 resetGuardingQuote(false);
+resetArmedResponseQuote(false);
+loadGuardingPriceCatalog();
 const restoredDraft = loadSavedQuote();
 fields.selectedCompany.value = "";
 fields.salesRep.value = "";
@@ -5878,16 +8442,26 @@ updateSupplierQuoteDisplay();
 renderAll();
 applyPermissions();
 const routeSection = window.location.hash.slice(1) === "approval" ? "approvals" : window.location.hash.slice(1);
-const initialSection = ["portal", "dashboard", "builder", "guardingBuilder", "salesRequests", "approvals", "library", "settings", "audit"].includes(routeSection)
+const initialSection = ["portal", "dashboard", "builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "approvals", "library", "projectTimeline", "settings", "audit"].includes(routeSection)
   ? routeSection
   : "portal";
 consumeHubSsoTokenIfPresent().then((handledSso) => {
   if (handledSso) return;
-  if (isSignedIn()) {
+  if (isQuotationHubRouteOnLoad && isSignedIn()) {
     loginScreen.hidden = true;
     applyPermissions();
-    if ((initialSection === "builder" || initialSection === "guardingBuilder") && loadSalesRequestFromUrl()) return;
-    showSection(canAccess(initialSection) ? initialSection : "portal");
+    const hubSection = canAccess(initialSection) && !["portal", "dashboard"].includes(initialSection)
+      ? initialSection
+      : firstAccessibleQuotationSection();
+    showSection(hubSection);
+  } else if (isPlaceholderHubRoute() && isSignedIn()) {
+    loginScreen.hidden = true;
+    applyPermissions();
+    showSection("portal");
+  } else if (hasSsoParamOnLoad && isSignedIn()) {
+    loginScreen.hidden = true;
+    applyPermissions();
+    showSection("portal");
   } else {
     loginScreen.hidden = false;
     window.location.hash = "portal";

@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
     <title>Interactive Security Portal</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -27,6 +28,7 @@
           <input id="loginPassword" type="password" placeholder="Password" required />
         </label>
         <button class="primary-btn" type="submit">Sign in</button>
+        <button class="link-btn" id="forgotPassword" type="button">Forgot password?</button>
         <p class="login-note">Invited members must use the password sent by the admin.</p>
       </form>
     </section>
@@ -45,13 +47,15 @@
           <button class="nav-item" type="button" data-section="dashboard"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"></path><path d="M4 19h16"></path><path d="M8 16v-5"></path><path d="M12 16V8"></path><path d="M16 16v-3"></path></svg><span class="nav-label">Dashboard</span></button>
           <button class="nav-item" type="button" data-section="builder"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"></path><path d="M14 3v5h5"></path><path d="M9.5 13h5"></path><path d="M9.5 17h5"></path></svg><span class="nav-label">Building Technical Quotation</span></button>
           <button class="nav-item" type="button" data-section="guardingBuilder"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 3 8.5 7 10 4-1.5 7-5.5 7-10V6z"></path><path d="M9 12l2 2 4-5"></path></svg><span class="nav-label">Building Guarding Quotation</span></button>
-          <button class="nav-item" type="button" data-section="salesRequests"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"></path><path d="m8 7 4-4 4 4"></path><path d="M5 15v4h14v-4"></path></svg><span class="nav-label">Sales Quotation Requests</span></button>
+          <button class="nav-item" type="button" data-section="armedResponseBuilder"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20"></path><path d="M5 7h14"></path><path d="M7 7l2 12"></path><path d="M17 7l-2 12"></path><path d="M8 13h8"></path></svg><span class="nav-label">Building Armed Response Quotation</span></button>
+          <button class="nav-item request-nav" type="button" data-section="salesRequests"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"></path><path d="m8 7 4-4 4 4"></path><path d="M5 15v4h14v-4"></path></svg><span class="nav-label">Sales Quotation Requests</span><span id="salesRequestCount">0</span></button>
           <button class="nav-item approval-nav" type="button" data-section="approvals">
             <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path><path d="M12 3a9 9 0 1 1-8.4 5.8"></path></svg>
             <span class="nav-label">Approval</span>
             <span id="approvalCount">0</span>
           </button>
           <button class="nav-item" type="button" data-section="library"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v13H4z"></path><path d="M4 7l2-4h12l2 4"></path><path d="M9 12h6"></path></svg><span class="nav-label">Quote Library</span></button>
+          <button class="nav-item" type="button" data-section="projectTimeline"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5v14"></path><path d="M9 7h10"></path><path d="M9 12h10"></path><path d="M9 17h10"></path><circle cx="5" cy="7" r="1.5"></circle><circle cx="5" cy="12" r="1.5"></circle><circle cx="5" cy="17" r="1.5"></circle></svg><span class="nav-label">Project Timeline</span></button>
           <button class="nav-item" type="button" data-section="settings"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path><path d="M19.4 15a8 8 0 0 0 .1-2l2-1.5-2-3.4-2.4 1a7.8 7.8 0 0 0-1.7-1L15 5.5h-4l-.4 2.6a7.8 7.8 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.5a8 8 0 0 0 .1 2l-2 1.5 2 3.4 2.4-1a7.8 7.8 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.8 7.8 0 0 0 1.7-1l2.4 1 2-3.4Z"></path></svg><span class="nav-label">Setup</span></button>
           <button class="nav-item" type="button" data-section="audit"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13"></path><path d="M8 12h13"></path><path d="M8 18h13"></path><path d="m3 6 1 1 2-2"></path><path d="m3 12 1 1 2-2"></path><path d="m3 18 1 1 2-2"></path></svg><span class="nav-label">Audit Trail</span></button>
         </nav>
@@ -93,6 +97,7 @@
                   <option value="">All</option>
                   <option value="Technical Quotation">Technical</option>
                   <option value="Guarding Quotation">Guarding</option>
+                  <option value="Monthly Armed Response Quotation">Monthly Armed Response</option>
                 </select>
               </label>
               <label>
@@ -141,41 +146,16 @@
         </section>
 
         <section class="hidden-state" id="portal-section" hidden>
-          <h2>Company Portal</h2>
-          <p>Central dashboard for approved Interactive Security hubs and activity summaries.</p>
-
-          <div class="portal-layout">
-            <section class="portal-panel">
-              <div class="panel-heading compact-heading">
-                <div>
-                  <p class="eyebrow">Available hubs</p>
-                  <h3>Open a hub</h3>
-                </div>
-              </div>
-              <div class="hub-grid" id="portalHubGrid"></div>
-            </section>
-
-            <section class="portal-panel">
-              <div class="panel-heading compact-heading">
-                <div>
-                  <p class="eyebrow">Quotation Hub overview</p>
-                  <h3 id="portalSummaryTitle">Activity summary</h3>
-                </div>
-              </div>
-              <div class="portal-summary-grid" id="portalSummaryGrid"></div>
-            </section>
+          <div class="portal-hero">
+            <div class="portal-hero-brand">
+              <img src="./interactive-security-logo.jpg" alt="Interactive Security" />
+              <span>Central Portal</span>
+            </div>
+            <p class="eyebrow">Interactive Security Operations</p>
+            <h2>Choose your secure workspace</h2>
+            <p>Open the hub or module you need while keeping this central dashboard available for quick navigation.</p>
           </div>
-
-          <div class="portal-layout">
-            <section class="portal-panel">
-              <h3>Monthly quotation totals</h3>
-              <div class="dashboard-chart" id="portalMonthlyChart"></div>
-            </section>
-            <section class="portal-panel">
-              <h3>Sales rep totals</h3>
-              <div class="dashboard-table" id="portalSalesRepTable"></div>
-            </section>
-          </div>
+          <div class="hub-grid portal-module-grid" id="portalHubGrid"></div>
         </section>
 
         <section class="workspace" id="builder-section" hidden>
@@ -565,72 +545,38 @@
             <section class="panel">
               <div class="panel-heading">
                 <div>
-                  <p class="eyebrow">Guarding requirement</p>
-                  <h2>Service details</h2>
+                  <p class="eyebrow">Guarding price list</p>
+                  <h2>Guarding Price List Items</h2>
                 </div>
+                <button class="primary-btn" id="addGuardingLineItem" type="button">Add item</button>
               </div>
-              <div class="form-grid">
-                <label>Required service type<input id="guardingServiceType" type="text" spellcheck="true" /></label>
-                <label>Contract start date<input id="guardingStartDate" type="date" /></label>
-                <label>Contract duration<input id="guardingDuration" type="text" placeholder="Example: 12 months" /></label>
-                <label>Day shift required<select id="guardingDayShift"><option value="Yes">Yes</option><option value="No">No</option></select></label>
-                <label>Night shift required<select id="guardingNightShift"><option value="Yes">Yes</option><option value="No">No</option></select></label>
-                <label>Number of guards required<input id="guardingGuardCount" type="number" min="0" step="1" /></label>
-                <label>Supervisor required<select id="guardingSupervisor"><option value="No">No</option><option value="Yes">Yes</option></select></label>
-                <label>Armed guards required<select id="guardingArmed"><option value="No">No</option><option value="Yes">Yes</option></select></label>
-                <label>Control room required<select id="guardingControlRoom"><option value="No">No</option><option value="Yes">Yes</option></select></label>
-                <label>Patrols required<select id="guardingPatrols"><option value="No">No</option><option value="Yes">Yes</option></select></label>
-              </div>
-              <label>Equipment required<textarea id="guardingEquipmentRequired" rows="3" spellcheck="true"></textarea></label>
-              <label>Special site instructions<textarea id="guardingSpecialInstructions" rows="3" spellcheck="true"></textarea></label>
-              <label>Notes to quotation builder<textarea id="guardingBuilderNotes" rows="3" spellcheck="true"></textarea></label>
-            </section>
-
-            <section class="panel">
-              <div class="panel-heading">
-                <div>
-                  <p class="eyebrow">Staffing</p>
-                  <h2>Staffing structure</h2>
+              <input id="guardingStartDate" type="hidden" />
+              <input id="guardingDuration" type="hidden" />
+              <input id="guardingDayShift" type="hidden" value="Yes" />
+              <input id="guardingNightShift" type="hidden" value="No" />
+              <input id="guardingGuardCount" type="hidden" />
+              <input id="guardingSupervisor" type="hidden" value="No" />
+              <input id="guardingArmed" type="hidden" value="No" />
+              <input id="guardingControlRoom" type="hidden" value="No" />
+              <input id="guardingPatrols" type="hidden" value="No" />
+              <textarea id="guardingEquipmentRequired" hidden></textarea>
+              <textarea id="guardingSpecialInstructions" hidden></textarea>
+              <textarea id="guardingBuilderNotes" hidden></textarea>
+              <div class="guarding-table guarding-price-list-table">
+                <div class="guarding-price-row guarding-price-header">
+                  <span>Guarding item</span>
+                  <span>Shift type</span>
+                  <span>Billing type</span>
+                  <span>Unit / notes</span>
+                  <span>Experience</span>
+                  <span>Equipment & duties</span>
+                  <span>Rate / officer</span>
+                  <span>Qty</span>
+                  <span>Total</span>
+                  <span></span>
                 </div>
-                <button class="primary-btn" id="addGuardingStaff" type="button">Add staffing row</button>
+                <div id="guardingLineItemRows"></div>
               </div>
-              <div class="guarding-table">
-                <div class="guarding-row guarding-header">
-                  <span>Position</span><span>Grade</span><span>Qty</span><span>Day</span><span>Night</span><span>Hours</span><span>Days</span><span>Monthly cost</span><span>Monthly selling</span><span></span>
-                </div>
-                <div id="guardingStaffRows"></div>
-              </div>
-              <datalist id="guardingPositionOptions">
-                <option value="Grade A Guard"></option>
-                <option value="Grade B Guard"></option>
-                <option value="Grade C Guard"></option>
-                <option value="Supervisor"></option>
-                <option value="Site Manager"></option>
-                <option value="Control Room Operator"></option>
-                <option value="Armed Guard"></option>
-              </datalist>
-            </section>
-
-            <section class="panel">
-              <div class="panel-heading">
-                <div>
-                  <p class="eyebrow">Equipment</p>
-                  <h2>Equipment included</h2>
-                </div>
-                <button class="primary-btn" id="addGuardingEquipment" type="button">Add equipment row</button>
-              </div>
-              <div id="guardingEquipmentRows" class="guarding-simple-list"></div>
-            </section>
-
-            <section class="panel">
-              <div class="panel-heading">
-                <div>
-                  <p class="eyebrow">Additional costs</p>
-                  <h2>Other monthly costs</h2>
-                </div>
-                <button class="primary-btn" id="addGuardingCost" type="button">Add cost row</button>
-              </div>
-              <div id="guardingCostRows" class="guarding-simple-list"></div>
             </section>
 
             <section class="panel">
@@ -645,7 +591,7 @@
                 <div><small>Markup %</small><strong id="guardingMarkup">0.00%</strong></div>
                 <div><small>Total monthly selling</small><strong id="guardingTotalSelling">R0.00</strong></div>
                 <div><small>Gross profit %</small><strong id="guardingGrossProfit">0.00%</strong></div>
-                <div><small>Annual contract value</small><strong id="guardingAnnualValue">R0.00</strong></div>
+                <div><small>Total including VAT</small><strong id="guardingAnnualValue">R0.00</strong></div>
               </div>
             </section>
 
@@ -683,14 +629,14 @@
                 <div><small>Date</small><strong id="guardingPreviewDate">Set date</strong></div>
               </div>
               <div class="equipment-description">
-                <h3>Scope of Guarding Services</h3>
-                <p id="guardingPreviewScope">Add guarding requirements to shape the proposal.</p>
+                <h3>Guarding quotation table</h3>
+                <p id="guardingPreviewScope">Select guarding line items to populate the quotation table.</p>
               </div>
               <div class="quotation-table guarding-preview-table" id="guardingPreviewStaff"></div>
               <div class="quotation-table guarding-preview-table" id="guardingPreviewEquipment"></div>
               <div class="totals">
                 <div><span>Monthly selling price</span><strong id="guardingPreviewMonthly">R0.00</strong></div>
-                <div class="grand-total"><span>Annual contract value</span><strong id="guardingPreviewAnnual">R0.00</strong></div>
+                <div class="grand-total"><span>Total including VAT</span><strong id="guardingPreviewAnnual">R0.00</strong></div>
               </div>
               <div class="preview-copy">
                 <h3>Assumptions and Exclusions</h3>
@@ -713,6 +659,135 @@
           </aside>
         </section>
 
+        <section class="hidden-state builder-layout" id="armedResponseBuilder-section" hidden>
+          <form class="builder-form" id="armedResponseQuoteForm">
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Monthly armed response quotation</p>
+                  <h2>Project details</h2>
+                </div>
+                <button class="secondary-btn" id="armedResponseNewQuote" type="button">New armed response quotation</button>
+              </div>
+              <div class="form-grid">
+                <label>Quoting company<select id="armedResponseCompany"></select></label>
+                <label>Client name<input id="armedResponseClientName" type="text" spellcheck="true" /></label>
+                <label>Contact person<input id="armedResponseContactPerson" type="text" spellcheck="true" /></label>
+                <label>Contact number<input id="armedResponseContactNumber" type="tel" /></label>
+                <label>Email address<input id="armedResponseEmail" type="email" /></label>
+                <label>Site name<input id="armedResponseSiteName" type="text" spellcheck="true" /></label>
+                <label>Site address<input id="armedResponseSiteAddress" type="text" spellcheck="true" /></label>
+                <label>Province<input id="armedResponseProvince" type="text" spellcheck="true" /></label>
+                <label>Area / suburb<input id="armedResponseArea" type="text" spellcheck="true" /></label>
+                <label>Industry type<input id="armedResponseIndustry" type="text" spellcheck="true" /></label>
+                <label>Sales rep<select id="armedResponseSalesRep"></select></label>
+                <label>Quote number<input id="armedResponseQuoteNumber" type="text" readonly /></label>
+                <label>Quotation date<input id="armedResponseQuoteDate" type="date" readonly /></label>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading"><div><p class="eyebrow">Requirement</p><h2>Armed response services</h2></div></div>
+              <div class="form-grid">
+                <label>Number of sites<input id="armedResponseSiteCount" type="number" min="1" step="1" /></label>
+                <label>Existing alarm system<select id="armedResponseExistingAlarm"><option value="Yes">Yes</option><option value="No">No</option></select></label>
+                <label>Alarm monitoring required<select id="armedResponseAlarmMonitoring"><option value="Yes">Yes</option><option value="No">No</option></select></label>
+                <label>Armed response required<select id="armedResponseArmedRequired"><option value="Yes">Yes</option><option value="No">No</option></select></label>
+                <label>Key holding required<select id="armedResponseKeyHolding"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                <label>Opening/closing service<select id="armedResponseOpeningClosing"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                <label>Patrol service required<select id="armedResponsePatrolService"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                <label>Panic button required<select id="armedResponsePanicButton"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                <label>Medical response required<select id="armedResponseMedical"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                <label>Fire response required<select id="armedResponseFire"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                <label>Contract start date<input id="armedResponseStartDate" type="date" /></label>
+                <label>Contract duration<input id="armedResponseDuration" type="text" placeholder="Example: 12 months" /></label>
+              </div>
+              <label>Special site instructions<textarea id="armedResponseSpecialInstructions" rows="3" spellcheck="true"></textarea></label>
+              <label>Notes to quotation builder<textarea id="armedResponseBuilderNotes" rows="3" spellcheck="true"></textarea></label>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading"><div><p class="eyebrow">Service package</p><h2>Monthly package</h2></div></div>
+              <div class="form-grid">
+                <label>Package name<input id="armedResponsePackageName" type="text" list="armedResponsePackageOptions" spellcheck="true" /></label>
+                <label>Number of sites<input id="armedResponsePackageSiteCount" type="number" min="1" step="1" /></label>
+                <label>Markup %<input id="armedResponseMarkupPercent" type="number" min="0" step="0.01" value="20" /></label>
+                <label>Monthly selling price per site<input id="armedResponseMonthlyPerSite" type="number" min="0" step="0.01" /></label>
+              </div>
+              <label>Package description<textarea id="armedResponsePackageDescription" rows="3" spellcheck="true"></textarea></label>
+              <datalist id="armedResponsePackageOptions">
+                <option value="Standard Armed Response"></option>
+                <option value="Armed Response with Monitoring"></option>
+                <option value="Armed Response with Key Holding"></option>
+                <option value="Armed Response with Opening and Closing"></option>
+                <option value="Armed Response with Patrols"></option>
+                <option value="Custom Package"></option>
+              </datalist>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading"><div><p class="eyebrow">Additional services</p><h2>Monthly services</h2></div><button class="primary-btn" id="addArmedResponseService" type="button">Add service row</button></div>
+              <div id="armedResponseServiceRows" class="guarding-simple-list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading"><div><p class="eyebrow">Equipment</p><h2>Once-off charges</h2></div><button class="primary-btn" id="addArmedResponseCharge" type="button">Add once-off row</button></div>
+              <div id="armedResponseChargeRows" class="guarding-simple-list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading"><div><p class="eyebrow">Pricing summary</p><h2>Armed response totals</h2></div></div>
+              <div class="approval-review-metrics">
+                <div><small>Total monthly cost</small><strong id="armedResponseTotalCost">R0.00</strong></div>
+                <div><small>Total monthly selling</small><strong id="armedResponseTotalSelling">R0.00</strong></div>
+                <div><small>Markup %</small><strong id="armedResponseMarkupDisplay">0.00%</strong></div>
+                <div><small>Gross profit %</small><strong id="armedResponseGrossProfit">0.00%</strong></div>
+                <div><small>Total once-off cost</small><strong id="armedResponseOnceOffCost">R0.00</strong></div>
+                <div><small>Total once-off selling</small><strong id="armedResponseOnceOffSelling">R0.00</strong></div>
+                <div><small>Annual contract value</small><strong id="armedResponseAnnualValue">R0.00</strong></div>
+              </div>
+            </section>
+
+            <section class="panel" id="armedResponseRequestDocumentsPanel" hidden>
+              <div class="panel-heading"><div><p class="eyebrow">Request documents</p><h2>Sales Request Documents</h2></div></div>
+              <div id="armedResponseRequestDocumentsList" class="document-access-row"></div>
+            </section>
+          </form>
+
+          <aside class="preview-panel">
+            <div class="quote-preview" id="armedResponsePreview" spellcheck="false">
+              <div class="company-strip quotation-brand">
+                <img class="quotation-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+                <div><h2 id="armedResponsePreviewCompany">Interactive Security</h2><p id="armedResponsePreviewReg">Reg no: - | VAT No: -</p></div>
+              </div>
+              <div class="preview-header"><div><p>Monthly Armed Response Quotation</p><h2 id="armedResponsePreviewQuoteNumber">Draft</h2></div><span>Draft</span></div>
+              <div class="preview-meta">
+                <div><small>Client</small><strong id="armedResponsePreviewClient">No client yet</strong></div>
+                <div><small>Site</small><strong id="armedResponsePreviewSite">No site yet</strong></div>
+                <div><small>Sales Rep</small><strong id="armedResponsePreviewRep">No sales rep yet</strong></div>
+                <div><small>Date</small><strong id="armedResponsePreviewDate">Set date</strong></div>
+              </div>
+              <div class="equipment-description"><h3>Scope of Armed Response Services</h3><p id="armedResponsePreviewScope">Add armed response requirements to shape the proposal.</p></div>
+              <div class="quotation-table guarding-preview-table" id="armedResponsePreviewServices"></div>
+              <div class="quotation-table guarding-preview-table" id="armedResponsePreviewCharges"></div>
+              <div class="totals">
+                <div><span>Monthly selling price</span><strong id="armedResponsePreviewMonthly">R0.00</strong></div>
+                <div><span>Once-off charges</span><strong id="armedResponsePreviewOnceOff">R0.00</strong></div>
+                <div class="grand-total"><span>Annual contract value</span><strong id="armedResponsePreviewAnnual">R0.00</strong></div>
+              </div>
+              <div class="preview-copy"><h3>Assumptions and Exclusions</h3><p id="armedResponsePreviewNotes">Monthly armed response services are subject to site access, active alarm communication, response area confirmation, and approval of the agreed scope.</p></div>
+            </div>
+            <div class="preview-actions">
+              <button class="secondary-btn" id="saveArmedResponseDraft" type="button">Save draft</button>
+              <button class="primary-btn" id="submitArmedResponseQuote" type="button">Submit for approval</button>
+            </div>
+            <section class="panel linked-request-summary" id="armedResponseRequestSummaryPanel" hidden>
+              <div class="panel-heading compact-heading"><div><p class="eyebrow">Linked request</p><h2>Sales Quotation Request Information</h2></div></div>
+              <div id="armedResponseRequestSummary"></div>
+            </section>
+          </aside>
+        </section>
+
         <section class="hidden-state" id="salesRequests-section" hidden>
           <h2>Sales Quotation Requests</h2>
           <p>Submit supplier quotations and supporting information for quotation builders.</p>
@@ -726,6 +801,7 @@
                     <option value="">Select quotation type</option>
                     <option value="Technical Quotation">Technical Quotation</option>
                     <option value="Guarding Quotation">Guarding Quotation</option>
+                    <option value="Monthly Armed Response Quotation">Monthly Armed Response Quotation</option>
                   </select>
                 </label>
                 <input id="requestClientName" type="text" placeholder="Client name" />
@@ -759,6 +835,24 @@
                   <textarea id="requestEquipmentRequired" rows="3" placeholder="Equipment required" spellcheck="true"></textarea>
                   <textarea id="requestSpecialInstructions" rows="3" placeholder="Special site instructions" spellcheck="true"></textarea>
                 </div>
+                <div id="armedResponseRequestFields" class="guarding-request-fields armed-response-request-fields" hidden>
+                  <input id="requestArmedProvince" type="text" placeholder="Province" />
+                  <input id="requestArmedArea" type="text" placeholder="Area / suburb" />
+                  <input id="requestArmedIndustryType" type="text" placeholder="Industry type" />
+                  <input id="requestArmedNumberOfSites" type="number" min="1" step="1" placeholder="Number of sites" />
+                  <label>Existing alarm system<select id="requestExistingAlarmSystem"><option value="Yes">Yes</option><option value="No">No</option></select></label>
+                  <label>Alarm monitoring required<select id="requestAlarmMonitoringRequired"><option value="Yes">Yes</option><option value="No">No</option></select></label>
+                  <label>Armed response required<select id="requestArmedResponseRequired"><option value="Yes">Yes</option><option value="No">No</option></select></label>
+                  <label>Key holding required<select id="requestKeyHoldingRequired"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                  <label>Opening/closing service<select id="requestOpeningClosingRequired"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                  <label>Patrol service required<select id="requestPatrolServiceRequired"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                  <label>Panic button required<select id="requestPanicButtonRequired"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                  <label>Medical response required<select id="requestMedicalResponseRequired"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                  <label>Fire response required<select id="requestFireResponseRequired"><option value="No">No</option><option value="Yes">Yes</option></select></label>
+                  <label>Contract start date<input id="requestArmedContractStartDate" type="date" /></label>
+                  <input id="requestArmedContractDuration" type="text" placeholder="Contract duration" />
+                  <textarea id="requestArmedSpecialInstructions" rows="3" placeholder="Special site instructions" spellcheck="true"></textarea>
+                </div>
                 <textarea id="requestNotes" rows="3" placeholder="Notes for quotation builder" spellcheck="true"></textarea>
                 <label class="upload-control">
                   Upload supporting documents
@@ -782,6 +876,17 @@
             <div class="approval-list" id="quoteLibraryList"></div>
             <aside class="approval-detail" id="quoteLibraryDetail" spellcheck="false" hidden>
               <p class="empty-state">Select a quotation to view library details.</p>
+            </aside>
+          </div>
+        </section>
+
+        <section class="hidden-state" id="projectTimeline-section" hidden>
+          <h2>Project Timeline</h2>
+          <p>Track project progress after a client has accepted a quotation.</p>
+          <div class="approval-workspace">
+            <div class="approval-list" id="projectTimelineList"></div>
+            <aside class="approval-detail" id="projectTimelineDetail" spellcheck="true" hidden>
+              <p class="empty-state">Select an accepted quotation to update project progress.</p>
             </aside>
           </div>
         </section>
@@ -810,8 +915,9 @@
                 <select id="memberAccess">
                   <option value="Super Admin">Super Admin</option>
                   <option value="Admin">Admin</option>
-                  <option value="Full Access Member">Full Access Member</option>
-                  <option value="Quotation Builder Only">Quotation Builder Only</option>
+                  <option value="Quotation Builder">Quotation Builder</option>
+                  <option value="Sales Representative">Sales Representative</option>
+                  <option value="Read Only">Read Only</option>
                 </select>
                 <fieldset class="permission-checklist" id="memberPermissionChecklist">
                   <legend>Allowed tabs/pages</legend>
@@ -895,6 +1001,46 @@
             </section>
 
             <section class="setup-panel">
+              <h3>Guarding Price List Management</h3>
+              <form class="setup-form" id="guardingPriceForm">
+                <input id="guardingPriceItemName" type="text" placeholder="Item name" />
+                <select id="guardingPriceShiftType">
+                  <option value="Day Shift">Day Shift</option>
+                  <option value="Night Shift">Night Shift</option>
+                </select>
+                <select id="guardingPriceBillingType">
+                  <option value="Hourly">Hourly</option>
+                  <option value="Daily">Daily</option>
+                  <option value="Monthly">Monthly</option>
+                </select>
+                <input id="guardingPriceDescription" type="text" placeholder="Item description" />
+                <input id="guardingPriceUnitType" type="text" placeholder="Unit type" />
+                <input id="guardingPriceCategory" type="text" placeholder="Category" />
+                <input id="guardingPriceServiceType" type="text" placeholder="Service type" />
+                <input id="guardingPriceRate" type="number" min="0" step="0.01" placeholder="Unit price" />
+                <label class="checkbox-line">
+                  <input id="guardingPriceActive" type="checkbox" checked />
+                  Active item
+                </label>
+                <button class="primary-btn" type="submit">Save guarding item</button>
+              </form>
+              <div class="import-panel">
+                <div class="panel-heading compact-heading">
+                  <div>
+                    <h4>Import / export guarding price list</h4>
+                    <p>CSV files should include itemName, shiftType, billingType (Hourly, Daily or Monthly), description, unitType, category, serviceType, rate, and active.</p>
+                  </div>
+                </div>
+                <input id="guardingPriceImportFile" type="file" accept=".csv,.xlsx,.xls" />
+                <div class="import-actions">
+                  <button class="secondary-btn" id="exportGuardingPriceList" type="button">Export current price list</button>
+                </div>
+                <div class="import-summary" id="guardingPriceImportSummary"></div>
+              </div>
+              <div class="setup-list guarding-price-management-list" id="guardingPriceList"></div>
+            </section>
+
+            <section class="setup-panel">
               <h3>Client information</h3>
               <form class="setup-form" id="clientForm">
                 <input id="setupClientName" type="text" placeholder="Client / business name" />
@@ -943,6 +1089,6 @@
       </main>
     </div>
 
-    <script src="./app.js"></script>
+    <script src="/app.js"></script>
   </body>
 </html>
