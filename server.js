@@ -1098,4 +1098,3 @@ server.listen(port, () => {
   console.log(`\n✓ Interactive Security Hub running at http://localhost:${port}`);
   console.log(`  NODE_ENV: ${process.env.NODE_ENV || "development"}`);
 });
-fix: all auth bugs — logout, password change, saveSession, setup route
