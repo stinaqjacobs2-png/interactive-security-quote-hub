@@ -450,9 +450,9 @@ const permissionDefinitions = [
   { key: "member_access_management", label: "Member Access Management", section: "settings" },
   { key: "quotation_hub", label: "Quotation Hub", hubSlug: "quotation-hub" },
   { key: "finance_age_analysis", label: "Finance Balances and Age Analysis", hubSlug: "finance-age-analysis" },
-  { key: "sales_quotation_requests", label: "Sales Quotation Requests", section: "salesRequests" },
+ { key: "sales_quotation_requests", label: "Sales Quotation Requests", section: "salesRequests" },
+  { key: "finance_age_analysis", label: "Finance Age Analysis", section: "finance" },
 ];
-
 const platformRoles = ["Super Admin", "Admin", "Quotation Builder", "Sales Representative", "Read Only"];
 
 function normalizeRole(role = "") {
@@ -523,6 +523,11 @@ const sectionHeadings = {
     eyebrow: "Project delivery",
     title: "Project Timeline",
     status: "Accepted",
+  },
+ finance: {
+    eyebrow: "Finance",
+    title: "Age Analysis",
+    status: "Finance",
   },
   settings: {
     eyebrow: "Platform setup",
@@ -1682,7 +1687,7 @@ async function consumeHubSsoTokenIfPresent() {
     });
     console.log("Hub session created", { hubSlug, user: data.user });
     if (hubSlug === "quotation-hub") {
-      const section = ["projections", "dashboard", "builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "approvals", "library", "projectTimeline", "settings", "audit"].includes(targetSection)
+      const section = ["projections", "dashboard", "builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "approvals", "library", "projectTimeline", "settings", "audit", "finance"].includes(targetSection)
         ? targetSection
         : "dashboard";
       window.location.replace(`/hubs/quotation-hub#${section}`);
@@ -9827,3 +9832,23 @@ document.addEventListener("keydown", function(e) {
     if (btn && !btn.hidden) btn.click();
   }
 });
+// ── Finance Age Analysis ──────────────────────────────────────────────────────
+const financeSearch=document.querySelector("#financeSearch"),financeAddBtn=document.querySelector("#financeAddBtn"),financeImportBtn=document.querySelector("#financeImportBtn"),financeExportBtn=document.querySelector("#financeExportBtn"),financeImportPanel=document.querySelector("#financeImportPanel"),financeCsvFile=document.querySelector("#financeCsvFile"),financeCsvImportSubmit=document.querySelector("#financeCsvImportSubmit"),financeCsvImportCancel=document.querySelector("#financeCsvImportCancel"),financeCsvStatus=document.querySelector("#financeCsvStatus"),financeFormPanel=document.querySelector("#financeFormPanel"),financeFormTitle=document.querySelector("#financeFormTitle"),financeForm=document.querySelector("#financeForm"),financeFormCancel=document.querySelector("#financeFormCancel"),financeTableBody=document.querySelector("#financeTableBody"),financeTableEmpty=document.querySelector("#financeTableEmpty"),financeTotalsRow=document.querySelector("#financeTotalsRow");
+let financeBalances=[];
+const FIN_COLS="minmax(160px,2fr) minmax(100px,.8fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(100px,.8fr) minmax(80px,.6fr)";
+function fmtR(v){return"R "+Number(v||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2});}
+async function loadFinanceBalances(){try{const r=await fetch("/api/finance/balances",{credentials:"include"});if(!r.ok)return;const d=await r.json();financeBalances=d.balances||[];renderFinanceTable();}catch(e){console.warn("[finance]",e);}}
+function renderFinanceTable(){if(!financeTableBody)return;const q=(financeSearch?financeSearch.value:"").toLowerCase();const rows=financeBalances.filter(r=>!q||r.client_name.toLowerCase().includes(q)||(r.account_number||"").toLowerCase().includes(q));if(!rows.length){financeTableBody.innerHTML="";if(financeTableEmpty)financeTableEmpty.style.display="";if(financeTotalsRow)financeTotalsRow.style.display="none";return;}if(financeTableEmpty)financeTableEmpty.style.display="none";financeTableBody.innerHTML=rows.map(r=>`<div class="finance-table-row" style="display:grid;grid-template-columns:${FIN_COLS};align-items:center;"><span><strong>${escapeHtml(r.client_name)}</strong>${r.notes?`<small style="display:block;color:var(--muted);font-size:11px;">${escapeHtml(r.notes)}</small>`:""}</span><span>${escapeHtml(r.account_number||"—")}</span><span>${fmtR(r.current)}</span><span>${fmtR(r.days_30)}</span><span>${fmtR(r.days_60)}</span><span>${fmtR(r.days_90)}</span><span style="color:${r.days_120_plus>0?"var(--red,#c0392b)":"inherit"};font-weight:${r.days_120_plus>0?"700":"400"};">${fmtR(r.days_120_plus)}</span><span><strong>${fmtR(r.total)}</strong></span><span style="display:flex;gap:6px;"><button class="link-btn" style="font-size:12px;" onclick="financeEditRecord('${escapeHtml(r.id)}')">Edit</button><button class="link-btn" style="font-size:12px;color:var(--red,#c0392b);" onclick="financeDeleteRecord('${escapeHtml(r.id)}')">Delete</button></span></div>`).join("");const sum=k=>rows.reduce((a,r)=>a+Number(r[k]||0),0);document.querySelector("#finTotalCurrent").textContent=fmtR(sum("current"));document.querySelector("#finTotal30").textContent=fmtR(sum("days_30"));document.querySelector("#finTotal60").textContent=fmtR(sum("days_60"));document.querySelector("#finTotal90").textContent=fmtR(sum("days_90"));document.querySelector("#finTotal120").textContent=fmtR(sum("days_120_plus"));document.querySelector("#finTotalAll").textContent=fmtR(sum("total"));if(financeTotalsRow)financeTotalsRow.style.display="grid";}
+function financeShowForm(r){if(!financeFormPanel)return;financeFormPanel.style.display="";financeFormTitle.textContent=r?"Edit Balance Record":"Add Balance Record";document.querySelector("#financeRecordId").value=r?r.id:"";document.querySelector("#financeClientName").value=r?r.client_name:"";document.querySelector("#financeAccountNumber").value=r?(r.account_number||""):"";document.querySelector("#financeLastUpdated").value=r?(r.last_updated||new Date().toISOString().slice(0,10)):new Date().toISOString().slice(0,10);document.querySelector("#financeCurrent").value=r?(r.current??0):0;document.querySelector("#financeDays30").value=r?(r.days_30??0):0;document.querySelector("#financeDays60").value=r?(r.days_60??0):0;document.querySelector("#financeDays90").value=r?(r.days_90??0):0;document.querySelector("#financeDays120").value=r?(r.days_120_plus??0):0;document.querySelector("#financeNotes").value=r?(r.notes||""):"";financeFormPanel.scrollIntoView({behavior:"smooth",block:"nearest"});}
+function financeHideForm(){if(financeFormPanel)financeFormPanel.style.display="none";if(financeForm)financeForm.reset();}
+window.financeEditRecord=id=>{const r=financeBalances.find(b=>b.id===id);if(r)financeShowForm(r);};
+window.financeDeleteRecord=async id=>{const r=financeBalances.find(b=>b.id===id);if(!r||!confirm('Delete "'+r.client_name+'"?'))return;try{const res=await fetch("/api/finance/balances?id="+encodeURIComponent(id),{method:"DELETE",credentials:"include"});if(!res.ok){const d=await res.json();alert(d.error||"Delete failed");return;}await loadFinanceBalances();}catch(e){alert("Network error");}};
+if(financeAddBtn)financeAddBtn.addEventListener("click",()=>financeShowForm(null));
+if(financeFormCancel)financeFormCancel.addEventListener("click",financeHideForm);
+if(financeSearch)financeSearch.addEventListener("input",renderFinanceTable);
+if(financeForm)financeForm.addEventListener("submit",async e=>{e.preventDefault();const btn=document.querySelector("#financeFormSubmit");if(btn){btn.disabled=true;btn.textContent="Saving…";}const p={id:document.querySelector("#financeRecordId").value||undefined,client_name:document.querySelector("#financeClientName").value,account_number:document.querySelector("#financeAccountNumber").value,last_updated:document.querySelector("#financeLastUpdated").value,current:document.querySelector("#financeCurrent").value,days_30:document.querySelector("#financeDays30").value,days_60:document.querySelector("#financeDays60").value,days_90:document.querySelector("#financeDays90").value,days_120_plus:document.querySelector("#financeDays120").value,notes:document.querySelector("#financeNotes").value};try{const res=await fetch("/api/finance/balances",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});const d=await res.json();if(!res.ok){alert(d.error||"Save failed");return;}financeHideForm();await loadFinanceBalances();}catch(e){alert("Network error");}finally{if(btn){btn.disabled=false;btn.textContent="Save record";}}});
+if(financeImportBtn)financeImportBtn.addEventListener("click",()=>{if(financeImportPanel)financeImportPanel.style.display=financeImportPanel.style.display==="none"?"":"none";});
+if(financeCsvImportCancel)financeCsvImportCancel.addEventListener("click",()=>{if(financeImportPanel)financeImportPanel.style.display="none";if(financeCsvStatus)financeCsvStatus.textContent="";});
+if(financeCsvImportSubmit)financeCsvImportSubmit.addEventListener("click",async()=>{const file=financeCsvFile&&financeCsvFile.files&&financeCsvFile.files[0];if(!file){if(financeCsvStatus)financeCsvStatus.textContent="Please select a CSV file.";return;}const text=await file.text();const lines=text.trim().split("\n");if(lines.length<2){if(financeCsvStatus)financeCsvStatus.textContent="CSV appears empty.";return;}const headers=lines[0].split(",").map(h=>h.trim().replace(/^"|"$/g,"").toLowerCase().replace(/\s+/g,"_"));const rows=lines.slice(1).filter(Boolean).map(line=>{const vals=line.split(",").map(v=>v.trim().replace(/^"|"$/g,""));return Object.fromEntries(headers.map((h,i)=>[h,vals[i]||""]));});if(financeCsvStatus)financeCsvStatus.textContent="Parsed "+rows.length+" rows…";try{const res=await fetch("/api/finance/import",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({rows})});const d=await res.json();if(!res.ok){if(financeCsvStatus)financeCsvStatus.textContent=d.error||"Import failed";return;}if(financeCsvStatus)financeCsvStatus.textContent="✓ Imported "+d.imported+" records."+(d.errors&&d.errors.length?" Errors: "+d.errors.join("; "):"");if(financeCsvFile)financeCsvFile.value="";await loadFinanceBalances();}catch(e){if(financeCsvStatus)financeCsvStatus.textContent="Network error.";}});
+if(financeExportBtn)financeExportBtn.addEventListener("click",()=>{if(!financeBalances.length){alert("No records to export.");return;}const h=["client_name","account_number","current","days_30","days_60","days_90","days_120_plus","total","notes","last_updated"];const csv=[h.join(","),...financeBalances.map(r=>h.map(k=>'"'+String(r[k]!==undefined?r[k]:"").replace(/"/g,'""')+'"').join(","))].join("\n");const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="age-analysis-"+new Date().toISOString().slice(0,10)+".csv";a.click();});
+(function(){const s=document.querySelector("#finance-section");if(!s)return;new MutationObserver(()=>{if(!s.hidden)loadFinanceBalances();}).observe(s,{attributes:true,attributeFilter:["hidden"]});})();

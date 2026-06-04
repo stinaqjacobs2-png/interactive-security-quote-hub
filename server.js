@@ -1,1100 +1,355 @@
-const http = require("http");
-const fs = require("fs");
-const path = require("path");
-const crypto = require("crypto");
-const bcrypt = require("./vendor/bcrypt");
+"""
+Interactive Security – patch script
+Run this once in your Codespaces terminal: python3 patch.py
+It modifies server.js, index.html, app.js and styles.css in place.
+"""
+import re, subprocess
 
-const root = __dirname;
-const dataDir = path.join(root, "data");
-const dbPath = path.join(dataDir, "app-db.json");
-const port = Number(process.env.PORT || 3100);
-const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS || 12);
-const MAX_FAILED_LOGINS = Number(process.env.MAX_FAILED_LOGINS || 5);
-const LOCKOUT_MINUTES = Number(process.env.LOCKOUT_MINUTES || 30);
-const SESSION_IDLE_MINUTES = Number(process.env.SESSION_IDLE_MINUTES || 30);
-const SESSION_ABSOLUTE_HOURS = Number(process.env.SESSION_ABSOLUTE_HOURS || 8);
-const PASSWORD_RESET_MINUTES = Number(process.env.PASSWORD_RESET_MINUTES || 30);
+# ── 1. styles.css ─────────────────────────────────────────────────────────────
+with open('styles.css', 'r') as f: css = f.read()
+css = css.replace(
+    '.approval-table { overflow: hidden;',
+    '.approval-table { overflow-x: auto; -webkit-overflow-scrolling: touch;'
+)
+marker = '/* ── Sales request list: horizontal scroll'
+if marker in css:
+    css = css[:css.index(marker)].rstrip() + '\n'
+with open('styles.css', 'w') as f: f.write(css)
+print('✓ styles.css')
 
-const permissionKeys = [
-  "dashboard",
-  "build_quotation",
-  "build_guarding_quotation",
-  "build_armed_response_quotation",
-  "quote_library",
-  "project_timeline",
-  "approval",
-  "reports",
-  "audit_trail",
-  "setup",
-  "supplier_prices",
-  "member_access_management",
-  "quotation_hub",
-  "sales_quotation_requests",
-];
+# ── 2. server.js ──────────────────────────────────────────────────────────────
+with open('server.js', 'r') as f: js = f.read()
 
-const roleDefaults = {
-  "Super Admin": permissionKeys,
-  Admin: permissionKeys,
-  "Quotation Builder": [
-    "quotation_hub",
-    "build_quotation",
-    "build_guarding_quotation",
-    "build_armed_response_quotation",
-    "sales_quotation_requests",
-    "quote_library",
-    "project_timeline",
-  ],
-  "Sales Representative": ["quotation_hub", "sales_quotation_requests"],
-  "Read Only": ["quotation_hub", "dashboard", "quote_library", "reports"],
-};
+if '"finance_age_analysis"' not in js:
+    js = js.replace(
+        '  "sales_quotation_requests",\n];',
+        '  "sales_quotation_requests",\n  "finance_age_analysis",\n];'
+    )
 
-function normalizeRole(role = "") {
-  const value = String(role || "").trim();
-  const aliases = {
-    "Full Access Member": "Admin",
-    "Quotation Builder Only": "Quotation Builder",
-    Member: "Sales Representative",
-  };
-  return aliases[value] || (roleDefaults[value] ? value : "Read Only");
-}
+if '"finance_balances"' not in js:
+    js = js.replace(
+        '"password_reset_tokens"].forEach',
+        '"password_reset_tokens",\n   "finance_balances"].forEach'
+    )
 
-function defaultPermissionsForRole(role) {
-  return roleDefaults[normalizeRole(role)] || [];
-}
+if '/api/finance/balances' not in js:
+    finance_routes = '''  // ── Finance Age Analysis ─────────────────────────────────────────────────
 
-function sanitizePermissions(permissions = []) {
-  return Array.from(new Set((Array.isArray(permissions) ? permissions : [])
-    .filter((p) => permissionKeys.includes(p))));
-}
-
-const mimeTypes = {
-  ".html": "text/html; charset=utf-8",
-  ".js":   "text/javascript; charset=utf-8",
-  ".css":  "text/css; charset=utf-8",
-  ".jpg":  "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".png":  "image/png",
-  ".json": "application/json; charset=utf-8",
-};
-
-// ── Database ─────────────────────────────────────────────────────────────────
-
-function ensureDb() {
-  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-  if (!fs.existsSync(dbPath)) {
-    fs.writeFileSync(dbPath, JSON.stringify({
-      sessions: [],
-      sso_tokens: [],
-      members: [],
-      user_permissions: [],
-      sales_quotation_requests: [],
-      sales_quotation_request_files: [],
-      email_logs: [],
-      audit_trail: [],
-      password_reset_tokens: [],
-      security_settings: {
-        maxFailedLogins: MAX_FAILED_LOGINS,
-        lockoutMinutes: LOCKOUT_MINUTES,
-        sessionIdleMinutes: SESSION_IDLE_MINUTES,
-        sessionAbsoluteHours: SESSION_ABSOLUTE_HOURS,
-        passwordResetMinutes: PASSWORD_RESET_MINUTES,
-        mfaEnabled: false,
-      },
-    }, null, 2));
-    return;
+  if (req.method === "GET" && url.pathname === "/api/finance/balances") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "finance_age_analysis")) return json(res, 403, { error: "Access denied" });
+    const db = readDb();
+    return json(res, 200, { balances: db.finance_balances || [] });
   }
-  const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
-  let changed = false;
-  ["sessions", "sso_tokens", "members", "user_permissions", "sales_quotation_requests",
-   "sales_quotation_request_files", "email_logs", "audit_trail", "password_reset_tokens"].forEach((table) => {
-    if (!Array.isArray(db[table])) { db[table] = []; changed = true; }
-  });
-  if (!db.security_settings) {
-    db.security_settings = {
-      maxFailedLogins: MAX_FAILED_LOGINS,
-      lockoutMinutes: LOCKOUT_MINUTES,
-      sessionIdleMinutes: SESSION_IDLE_MINUTES,
-      sessionAbsoluteHours: SESSION_ABSOLUTE_HOURS,
-      passwordResetMinutes: PASSWORD_RESET_MINUTES,
-      mfaEnabled: false,
-    };
-    changed = true;
-  }
-  db.members = db.members.map((member) => {
-    let updated = member;
-    const normalizedRole = normalizeRole(updated.role || updated.access || "Read Only");
-    const normalizedPermissions = sanitizePermissions(updated.permissions);
-    if (updated.role !== normalizedRole || updated.access !== normalizedRole) {
-      updated = {
-        ...updated,
-        role: normalizedRole,
-        access: normalizedRole,
-        permissions: normalizedPermissions.length ? normalizedPermissions : defaultPermissionsForRole(normalizedRole),
-      };
-      changed = true;
-    }
-    // Migrate legacy camelCase passwordHash to snake_case password_hash
-    if (updated.passwordHash && !updated.legacyPasswordHash) {
-      updated = {
-        ...updated,
-        legacyPasswordHash: updated.passwordHash,
-        passwordHash: undefined,
-        password_hash: updated.password_hash || "",
-        passwordAlgorithm: updated.password_hash ? "bcrypt" : "legacy-sha256-reset-required",
-        mustChangePassword: true,
-      };
-      changed = true;
-    }
-    return updated;
-  });
-  db.sales_quotation_requests = db.sales_quotation_requests.map((request) => {
-    const normalized = String(request.status || "").trim().toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-    let status = "Accepted for Processing";
-    if (normalized === "approved") status = "Approved";
-    if (["submitted_for_approval", "pending_approval", "awaiting_approval", "completed"].includes(normalized)) {
-      status = "Submitted for Approval";
-    }
-    if (request.status === status) return request;
-    changed = true;
-    return { ...request, legacy_status: request.legacy_status || request.status || "", status, updated_at: request.updated_at || new Date().toISOString() };
-  });
-  if (changed) fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-}
 
-function readDb() {
-  ensureDb();
-  return JSON.parse(fs.readFileSync(dbPath, "utf8"));
-}
-
-function writeDb(db) {
-  ensureDb();
-  fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function normalizeEmail(value = "") {
-  return String(value).trim().toLowerCase();
-}
-
-function publicUser(member) {
-  const role = normalizeRole(member.role || member.access || "Read Only");
-  const hasExplicitPermissions = Boolean(member.permissionsExplicit) || (Array.isArray(member.permissions) && member.permissions.length > 0);
-  const permissions = hasExplicitPermissions ? sanitizePermissions(member.permissions) : defaultPermissionsForRole(role);
-  return {
-    userId: member.id,
-    email: member.email,
-    name: member.name || member.email,
-    role,
-    permissions,
-    permissionsExplicit: hasExplicitPermissions,
-    inviteStatus: member.inviteStatus || "Active",
-    mustChangePassword: Boolean(member.mustChangePassword),
-    mfaEnabled: Boolean(member.mfaEnabled),
-    mfaRequired: Boolean(member.mfaRequired),
-  };
-}
-
-function passwordPolicyErrors(password = "") {
-  const errors = [];
-  if (password.length < 12)            errors.push("at least 12 characters");
-  if (!/[A-Z]/.test(password))         errors.push("one uppercase letter");
-  if (!/[a-z]/.test(password))         errors.push("one lowercase letter");
-  if (!/[0-9]/.test(password))         errors.push("one number");
-  if (!/[^A-Za-z0-9]/.test(password))  errors.push("one special character");
-  return errors;
-}
-
-function assertStrongPassword(password) {
-  const errors = passwordPolicyErrors(password);
-  if (errors.length) {
-    const error = new Error(`Password must contain ${errors.join(", ")}.`);
-    error.code = "WEAK_PASSWORD";
-    error.details = errors;
-    throw error;
-  }
-}
-
-function hashPassword(password) {
-  assertStrongPassword(password);
-  const hash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
-  // Paranoia: verify the hash we just created actually works before returning it
-  if (!bcrypt.compareSync(password, hash)) {
-    throw new Error("Password hash verification failed immediately after creation.");
-  }
-  return hash;
-}
-
-function verifyPassword(password, passwordHash) {
-  if (!passwordHash || typeof passwordHash !== "string") return false;
-  if (!passwordHash.startsWith("$2")) return false;
-  try {
-    return bcrypt.compareSync(password, passwordHash);
-  } catch (err) {
-    console.error("[verifyPassword] bcrypt.compareSync threw:", err.message);
-    return false;
-  }
-}
-
-function tokenHash(token) {
-  return crypto.createHash("sha256").update(token).digest("hex");
-}
-
-function securitySettings(db) {
-  return {
-    maxFailedLogins:      Number(db.security_settings?.maxFailedLogins      || MAX_FAILED_LOGINS),
-    lockoutMinutes:       Number(db.security_settings?.lockoutMinutes        || LOCKOUT_MINUTES),
-    sessionIdleMinutes:   Number(db.security_settings?.sessionIdleMinutes    || SESSION_IDLE_MINUTES),
-    sessionAbsoluteHours: Number(db.security_settings?.sessionAbsoluteHours  || SESSION_ABSOLUTE_HOURS),
-    passwordResetMinutes: Number(db.security_settings?.passwordResetMinutes  || PASSWORD_RESET_MINUTES),
-    mfaEnabled:           Boolean(db.security_settings?.mfaEnabled),
-  };
-}
-
-function writeAudit(db, action, user, module = "Authentication", reference = user?.email || "", notes = "") {
-  if (!Array.isArray(db.audit_trail)) db.audit_trail = [];
-  db.audit_trail.unshift({
-    id: crypto.randomUUID(),
-    action,
-    detail: reference,
-    module,
-    reference,
-    notes,
-    user: user?.email || "system",
-    userName: user?.name || user?.email || "System",
-    timestamp: new Date().toISOString(),
-  });
-  db.audit_trail = db.audit_trail.slice(0, 5000);
-}
-
-function json(res, status, payload) {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-  res.end(JSON.stringify(payload));
-}
-
-function parseCookies(req) {
-  return Object.fromEntries(
-    (req.headers.cookie || "").split(";").filter(Boolean).map((c) => {
-      const i = c.indexOf("=");
-      return [decodeURIComponent(c.slice(0, i).trim()), decodeURIComponent(c.slice(i + 1).trim())];
-    })
-  );
-}
-
-function setCookie(res, name, value, maxAgeSeconds = 60 * 60 * 8) {
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie",
-    `${encodeURIComponent(name)}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAgeSeconds}; SameSite=Lax; HttpOnly${secure}`);
-}
-
-function clearCookie(res, name) {
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie",
-    `${encodeURIComponent(name)}=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly${secure}`);
-}
-
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    req.on("data", (chunk) => { body += chunk; if (body.length > 1024 * 1024) req.destroy(); });
-    req.on("end", () => { try { resolve(body ? JSON.parse(body) : {}); } catch (e) { reject(e); } });
-    req.on("error", reject);
-  });
-}
-
-// ── Session management ────────────────────────────────────────────────────────
-//
-// getSession: reads session from cookie, validates expiry/idle, updates
-//   lastActivityAt in the sessions array only (does NOT touch member records).
-//
-// saveSession: creates a new session. Does NOT rewrite the member's security
-//   fields (password_hash, passwordAlgorithm, failedLoginAttempts, lockedUntil,
-//   mustChangePassword). Only refreshes non-sensitive profile fields.
-
-function getSession(req) {
-  const sid = parseCookies(req).interactive_security_session;
-  if (!sid) return null;
-
-  const db = readDb();
-  const settings = securitySettings(db);
-  const now = new Date();
-  const sessionIndex = db.sessions.findIndex((s) => s.sid === sid);
-  if (sessionIndex === -1) return null;
-
-  const session = db.sessions[sessionIndex];
-  const absoluteExpired = new Date(session.expiresAt) <= now;
-  const lastActivity = session.lastActivityAt ? new Date(session.lastActivityAt) : new Date(session.createdAt || 0);
-  const idleExpired = now.getTime() - lastActivity.getTime() > settings.sessionIdleMinutes * 60 * 1000;
-
-  if (absoluteExpired || idleExpired) {
-    db.sessions.splice(sessionIndex, 1);
-    writeAudit(db, "Session expired", session, "Authentication", session.email,
-      absoluteExpired ? "Absolute session expiry" : "Idle session expiry");
+  if (req.method === "POST" && url.pathname === "/api/finance/balances") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "finance_age_analysis")) return json(res, 403, { error: "Access denied" });
+    const body = await readBody(req);
+    if (!body.client_name || String(body.client_name).trim() === "") return json(res, 400, { error: "Client name is required." });
+    const db = readDb();
+    if (!Array.isArray(db.finance_balances)) db.finance_balances = [];
+    const now = new Date().toISOString();
+    const toNum = (v) => Number(v) || 0;
+    const isNew = !body.id;
+    const id = body.id || crypto.randomUUID();
+    const current=toNum(body.current),days30=toNum(body.days_30),days60=toNum(body.days_60);
+    const days90=toNum(body.days_90),days120=toNum(body.days_120_plus);
+    const total=current+days30+days60+days90+days120;
+    const record = { id, client_name: String(body.client_name).trim(),
+      account_number: String(body.account_number||"").trim(), current,
+      days_30:days30, days_60:days60, days_90:days90, days_120_plus:days120, total,
+      notes: String(body.notes||"").trim(), last_updated: String(body.last_updated||now.slice(0,10)),
+      created_at: isNew ? now : (db.finance_balances.find((r)=>r.id===id)?.created_at||now),
+      updated_at: now };
+    const idx=db.finance_balances.findIndex((r)=>r.id===id);
+    if (idx>=0) db.finance_balances[idx]=record; else db.finance_balances.push(record);
+    writeAudit(db, isNew?"Added finance balance record":"Updated finance balance record",
+      session,"Finance",record.client_name,"Total: R"+total.toFixed(2));
     writeDb(db);
-    return null;
+    return json(res, 200, { balance: record });
   }
 
-  // Normalize role/permissions from session (do not read from member record here)
-  const role = normalizeRole(session.role || session.access || "Read Only");
-  const sanitizedPermissions = sanitizePermissions(session.permissions);
-  const permissions = session.permissionsExplicit
-    ? sanitizedPermissions
-    : (sanitizedPermissions.length ? sanitizedPermissions : defaultPermissionsForRole(role));
+  if (req.method === "DELETE" && url.pathname === "/api/finance/balances") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "finance_age_analysis")) return json(res, 403, { error: "Access denied" });
+    const id = url.searchParams.get("id");
+    if (!id) return json(res, 400, { error: "id is required" });
+    const db = readDb();
+    if (!Array.isArray(db.finance_balances)) db.finance_balances = [];
+    const record = db.finance_balances.find((r)=>r.id===id);
+    db.finance_balances = db.finance_balances.filter((r)=>r.id!==id);
+    writeAudit(db,"Deleted finance balance record",session,"Finance",record?.client_name||id,"");
+    writeDb(db);
+    return json(res, 200, { ok: true });
+  }
 
-  // Update lastActivityAt on the session record only
-  db.sessions[sessionIndex] = { ...session, role, permissions, lastActivityAt: now.toISOString() };
-  writeDb(db);
-
-  return db.sessions[sessionIndex];
-}
-
-function saveSession(user) {
-  const db = readDb();
-  const settings = securitySettings(db);
-  const sid = crypto.randomBytes(32).toString("hex");
-  const now = new Date();
-  const role = normalizeRole(user.role || user.access || "Read Only");
-  const userPermissions = sanitizePermissions(user.permissions);
-  const hasExplicitPermissions = Boolean(user.permissionsExplicit) || userPermissions.length > 0;
-
-  const session = {
-    sid,
-    userId: user.userId || user.id || user.email,
-    email: user.email,
-    name: user.name || user.email,
-    role,
-    permissions: hasExplicitPermissions ? userPermissions : defaultPermissionsForRole(role),
-    permissionsExplicit: hasExplicitPermissions,
-    mfaEnabled: Boolean(user.mfaEnabled),
-    mfaRequired: Boolean(user.mfaRequired),
-    createdAt: now.toISOString(),
-    lastActivityAt: now.toISOString(),
-    expiresAt: new Date(now.getTime() + settings.sessionAbsoluteHours * 60 * 60 * 1000).toISOString(),
-  };
-
-  // Remove expired/duplicate sessions for this user
-  db.sessions = db.sessions.filter(
-    (s) => s.email !== session.email || new Date(s.expiresAt) > now
-  );
-  db.sessions.push(session);
-
-  // Update ONLY non-security profile fields on the member record.
-  // NEVER touch: password_hash, passwordAlgorithm, mustChangePassword,
-  //              failedLoginAttempts, lockedUntil — those are managed
-  //              by the auth/password endpoints exclusively.
-  const memberIndex = db.members.findIndex(
-    (m) => normalizeEmail(m.email) === normalizeEmail(session.email) || m.id === session.userId
-  );
-  if (memberIndex >= 0) {
-    const existing = db.members[memberIndex];
-    db.members[memberIndex] = {
-      ...existing,
-      // Safe profile fields only
-      name: session.name || existing.name,
-      role: session.role,
-      access: session.role,
-      permissions: session.permissions,
-      permissionsExplicit: hasExplicitPermissions,
-      mfaEnabled: Boolean(user.mfaEnabled),
-      mfaRequired: Boolean(user.mfaRequired),
-      inviteStatus: user.inviteStatus || existing.inviteStatus || "Active",
-      updated_at: now.toISOString(),
-      // Explicitly preserve all security fields from the stored record
-      password_hash: existing.password_hash,
-      passwordAlgorithm: existing.passwordAlgorithm,
-      mustChangePassword: existing.mustChangePassword,
-      failedLoginAttempts: existing.failedLoginAttempts,
-      lockedUntil: existing.lockedUntil,
-      passwordChangedAt: existing.passwordChangedAt,
-    };
-  } else {
-    // New member record (SSO path or first-time). No password_hash here.
-    db.members.push({
-      id: session.userId,
-      name: session.name,
-      email: session.email,
-      phone: user.phone || user.phoneNumber || "",
-      branch: user.branch || "",
-      department: user.department || "",
-      inviteStatus: user.inviteStatus || "Active",
-      role: session.role,
-      access: session.role,
-      permissions: session.permissions,
-      permissionsExplicit: hasExplicitPermissions,
-      mfaEnabled: Boolean(user.mfaEnabled),
-      mfaRequired: Boolean(user.mfaRequired),
-      password_hash: "",
-      passwordAlgorithm: "",
-      mustChangePassword: false,
-      failedLoginAttempts: 0,
-      lockedUntil: null,
-      created_at: now.toISOString(),
-      updated_at: now.toISOString(),
+  if (req.method === "POST" && url.pathname === "/api/finance/import") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "finance_age_analysis")) return json(res, 403, { error: "Access denied" });
+    const body = await readBody(req);
+    if (!Array.isArray(body.rows)||body.rows.length===0) return json(res,400,{error:"No rows provided."});
+    const db = readDb();
+    if (!Array.isArray(db.finance_balances)) db.finance_balances = [];
+    const now=new Date().toISOString();
+    const toNum=(v)=>Number(String(v).replace(/[^0-9.\\-]/g,""))||0;
+    let imported=0; const errors=[];
+    body.rows.forEach((row,i)=>{
+      const clientName=String(row.client_name||"").trim();
+      if(!clientName){errors.push("Row "+(i+1)+": missing client_name");return;}
+      const current=toNum(row.current),days30=toNum(row.days_30),days60=toNum(row.days_60);
+      const days90=toNum(row.days_90),days120=toNum(row.days_120_plus);
+      const total=current+days30+days60+days90+days120;
+      const existing=db.finance_balances.find((r)=>r.client_name.toLowerCase()===clientName.toLowerCase());
+      const record={id:existing?.id||crypto.randomUUID(),client_name:clientName,
+        account_number:String(row.account_number||existing?.account_number||"").trim(),
+        current,days_30:days30,days_60:days60,days_90:days90,days_120_plus:days120,total,
+        notes:String(row.notes||existing?.notes||"").trim(),
+        last_updated:String(row.last_updated||now.slice(0,10)),
+        created_at:existing?.created_at||now,updated_at:now};
+      if(existing){const idx=db.finance_balances.findIndex((r)=>r.id===existing.id);db.finance_balances[idx]=record;}
+      else db.finance_balances.push(record);
+      imported++;
     });
+    writeAudit(db,"Imported finance balance records",session,"Finance",imported+" records",
+      errors.length?"Errors: "+errors.join("; "):"");
+    writeDb(db);
+    return json(res, 200, { imported, errors });
   }
 
-  writeDb(db);
-  return session;
+'''
+    setup_marker = '  // ── First-time setup routes'
+    if setup_marker in js:
+        js = js.replace(setup_marker, finance_routes + setup_marker)
+    else:
+        js = js.replace('  return json(res, 404, { error: "API route not found" });',
+                        finance_routes + '  return json(res, 404, { error: "API route not found" });')
+
+with open('server.js', 'w') as f: f.write(js)
+print('✓ server.js')
+
+# ── 3. index.html ─────────────────────────────────────────────────────────────
+with open('index.html', 'r') as f: html = f.read()
+
+if 'data-section="finance"' not in html:
+    audit_btn_end = html.find('data-section="audit"')
+    audit_btn_end = html.find('</button>', audit_btn_end) + len('</button>')
+    finance_nav = '\n          <button class="nav-item" type="button" data-section="finance"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20"></path><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg><span class="nav-label">Finance Age Analysis</span></button>'
+    html = html[:audit_btn_end] + finance_nav + html[audit_btn_end:]
+
+if 'id="finance-section"' not in html:
+    finance_section = '''
+        <section class="hidden-state" id="finance-section" hidden>
+          <h2>Finance Age Analysis</h2>
+          <p>Debtor age analysis, outstanding balances, and collections oversight.</p>
+          <div class="approval-workspace">
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:18px;">
+              <input id="financeSearch" type="search" placeholder="Search client or account…" style="flex:1;min-width:200px;max-width:340px;" />
+              <button class="secondary-btn" type="button" id="financeAddBtn">+ Add record</button>
+              <button class="secondary-btn" type="button" id="financeImportBtn">Import CSV</button>
+              <button class="secondary-btn" type="button" id="financeExportBtn">Export CSV</button>
+            </div>
+            <div id="financeImportPanel" class="panel" style="display:none;margin-bottom:18px;">
+              <h3>Import CSV</h3>
+              <p style="font-size:13px;color:var(--muted);margin-bottom:10px;">Columns: <strong>client_name, account_number, current, days_30, days_60, days_90, days_120_plus, notes, last_updated</strong></p>
+              <label>Select CSV file<input id="financeCsvFile" type="file" accept=".csv" /></label>
+              <div style="display:flex;gap:8px;margin-top:10px;">
+                <button class="primary-btn" type="button" id="financeCsvImportSubmit">Import</button>
+                <button class="secondary-btn" type="button" id="financeCsvImportCancel">Cancel</button>
+              </div>
+              <p id="financeCsvStatus" style="margin-top:8px;font-size:13px;"></p>
+            </div>
+            <div id="financeFormPanel" class="panel" style="display:none;margin-bottom:18px;">
+              <h3 id="financeFormTitle">Add Balance Record</h3>
+              <form class="setup-form" id="financeForm" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">
+                <input id="financeRecordId" type="hidden" />
+                <label style="grid-column:1/-1;">Client name<input id="financeClientName" type="text" placeholder="Client name" required /></label>
+                <label>Account number<input id="financeAccountNumber" type="text" placeholder="ACC-001" /></label>
+                <label>Last updated<input id="financeLastUpdated" type="date" /></label>
+                <label>Current (R)<input id="financeCurrent" type="number" min="0" step="0.01" value="0" /></label>
+                <label>30 days (R)<input id="financeDays30" type="number" min="0" step="0.01" value="0" /></label>
+                <label>60 days (R)<input id="financeDays60" type="number" min="0" step="0.01" value="0" /></label>
+                <label>90 days (R)<input id="financeDays90" type="number" min="0" step="0.01" value="0" /></label>
+                <label>120+ days (R)<input id="financeDays120" type="number" min="0" step="0.01" value="0" /></label>
+                <label style="grid-column:1/-1;">Notes<input id="financeNotes" type="text" placeholder="Optional notes" /></label>
+                <div style="grid-column:1/-1;display:flex;gap:8px;">
+                  <button class="primary-btn" type="submit" id="financeFormSubmit">Save record</button>
+                  <button class="secondary-btn" type="button" id="financeFormCancel">Cancel</button>
+                </div>
+              </form>
+            </div>
+            <div class="finance-table" id="financeTable">
+              <div class="finance-table-row finance-table-head" style="display:grid;grid-template-columns:minmax(160px,2fr) minmax(100px,.8fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(100px,.8fr) minmax(80px,.6fr);">
+                <span>Client</span><span>Account</span><span>Current</span><span>30 Days</span><span>60 Days</span><span>90 Days</span><span>120+ Days</span><span>Total</span><span>Actions</span>
+              </div>
+              <div id="financeTableBody"></div>
+              <div id="financeTableEmpty" class="approval-table-empty" style="display:none;">No balance records found.</div>
+              <div class="finance-table-row" id="financeTotalsRow" style="display:grid;grid-template-columns:minmax(160px,2fr) minmax(100px,.8fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(100px,.8fr) minmax(80px,.6fr);background:var(--surface);font-weight:700;border-top:2px solid var(--line);">
+                <span><strong>TOTALS</strong></span><span></span>
+                <span id="finTotalCurrent">R 0.00</span><span id="finTotal30">R 0.00</span>
+                <span id="finTotal60">R 0.00</span><span id="finTotal90">R 0.00</span>
+                <span id="finTotal120">R 0.00</span><span id="finTotalAll">R 0.00</span><span></span>
+              </div>
+            </div>
+          </div>
+        </section>
+'''
+    main_end = html.rfind('</main>')
+    html = html[:main_end] + finance_section + html[main_end:]
+
+with open('index.html', 'w') as f: f.write(html)
+print('✓ index.html')
+
+# ── 4. app.js ─────────────────────────────────────────────────────────────────
+with open('app.js', 'r') as f: js = f.read()
+
+if '"finance_age_analysis"' not in js:
+    js = js.replace(
+        '  { key: "sales_quotation_requests", label: "Sales Quotation Requests", section: "salesRequests" },\n];',
+        '  { key: "sales_quotation_requests", label: "Sales Quotation Requests", section: "salesRequests" },\n  { key: "finance_age_analysis", label: "Finance Age Analysis", section: "finance" },\n];'
+    )
+
+if '"finance"' not in js or 'Age Analysis' not in js:
+    js = js.replace(
+        '  settings: {\n    eyebrow: "Platform setup",\n    title: "Setup",',
+        '  finance: {\n    eyebrow: "Finance",\n    title: "Age Analysis",\n    status: "Finance",\n  },\n  settings: {\n    eyebrow: "Platform setup",\n    title: "Setup",'
+    )
+
+js = js.replace(
+    '"salesRequests", "approvals", "library", "projectTimeline", "settings", "audit"].includes(targetSection)',
+    '"salesRequests", "approvals", "library", "projectTimeline", "settings", "audit", "finance"].includes(targetSection)'
+)
+
+if 'loadFinanceBalances' not in js:
+    js += r"""
+
+// ── Finance Age Analysis ──────────────────────────────────────────────────────
+const financeSearch=document.querySelector("#financeSearch");
+const financeAddBtn=document.querySelector("#financeAddBtn");
+const financeImportBtn=document.querySelector("#financeImportBtn");
+const financeExportBtn=document.querySelector("#financeExportBtn");
+const financeImportPanel=document.querySelector("#financeImportPanel");
+const financeCsvFile=document.querySelector("#financeCsvFile");
+const financeCsvImportSubmit=document.querySelector("#financeCsvImportSubmit");
+const financeCsvImportCancel=document.querySelector("#financeCsvImportCancel");
+const financeCsvStatus=document.querySelector("#financeCsvStatus");
+const financeFormPanel=document.querySelector("#financeFormPanel");
+const financeFormTitle=document.querySelector("#financeFormTitle");
+const financeForm=document.querySelector("#financeForm");
+const financeFormCancel=document.querySelector("#financeFormCancel");
+const financeTableBody=document.querySelector("#financeTableBody");
+const financeTableEmpty=document.querySelector("#financeTableEmpty");
+const financeTotalsRow=document.querySelector("#financeTotalsRow");
+let financeBalances=[];
+const FIN_COLS="minmax(160px,2fr) minmax(100px,.8fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(100px,.8fr) minmax(80px,.6fr)";
+function fmtR(v){return"R "+Number(v||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2});}
+async function loadFinanceBalances(){
+  try{const res=await fetch("/api/finance/balances",{credentials:"include"});
+  if(!res.ok)return;const data=await res.json();financeBalances=data.balances||[];renderFinanceTable();}
+  catch(e){console.warn("[finance] load failed",e);}
 }
-
-function canAccessHub(session, hubSlug) {
-  if (!session || hubSlug !== "quotation-hub") return false;
-  return hasPermission(session, "quotation_hub");
+function renderFinanceTable(){
+  if(!financeTableBody)return;
+  const q=(financeSearch?financeSearch.value:"").toLowerCase();
+  const rows=financeBalances.filter((r)=>!q||r.client_name.toLowerCase().includes(q)||(r.account_number||"").toLowerCase().includes(q));
+  if(rows.length===0){financeTableBody.innerHTML="";if(financeTableEmpty)financeTableEmpty.style.display="";if(financeTotalsRow)financeTotalsRow.style.display="none";return;}
+  if(financeTableEmpty)financeTableEmpty.style.display="none";
+  financeTableBody.innerHTML=rows.map((r)=>`<div class="finance-table-row" style="display:grid;grid-template-columns:${FIN_COLS};align-items:center;" data-id="${escapeHtml(r.id)}"><span><strong>${escapeHtml(r.client_name)}</strong>${r.notes?`<small style="display:block;color:var(--muted);font-size:11px;">${escapeHtml(r.notes)}</small>`:""}</span><span>${escapeHtml(r.account_number||"—")}</span><span>${fmtR(r.current)}</span><span>${fmtR(r.days_30)}</span><span>${fmtR(r.days_60)}</span><span>${fmtR(r.days_90)}</span><span style="color:${r.days_120_plus>0?"var(--red,#c0392b)":"inherit"};font-weight:${r.days_120_plus>0?"700":"400"};">${fmtR(r.days_120_plus)}</span><span><strong>${fmtR(r.total)}</strong></span><span style="display:flex;gap:6px;flex-wrap:wrap;"><button class="link-btn" style="font-size:12px;" onclick="financeEditRecord('${escapeHtml(r.id)}')">Edit</button><button class="link-btn" style="font-size:12px;color:var(--red,#c0392b);" onclick="financeDeleteRecord('${escapeHtml(r.id)}')">Delete</button></span></div>`).join("");
+  const sum=(key)=>rows.reduce((a,r)=>a+Number(r[key]||0),0);
+  document.querySelector("#finTotalCurrent").textContent=fmtR(sum("current"));
+  document.querySelector("#finTotal30").textContent=fmtR(sum("days_30"));
+  document.querySelector("#finTotal60").textContent=fmtR(sum("days_60"));
+  document.querySelector("#finTotal90").textContent=fmtR(sum("days_90"));
+  document.querySelector("#finTotal120").textContent=fmtR(sum("days_120_plus"));
+  document.querySelector("#finTotalAll").textContent=fmtR(sum("total"));
+  if(financeTotalsRow)financeTotalsRow.style.display="grid";
 }
-
-function hasPermission(session, permissionKey) {
-  if (!session) return false;
-  const role = normalizeRole(session.role || session.access);
-  if (["Super Admin", "Admin"].includes(role)) return true;
-  const permissions = sanitizePermissions(session.permissions);
-  const assigned = session.permissionsExplicit ? permissions : (permissions.length ? permissions : defaultPermissionsForRole(role));
-  return assigned.includes(permissionKey);
+function financeShowForm(record){
+  if(!financeFormPanel)return;
+  financeFormPanel.style.display="";
+  financeFormTitle.textContent=record?"Edit Balance Record":"Add Balance Record";
+  document.querySelector("#financeRecordId").value=record?record.id:"";
+  document.querySelector("#financeClientName").value=record?record.client_name:"";
+  document.querySelector("#financeAccountNumber").value=record?(record.account_number||""):"";
+  document.querySelector("#financeLastUpdated").value=record?(record.last_updated||new Date().toISOString().slice(0,10)):new Date().toISOString().slice(0,10);
+  document.querySelector("#financeCurrent").value=record?(record.current??0):0;
+  document.querySelector("#financeDays30").value=record?(record.days_30??0):0;
+  document.querySelector("#financeDays60").value=record?(record.days_60??0):0;
+  document.querySelector("#financeDays90").value=record?(record.days_90??0):0;
+  document.querySelector("#financeDays120").value=record?(record.days_120_plus??0):0;
+  document.querySelector("#financeNotes").value=record?(record.notes||""):"";
+  financeFormPanel.scrollIntoView({behavior:"smooth",block:"nearest"});
 }
-
-// ── Static file serving ───────────────────────────────────────────────────────
-
-function serveIndex(res) {
-  const filePath = path.join(root, "index.html");
-  res.writeHead(200, { "Content-Type": mimeTypes[".html"], "Cache-Control": "no-store" });
-  res.end(fs.readFileSync(filePath));
-}
-
-function serveStatic(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  let cleanPath = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
-  const hubAssetMatch = cleanPath.match(/^\/hubs\/[^/]+\/(.+)$/);
-  if (hubAssetMatch) cleanPath = `/${hubAssetMatch[1]}`;
-  const filePath = path.normalize(path.join(root, cleanPath));
-  if (!filePath.startsWith(root)) { res.writeHead(403); res.end("Forbidden"); return; }
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) { res.writeHead(404); res.end("Not found"); return; }
-  const ext = path.extname(filePath).toLowerCase();
-  res.writeHead(200, { "Content-Type": mimeTypes[ext] || "application/octet-stream", "Cache-Control": "no-store" });
-  res.end(fs.readFileSync(filePath));
-}
-
-// ── First-time setup page ─────────────────────────────────────────────────────
-// Serves a browser form to create the first Super Admin.
-// Permanently redirects to / once any user with a password_hash exists.
-
-function serveSetup(res) {
-  const db = readDb();
-  const hasUsers = db.members && db.members.some((m) => m.password_hash);
-  if (hasUsers) { res.writeHead(302, { Location: "/" }); res.end(); return; }
-
-  const html = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>First-time Setup – Interactive Security Portal</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:system-ui,sans-serif;background:#f4f5f7;display:flex;
-         align-items:center;justify-content:center;min-height:100vh;padding:1rem}
-    .card{background:#fff;border-radius:10px;box-shadow:0 2px 16px rgba(0,0,0,.12);
-          padding:2.5rem;width:100%;max-width:420px}
-    h1{font-size:1.25rem;margin-bottom:.25rem}
-    p.sub{color:#555;font-size:.9rem;margin-bottom:1.5rem}
-    label{display:block;font-size:.85rem;font-weight:600;margin-bottom:.9rem}
-    label span{display:block;margin-bottom:.3rem}
-    input{width:100%;padding:.55rem .75rem;border:1px solid #ccc;border-radius:6px;font-size:.95rem}
-    input:focus{outline:none;border-color:#2563eb}
-    .hint{font-size:.78rem;color:#666;margin-top:.3rem}
-    button{width:100%;margin-top:1.25rem;padding:.65rem;background:#1d4ed8;
-           color:#fff;border:none;border-radius:6px;font-size:1rem;font-weight:600;cursor:pointer}
-    button:hover{background:#1e40af}
-    button:disabled{background:#93c5fd;cursor:not-allowed}
-    .msg{margin-top:1rem;padding:.75rem;border-radius:6px;font-size:.9rem;display:none}
-    .msg.error{background:#fee2e2;color:#b91c1c;display:block}
-    .msg.success{background:#dcfce7;color:#15803d;display:block}
-    .badge{display:inline-block;background:#fef9c3;color:#854d0e;border-radius:4px;
-           padding:.15rem .5rem;font-size:.78rem;font-weight:600;margin-bottom:1.25rem}
-  </style>
-</head>
-<body>
-<div class="card">
-  <span class="badge">First-time setup</span>
-  <h1>Create Super Admin</h1>
-  <p class="sub">This page is only accessible while no users exist in the database.
-  It permanently disables itself as soon as the first account is created.</p>
-  <form id="form">
-    <label><span>Full name</span>
-      <input id="name" type="text" placeholder="Jane Smith" required autocomplete="name"/>
-    </label>
-    <label><span>Email address</span>
-      <input id="email" type="email" placeholder="admin@yourcompany.com" required autocomplete="email"/>
-    </label>
-    <label><span>Password</span>
-      <input id="password" type="password" required autocomplete="new-password"/>
-      <div class="hint">Min 12 chars &middot; uppercase &middot; lowercase &middot; number &middot; special character</div>
-    </label>
-    <label><span>Confirm password</span>
-      <input id="confirm" type="password" required autocomplete="new-password"/>
-    </label>
-    <button type="submit" id="btn">Create Super Admin account</button>
-  </form>
-  <div class="msg" id="msg"></div>
-</div>
-<script>
-document.getElementById('form').addEventListener('submit', async function(e) {
+function financeHideForm(){if(financeFormPanel)financeFormPanel.style.display="none";if(financeForm)financeForm.reset();}
+window.financeEditRecord=function(id){const r=financeBalances.find((b)=>b.id===id);if(r)financeShowForm(r);};
+window.financeDeleteRecord=async function(id){
+  const r=financeBalances.find((b)=>b.id===id);
+  if(!r||!confirm('Delete balance record for "'+r.client_name+'"?'))return;
+  try{const res=await fetch("/api/finance/balances?id="+encodeURIComponent(id),{method:"DELETE",credentials:"include"});
+  if(!res.ok){const d=await res.json();alert(d.error||"Delete failed");return;}
+  await loadFinanceBalances();}catch(e){alert("Network error");}
+};
+if(financeAddBtn)financeAddBtn.addEventListener("click",()=>financeShowForm(null));
+if(financeFormCancel)financeFormCancel.addEventListener("click",financeHideForm);
+if(financeSearch)financeSearch.addEventListener("input",renderFinanceTable);
+if(financeForm)financeForm.addEventListener("submit",async(e)=>{
   e.preventDefault();
-  const msg = document.getElementById('msg');
-  const btn = document.getElementById('btn');
-  msg.className = 'msg'; msg.textContent = '';
-  const name     = document.getElementById('name').value.trim();
-  const email    = document.getElementById('email').value.trim();
-  const password = document.getElementById('password').value;
-  const confirm  = document.getElementById('confirm').value;
-  if (password !== confirm) {
-    msg.className = 'msg error'; msg.textContent = 'Passwords do not match.'; return;
-  }
-  btn.disabled = true; btn.textContent = 'Creating account…';
-  try {
-    const res = await fetch('/api/setup/create-admin', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email, password }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      msg.className = 'msg error';
-      msg.textContent = data.error || 'Setup failed.';
-      btn.disabled = false; btn.textContent = 'Create Super Admin account'; return;
-    }
-    msg.className = 'msg success';
-    msg.textContent = 'Super Admin created! Redirecting to login…';
-    document.getElementById('form').style.display = 'none';
-    setTimeout(() => { window.location.href = '/'; }, 2000);
-  } catch (err) {
-    msg.className = 'msg error'; msg.textContent = 'Network error – please try again.';
-    btn.disabled = false; btn.textContent = 'Create Super Admin account';
-  }
+  const btn=document.querySelector("#financeFormSubmit");
+  if(btn){btn.disabled=true;btn.textContent="Saving…";}
+  const payload={id:document.querySelector("#financeRecordId").value||undefined,
+    client_name:document.querySelector("#financeClientName").value,
+    account_number:document.querySelector("#financeAccountNumber").value,
+    last_updated:document.querySelector("#financeLastUpdated").value,
+    current:document.querySelector("#financeCurrent").value,
+    days_30:document.querySelector("#financeDays30").value,
+    days_60:document.querySelector("#financeDays60").value,
+    days_90:document.querySelector("#financeDays90").value,
+    days_120_plus:document.querySelector("#financeDays120").value,
+    notes:document.querySelector("#financeNotes").value};
+  try{const res=await fetch("/api/finance/balances",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+  const data=await res.json();if(!res.ok){alert(data.error||"Save failed");return;}
+  financeHideForm();await loadFinanceBalances();}
+  catch(err){alert("Network error");}
+  finally{if(btn){btn.disabled=false;btn.textContent="Save record";}}
 });
-</script>
-</body>
-</html>`;
-  res.writeHead(200, { "Content-Type": mimeTypes[".html"], "Cache-Control": "no-store" });
-  res.end(html);
-}
-
-// ── API handlers ──────────────────────────────────────────────────────────────
-
-async function handleApi(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-
-  // ── Login ─────────────────────────────────────────────────────────────────
-  if (req.method === "POST" && url.pathname === "/api/auth/login") {
-    const body = await readBody(req);
-    const email = normalizeEmail(body.email);
-    const password = String(body.password || "");
-    if (!email || !password) return json(res, 400, { error: "Missing email or password" });
-
-    const db = readDb();
-    const settings = securitySettings(db);
-    let member = db.members.find((m) => normalizeEmail(m.email) === email);
-    const now = new Date();
-    const hasPasswordUsers = db.members.some((m) => m.password_hash);
-
-    // Dev-only bootstrap: auto-create Super Admin on first login when no users exist
-    if (!member && !hasPasswordUsers && process.env.NODE_ENV !== "production") {
-      try {
-        member = {
-          id: email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
-          name: body.name || "System Admin",
-          email,
-          role: "Super Admin",
-          access: "Super Admin",
-          permissions: permissionKeys,
-          permissionsExplicit: true,
-          inviteStatus: "Active",
-          password_hash: hashPassword(password),
-          passwordAlgorithm: "bcrypt",
-          mustChangePassword: false,
-          failedLoginAttempts: 0,
-          lockedUntil: null,
-          mfaEnabled: false,
-          mfaRequired: false,
-          created_at: now.toISOString(),
-          updated_at: now.toISOString(),
-        };
-        db.members.push(member);
-        writeAudit(db, "Created bootstrap admin", member, "Authentication", email, "Development bootstrap only");
-        writeDb(db);
-      } catch (error) {
-        return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
-      }
-    }
-
-    if (!member) {
-      console.log(`[login] FAIL – no member found for email: ${email}`);
-      return json(res, 401, { error: "The email address or password is incorrect." });
-    }
-    if (member.inviteStatus === "Disabled") {
-      console.log(`[login] FAIL – account disabled: ${email}`);
-      return json(res, 401, { error: "The email address or password is incorrect." });
-    }
-    if (member.lockedUntil && new Date(member.lockedUntil) > now) {
-      console.log(`[login] FAIL – account locked until ${member.lockedUntil}: ${email}`);
-      return json(res, 423, { error: `Account locked until ${member.lockedUntil}`, code: "ACCOUNT_LOCKED", lockedUntil: member.lockedUntil });
-    }
-    if (!member.password_hash) {
-      console.log(`[login] FAIL – no password_hash on member: ${email}`);
-      return json(res, 403, { error: "Password reset required before this account can sign in.", code: "PASSWORD_RESET_REQUIRED" });
-    }
-
-    const passwordOk = verifyPassword(password, member.password_hash);
-    if (!passwordOk) {
-      member.failedLoginAttempts = Number(member.failedLoginAttempts || 0) + 1;
-      member.lastFailedLoginAt = now.toISOString();
-      const reason = `bcrypt mismatch – attempt ${member.failedLoginAttempts}/${settings.maxFailedLogins}`;
-      console.log(`[login] FAIL – ${reason}: ${email}`);
-      if (member.failedLoginAttempts >= settings.maxFailedLogins) {
-        member.lockedUntil = new Date(now.getTime() + settings.lockoutMinutes * 60 * 1000).toISOString();
-        writeAudit(db, "Account locked", member, "Authentication", email, `${member.failedLoginAttempts} failed login attempts`);
-      } else {
-        writeAudit(db, "Failed login", member, "Authentication", email, reason);
-      }
-      writeDb(db);
-      return json(res, 401, {
-        error: "The email address or password is incorrect.",
-        remainingAttempts: Math.max(0, settings.maxFailedLogins - member.failedLoginAttempts),
-      });
-    }
-
-    member.failedLoginAttempts = 0;
-    member.lockedUntil = null;
-    member.lastLoginAt = now.toISOString();
-    member.updated_at = now.toISOString();
-    writeAudit(db, "Signed in", member, "Authentication", email,
-      member.mustChangePassword ? "Password change required" : "Successful login");
-    writeDb(db);
-
-    console.log(`[login] OK: ${email} role=${member.role}`);
-    const session = saveSession(publicUser(member));
-    setCookie(res, "interactive_security_session", session.sid);
-    return json(res, 200, {
-      user: {
-        userId: session.userId,
-        email: session.email,
-        name: session.name,
-        role: session.role,
-        permissions: session.permissions,
-        permissionsExplicit: session.permissionsExplicit,
-        mustChangePassword: Boolean(member.mustChangePassword),
-        mfaEnabled: Boolean(member.mfaEnabled),
-        mfaRequired: Boolean(member.mfaRequired),
-      },
-    });
-  }
-
-  // ── Logout ────────────────────────────────────────────────────────────────
-  if (req.method === "POST" && url.pathname === "/api/auth/logout") {
-    const sid = parseCookies(req).interactive_security_session;
-    if (sid) {
-      const db = readDb();
-      const session = db.sessions.find((s) => s.sid === sid);
-      if (session) {
-        db.sessions = db.sessions.filter((s) => s.sid !== sid);
-        writeAudit(db, "Signed out", session, "Authentication", session.email, "User initiated logout");
-        writeDb(db);
-        console.log(`[logout] OK: ${session.email}`);
-      }
-    }
-    clearCookie(res, "interactive_security_session");
-    return json(res, 200, { ok: true });
-  }
-
-  // ── Change password ───────────────────────────────────────────────────────
-  if (req.method === "POST" && url.pathname === "/api/auth/change-password") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-
-    const body = await readBody(req);
-    const currentPassword = String(body.currentPassword || "");
-    const newPassword = String(body.newPassword || "");
-
-    if (!newPassword) return json(res, 400, { error: "New password is required." });
-
-    // Always do a fresh DB read for security operations — never rely on in-memory state
-    const db = readDb();
-
-    // Look up member by userId first (most reliable), then fall back to email
-    const member = db.members.find(
-      (m) => m.id === session.userId || normalizeEmail(m.email) === normalizeEmail(session.email)
-    );
-    if (!member) {
-      console.log(`[change-password] FAIL – member not found for session userId=${session.userId} email=${session.email}`);
-      return json(res, 404, { error: "Member not found." });
-    }
-
-    // If a password_hash already exists, the current password must be verified
-    if (member.password_hash) {
-      if (!currentPassword) {
-        return json(res, 400, { error: "Current password is required." });
-      }
-      if (!verifyPassword(currentPassword, member.password_hash)) {
-        console.log(`[change-password] FAIL – current password incorrect for: ${member.email}`);
-        writeAudit(db, "Failed password change", member, "Authentication", member.email, "Current password incorrect");
-        writeDb(db);
-        return json(res, 401, { error: "Current password is incorrect." });
-      }
-    }
-
-    // Hash and verify the new password
-    let newHash;
-    try {
-      newHash = hashPassword(newPassword); // also does paranoia self-verify inside hashPassword
-    } catch (error) {
-      console.log(`[change-password] FAIL – weak password for: ${member.email} – ${error.message}`);
-      return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
-    }
-
-    // Write ONLY the password fields – do not touch any other member data
-    member.password_hash = newHash;
-    member.passwordAlgorithm = "bcrypt";
-    member.mustChangePassword = false;
-    member.passwordChangedAt = new Date().toISOString();
-    member.failedLoginAttempts = 0;
-    member.lockedUntil = null;
-    member.updated_at = new Date().toISOString();
-
-    writeAudit(db, "Changed password", member, "Authentication", member.email, "Password changed successfully");
-    writeDb(db);
-    console.log(`[change-password] OK: ${member.email}`);
-    return json(res, 200, { ok: true });
-  }
-
-  // ── Request password reset ────────────────────────────────────────────────
-  if (req.method === "POST" && url.pathname === "/api/auth/request-password-reset") {
-    const body = await readBody(req);
-    const email = normalizeEmail(body.email);
-    const db = readDb();
-    const settings = securitySettings(db);
-    const member = db.members.find((m) => normalizeEmail(m.email) === email);
-    let resetToken = "";
-    if (member && member.inviteStatus !== "Disabled") {
-      resetToken = crypto.randomBytes(32).toString("base64url");
-      db.password_reset_tokens.push({
-        id: crypto.randomUUID(),
-        token_hash: tokenHash(resetToken),
-        user_id: member.id,
-        email: member.email,
-        expires_at: new Date(Date.now() + settings.passwordResetMinutes * 60 * 1000).toISOString(),
-        used_at: null,
-        created_at: new Date().toISOString(),
-      });
-      db.email_logs.push({
-        id: crypto.randomUUID(),
-        type: "password_reset",
-        to: member.email,
-        subject: "Interactive Security password reset",
-        status: process.env.NODE_ENV === "production" ? "Pending email provider" : "Development token generated",
-        created_at: new Date().toISOString(),
-      });
-      writeAudit(db, "Password reset requested", member, "Authentication", member.email, "Reset token generated");
-      writeDb(db);
-    }
-    return json(res, 200, {
-      ok: true,
-      message: "If the account exists, a password reset link will be sent.",
-      // Only expose the raw token in development to allow testing
-      resetToken: process.env.NODE_ENV === "production" ? undefined : resetToken,
-    });
-  }
-
-  // ── Consume password reset token ──────────────────────────────────────────
-  if (req.method === "POST" && url.pathname === "/api/auth/reset-password") {
-    const body = await readBody(req);
-    const resetToken = String(body.token || "");
-    const newPassword = String(body.newPassword || "");
-    const db = readDb();
-    const record = db.password_reset_tokens.find((r) => r.token_hash === tokenHash(resetToken));
-    if (!record || record.used_at || new Date(record.expires_at) <= new Date()) {
-      return json(res, 401, { error: "Password reset link is invalid or expired." });
-    }
-    const member = db.members.find(
-      (m) => m.id === record.user_id || normalizeEmail(m.email) === normalizeEmail(record.email)
-    );
-    if (!member) return json(res, 404, { error: "Member not found." });
-
-    let newHash;
-    try {
-      newHash = hashPassword(newPassword);
-    } catch (error) {
-      return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
-    }
-
-    record.used_at = new Date().toISOString();
-    member.password_hash = newHash;
-    member.passwordAlgorithm = "bcrypt";
-    member.mustChangePassword = false;
-    member.failedLoginAttempts = 0;
-    member.lockedUntil = null;
-    member.passwordChangedAt = new Date().toISOString();
-    member.inviteStatus = "Active";
-    member.updated_at = new Date().toISOString();
-
-    writeAudit(db, "Password reset completed", member, "Authentication", member.email, "Reset token consumed");
-    writeDb(db);
-    console.log(`[reset-password] OK: ${member.email}`);
-    return json(res, 200, { ok: true });
-  }
-
-  // ── Session check ─────────────────────────────────────────────────────────
-  if (req.method === "GET" && url.pathname === "/api/auth/session") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-    return json(res, 200, { user: session });
-  }
-
-  // ── Member search ─────────────────────────────────────────────────────────
-  if (req.method === "GET" && url.pathname === "/api/members/search") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-    if (!["sales_quotation_requests", "build_quotation", "approval", "setup"].some((p) => hasPermission(session, p))) {
-      return json(res, 403, { error: "Access denied" });
-    }
-    const query = (url.searchParams.get("query") || "").trim().toLowerCase();
-    const db = readDb();
-    const activeMembers = db.members
-      .filter((m) => (m.inviteStatus || "Active") !== "Disabled")
-      .filter((m) => !query || [m.name, m.email, m.phone, m.branch, m.department].filter(Boolean).join(" ").toLowerCase().includes(query))
-      .slice(0, 20)
-      .map((m) => ({ id: m.id, name: m.name, email: m.email, phone: m.phone || "", branch: m.branch || "", department: m.department || "" }));
-    return json(res, 200, { members: activeMembers });
-  }
-
-  // ── Save member ───────────────────────────────────────────────────────────
-  if (req.method === "POST" && url.pathname === "/api/members") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
-
-    const body = await readBody(req);
-    const email = normalizeEmail(body.email);
-    const tempPassword = String(body.temporaryPassword || "");
-    if (!email || !body.name) return json(res, 400, { error: "Member name and email are required." });
-
-    const db = readDb();
-    const existing = db.members.find((m) => normalizeEmail(m.email) === email && m.id !== body.id);
-    if (existing) return json(res, 409, { error: "A member with this email address already exists." });
-
-    let password_hash = "";
-    if (tempPassword) {
-      try { password_hash = hashPassword(tempPassword); }
-      catch (error) { return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] }); }
-    }
-
-    const now = new Date().toISOString();
-    const id = body.id || email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    const index = db.members.findIndex((m) => m.id === id || normalizeEmail(m.email) === email);
-    const previous = index >= 0 ? db.members[index] : {};
-    const role = normalizeRole(body.role || body.access || previous.role || "Sales Representative");
-    const permissions = sanitizePermissions(Array.isArray(body.permissions) ? body.permissions : (previous.permissions || defaultPermissionsForRole(role)));
-
-    const member = {
-      ...previous,
-      id,
-      name: String(body.name || previous.name || email),
-      email,
-      phone: body.phone !== undefined ? body.phone : (previous.phone || ""),
-      branch: body.branch !== undefined ? body.branch : (previous.branch || ""),
-      department: body.department !== undefined ? body.department : (previous.department || ""),
-      role,
-      access: role,
-      permissions,
-      permissionsExplicit: true,
-      inviteStatus: body.inviteStatus || previous.inviteStatus || "Invite Sent",
-      mustChangePassword: password_hash ? true : Boolean(previous.mustChangePassword),
-      // Only update password_hash if a new one was provided; preserve existing otherwise
-      password_hash: password_hash || previous.password_hash || "",
-      passwordAlgorithm: password_hash ? "bcrypt" : (previous.passwordAlgorithm || ""),
-      failedLoginAttempts: previous.failedLoginAttempts || 0,
-      lockedUntil: previous.lockedUntil || null,
-      mfaEnabled: Boolean(previous.mfaEnabled),
-      mfaRequired: Boolean(previous.mfaRequired),
-      created_at: previous.created_at || now,
-      updated_at: now,
-    };
-
-    if (index >= 0) db.members[index] = member;
-    else db.members.push(member);
-
-    const previousSummary = previous.email
-      ? `${normalizeRole(previous.role || previous.access)}: ${(previous.permissions || []).join(", ") || "role defaults"}`
-      : "new member";
-    const newSummary = `${role}: ${permissions.join(", ") || "no modules selected"}`;
-    writeAudit(db, index >= 0 ? "Updated member access" : "Member invite sent", session, "Setup - Member access", email, `${previousSummary} -> ${newSummary}`);
-    writeDb(db);
-    return json(res, 200, { member: publicUser(member) });
-  }
-
-  // ── SSO create token ──────────────────────────────────────────────────────
-  if (req.method === "POST" && url.pathname === "/api/sso/create-token") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-    const body = await readBody(req);
-    const hubSlug = body.hubSlug;
-    console.log("[sso] create-token requested", { userId: session.userId, hubSlug });
-    if (!canAccessHub(session, hubSlug)) return json(res, 403, { error: "Access denied" });
-    const db = readDb();
-    const token = crypto.randomBytes(48).toString("base64url");
-    const record = {
-      id: crypto.randomUUID(),
-      token,
-      user_id: session.userId,
-      user: {
-        userId: session.userId,
-        email: session.email,
-        name: session.name,
-        role: session.role,
-        permissions: session.permissions,
-        permissionsExplicit: session.permissionsExplicit,
-      },
-      hub_slug: hubSlug,
-      expires_at: new Date(Date.now() + 60 * 1000).toISOString(),
-      used_at: null,
-      created_at: new Date().toISOString(),
-    };
-    db.sso_tokens.push(record);
-    writeDb(db);
-    const redirectUrl = `${url.origin}/hubs/${hubSlug}/sso-login?token=${encodeURIComponent(token)}`;
-    console.log("[sso] token created", { userId: session.userId, hubSlug });
-    return json(res, 200, { redirectUrl });
-  }
-
-  // ── SSO consume token ─────────────────────────────────────────────────────
-  if (req.method === "POST" && url.pathname === "/api/sso/consume-token") {
-    const body = await readBody(req);
-    const token = body.token;
-    const hubSlug = body.hubSlug;
-    const db = readDb();
-    const record = db.sso_tokens.find((r) => r.token === token);
-    console.log("[sso] consume-token", { hubSlug });
-    if (!record)                                         return json(res, 401, { error: "Token not found." });
-    if (record.hub_slug !== hubSlug)                     return json(res, 401, { error: "Hub mismatch." });
-    if (record.used_at)                                  return json(res, 401, { error: "Token already used." });
-    if (new Date(record.expires_at) <= new Date())       return json(res, 401, { error: "Token expired." });
-    record.used_at = new Date().toISOString();
-    writeDb(db);
-    const session = saveSession(record.user);
-    setCookie(res, "interactive_security_session", session.sid);
-    console.log("[sso] session created", { userId: session.userId, hubSlug });
-    return json(res, 200, {
-      user: {
-        userId: session.userId,
-        email: session.email,
-        name: session.name,
-        role: session.role,
-        permissions: session.permissions,
-        permissionsExplicit: session.permissionsExplicit,
-      },
-    });
-  }
-
-  // ── Permissions (get) ─────────────────────────────────────────────────────
-  if (req.method === "GET" && url.pathname === "/api/permissions") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-    return json(res, 200, {
-      userId: session.userId,
-      role: session.role,
-      permissions: session.permissions || [],
-      permissionsExplicit: Boolean(session.permissionsExplicit),
-    });
-  }
-
-  // ── Permissions (set) ─────────────────────────────────────────────────────
-  if (req.method === "POST" && url.pathname === "/api/permissions") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
-    const body = await readBody(req);
-    const db = readDb();
-    const now = new Date().toISOString();
-    const previous = db.user_permissions
-      .filter((p) => p.user_id === body.userId && p.can_access)
-      .map((p) => p.permission_key);
-    const requestedPermissions = sanitizePermissions(body.permissions || []);
-    db.user_permissions = db.user_permissions.filter((p) => p.user_id !== body.userId);
-    requestedPermissions.forEach((permissionKey) => {
-      db.user_permissions.push({ id: crypto.randomUUID(), user_id: body.userId, permission_key: permissionKey, can_access: true, created_at: now, updated_at: now });
-    });
-    const member = db.members.find(
-      (m) => m.id === body.userId || normalizeEmail(m.email) === normalizeEmail(body.userEmail || "")
-    );
-    if (member) { member.permissions = requestedPermissions; member.permissionsExplicit = true; }
-    writeAudit(db, "Changed member permissions", session, "Setup - Member access",
-      body.userId || body.userEmail || "",
-      `Previous: ${previous.join(", ") || "none"} | New: ${requestedPermissions.join(", ") || "none"}`);
-    writeDb(db);
-    return json(res, 200, { ok: true });
-  }
-
-  // ── First-time setup routes ───────────────────────────────────────────────
-  // Permanently disabled once any member with a password_hash exists.
-
-  if (req.method === "GET" && url.pathname === "/api/setup/status") {
-    const db = readDb();
-    const hasUsers = db.members && db.members.some((m) => m.password_hash);
-    return json(res, 200, { setupRequired: !hasUsers });
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/setup/create-admin") {
-    const db = readDb();
-    const hasUsers = db.members && db.members.some((m) => m.password_hash);
-    if (hasUsers) return json(res, 403, { error: "Setup has already been completed." });
-
-    const body = await readBody(req);
-    const email = normalizeEmail(body.email);
-    const name  = String(body.name || "").trim();
-    const password = String(body.password || "");
-    if (!email || !name || !password) return json(res, 400, { error: "Name, email and password are required." });
-
-    let password_hash;
-    try { password_hash = hashPassword(password); }
-    catch (error) { return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] }); }
-
-    const now = new Date().toISOString();
-    const id  = email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    const member = {
-      id, name, email,
-      role: "Super Admin", access: "Super Admin",
-      permissions: permissionKeys, permissionsExplicit: true,
-      inviteStatus: "Active",
-      password_hash, passwordAlgorithm: "bcrypt",
-      mustChangePassword: false, failedLoginAttempts: 0, lockedUntil: null,
-      mfaEnabled: false, mfaRequired: false,
-      created_at: now, updated_at: now,
-    };
-    db.members.push(member);
-    writeAudit(db, "Created first Super Admin via setup route", member, "Authentication", email, "One-time production setup");
-    writeDb(db);
-    console.log(`[setup] Super Admin created: ${email}`);
-    return json(res, 200, { ok: true, email });
-  }
-
-  return json(res, 404, { error: "API route not found" });
-}
-
-// ── HTTP server ───────────────────────────────────────────────────────────────
-
-const server = http.createServer(async (req, res) => {
-  try {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    if (url.pathname.startsWith("/api/")) return await handleApi(req, res);
-    if (url.pathname.startsWith("/hubs/")) return serveIndex(res);
-    if (url.pathname === "/setup") return serveSetup(res);
-    return serveStatic(req, res);
-  } catch (error) {
-    console.error("[server error]", error);
-    json(res, 500, { error: "Server error" });
-  }
+if(financeImportBtn)financeImportBtn.addEventListener("click",()=>{if(financeImportPanel)financeImportPanel.style.display=financeImportPanel.style.display==="none"?"":"none";});
+if(financeCsvImportCancel)financeCsvImportCancel.addEventListener("click",()=>{if(financeImportPanel)financeImportPanel.style.display="none";if(financeCsvStatus)financeCsvStatus.textContent="";});
+if(financeCsvImportSubmit)financeCsvImportSubmit.addEventListener("click",async()=>{
+  const file=financeCsvFile&&financeCsvFile.files&&financeCsvFile.files[0];
+  if(!file){if(financeCsvStatus)financeCsvStatus.textContent="Please select a CSV file.";return;}
+  const text=await file.text();const lines=text.trim().split("\n");
+  if(lines.length<2){if(financeCsvStatus)financeCsvStatus.textContent="CSV appears empty.";return;}
+  const headers=lines[0].split(",").map((h)=>h.trim().replace(/^"|"$/g,"").toLowerCase().replace(/\s+/g,"_"));
+  const rows=lines.slice(1).filter(Boolean).map((line)=>{const vals=line.split(",").map((v)=>v.trim().replace(/^"|"$/g,""));return Object.fromEntries(headers.map((h,i)=>[h,vals[i]||""]));});
+  if(financeCsvStatus)financeCsvStatus.textContent="Parsed "+rows.length+" rows. Uploading…";
+  try{const res=await fetch("/api/finance/import",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({rows})});
+  const data=await res.json();if(!res.ok){if(financeCsvStatus)financeCsvStatus.textContent=data.error||"Import failed";return;}
+  if(financeCsvStatus)financeCsvStatus.textContent="✓ Imported "+data.imported+" records."+(data.errors&&data.errors.length?" Errors: "+data.errors.join("; "):"");
+  if(financeCsvFile)financeCsvFile.value="";await loadFinanceBalances();}
+  catch(err){if(financeCsvStatus)financeCsvStatus.textContent="Network error.";}
 });
-
-server.listen(port, () => {
-  ensureDb();
-  console.log(`\n✓ Interactive Security Hub running at http://localhost:${port}`);
-  console.log(`  NODE_ENV: ${process.env.NODE_ENV || "development"}`);
+if(financeExportBtn)financeExportBtn.addEventListener("click",()=>{
+  if(!financeBalances.length){alert("No records to export.");return;}
+  const headers=["client_name","account_number","current","days_30","days_60","days_90","days_120_plus","total","notes","last_updated"];
+  const csvRows=financeBalances.map((r)=>headers.map((h)=>'"'+String(r[h]!==undefined?r[h]:"").replace(/"/g,'""')+'"').join(","));
+  const csv=[headers.join(",")].concat(csvRows).join("\n");
+  const blob=new Blob([csv],{type:"text/csv"});
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+  a.download="age-analysis-"+new Date().toISOString().slice(0,10)+".csv";a.click();
 });
+(function(){const section=document.querySelector("#finance-section");if(!section)return;
+new MutationObserver(function(){if(!section.hidden)loadFinanceBalances();}).observe(section,{attributes:true,attributeFilter:["hidden"]});})();
+"""
+
+with open('app.js', 'w') as f: f.write(js)
+print('✓ app.js')
+
+# ── 5. Commit ─────────────────────────────────────────────────────────────────
+subprocess.run(['git', 'add', 'server.js', 'index.html', 'app.js', 'styles.css'], check=True)
+subprocess.run(['git', 'commit', '-m', 'feat: finance age analysis + scroll fix + auth fixes'], check=True)
+subprocess.run(['git', 'push'], check=True)
+print('\n✅ All done — Render will redeploy in ~60 seconds.')
