@@ -1393,3 +1393,30 @@ p.empty-state { display: block; padding: 24px; text-align: center; color: var(--
   .guarding-info-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .guarding-lower-grid { grid-template-columns: 1fr 72mm; }
 }
+/* ── Sales request list: horizontal scroll ──────────────────────────────────
+   Add these rules to the END of styles.css.
+   They make the request table scrollable when it overflows on smaller screens,
+   ensuring the STATUS column is always reachable.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+#salesRequestList {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch; /* smooth scroll on iOS */
+}
+
+/* Give the rendered rows enough minimum width so all 7 columns are visible
+   before the scrollbar kicks in. Adjust the value if your row template is wider. */
+#salesRequestList > * {
+  min-width: 860px;
+}
+
+/* Also apply to the approvals list and quote library list which use the
+   same approval-list class and can have the same clipping issue */
+.approval-list {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.approval-list > * {
+  min-width: 860px;
+}
