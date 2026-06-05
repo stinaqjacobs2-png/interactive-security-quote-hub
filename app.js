@@ -1805,7 +1805,10 @@ function hasActiveSuperAdminMember() {
 }
 
 function isBootstrapSuperAdmin() {
-  return isSignedIn() && !hasActiveSuperAdminMember();
+  if (!isSignedIn()) return false;
+  const email = normalizeEmail(currentUser());
+  const signedInMember = storageList(membersStorageKey).find((member) => normalizeEmail(member.email) === email);
+  return !signedInMember || !hasActiveSuperAdminMember();
 }
 
 const companyHubs = [
@@ -2219,6 +2222,7 @@ function memberPermissions(member = currentMember()) {
 
 function hasPermission(permissionKey, member = currentMember()) {
   if (!isSignedIn()) return false;
+  if (isBootstrapSuperAdmin()) return true;
   const role = normalizeRole(member.access || member.role || "Read Only");
   if (["Super Admin", "Admin"].includes(role)) return true;
   const permissions = memberPermissions(member);
@@ -2229,7 +2233,7 @@ function hasPermission(permissionKey, member = currentMember()) {
 
 function canAccess(section) {
   if (!isSignedIn()) return false;
-  if (section === "portal") return hasPermission("quotation_hub");
+  if (section === "portal") return true;
   if (section === "settings") return ["setup", "supplier_prices", "member_access_management"].some((permission) => hasPermission(permission));
   const permissionKey = permissionKeyForSection(section);
   return hasPermission(permissionKey);
