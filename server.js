@@ -16,6 +16,7 @@ const LOCKOUT_MINUTES = Number(process.env.LOCKOUT_MINUTES || 30);
 const SESSION_IDLE_MINUTES = Number(process.env.SESSION_IDLE_MINUTES || 30);
 const SESSION_ABSOLUTE_HOURS = Number(process.env.SESSION_ABSOLUTE_HOURS || 8);
 const PASSWORD_RESET_MINUTES = Number(process.env.PASSWORD_RESET_MINUTES || 30);
+const PASSWORD_POLICY_MESSAGE = "Password must be at least 5 characters long and contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special character.";
 
 const permissionKeys = [
   "dashboard",
@@ -201,18 +202,18 @@ function publicUser(member) {
 
 function passwordPolicyErrors(password = "") {
   const errors = [];
-  if (password.length < 12)            errors.push("at least 12 characters");
-  if (!/[A-Z]/.test(password))         errors.push("one uppercase letter");
-  if (!/[a-z]/.test(password))         errors.push("one lowercase letter");
-  if (!/[0-9]/.test(password))         errors.push("one number");
-  if (!/[^A-Za-z0-9]/.test(password))  errors.push("one special character");
+  if (password.length < 5)             errors.push("at least 5 characters");
+  if (!/[A-Z]/.test(password))         errors.push("at least 1 uppercase letter");
+  if (!/[a-z]/.test(password))         errors.push("at least 1 lowercase letter");
+  if (!/[0-9]/.test(password))         errors.push("at least 1 number");
+  if (!/[^A-Za-z0-9]/.test(password))  errors.push("at least 1 special character");
   return errors;
 }
 
 function assertStrongPassword(password) {
   const errors = passwordPolicyErrors(password);
   if (errors.length) {
-    const error = new Error(`Password must contain ${errors.join(", ")}.`);
+    const error = new Error(PASSWORD_POLICY_MESSAGE);
     error.code = "WEAK_PASSWORD";
     error.details = errors;
     throw error;
@@ -562,7 +563,7 @@ function serveSetup(res) {
     </label>
     <label><span>Password</span>
       <input id="password" type="password" required autocomplete="new-password"/>
-      <div class="hint">Min 12 chars &middot; uppercase &middot; lowercase &middot; number &middot; special character</div>
+      <div class="hint">Password must be at least 5 characters long and contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special character.</div>
     </label>
     <label><span>Confirm password</span>
       <input id="confirm" type="password" required autocomplete="new-password"/>

@@ -454,6 +454,7 @@ const permissionDefinitions = [
 ];
 
 const platformRoles = ["Super Admin", "Admin", "Quotation Builder", "Sales Representative", "Read Only"];
+const passwordPolicyMessage = "Password must be at least 5 characters long and contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special character.";
 
 function normalizeRole(role = "") {
   const value = String(role || "").trim();
@@ -2033,11 +2034,11 @@ function normalizeEmail(value = "") {
 
 function passwordPolicyErrors(password = "") {
   return [
-    [password.length >= 12, "at least 12 characters"],
-    [/[A-Z]/.test(password), "one uppercase letter"],
-    [/[a-z]/.test(password), "one lowercase letter"],
-    [/[0-9]/.test(password), "one number"],
-    [/[^A-Za-z0-9]/.test(password), "one special character"],
+    [password.length >= 5, "at least 5 characters"],
+    [/[A-Z]/.test(password), "at least 1 uppercase letter"],
+    [/[a-z]/.test(password), "at least 1 lowercase letter"],
+    [/[0-9]/.test(password), "at least 1 number"],
+    [/[^A-Za-z0-9]/.test(password), "at least 1 special character"],
   ].filter(([passed]) => !passed).map(([, message]) => message);
 }
 
@@ -2047,7 +2048,7 @@ function isStrongPassword(password = "") {
 
 function strongPasswordMessage(password = "") {
   const errors = passwordPolicyErrors(password);
-  return errors.length ? `Password must contain ${errors.join(", ")}.` : "";
+  return errors.length ? passwordPolicyMessage : "";
 }
 
 function generatePassword() {
@@ -9317,7 +9318,7 @@ loginForm.addEventListener("submit", async (event) => {
     return;
   }
   if (user.mustChangePassword) {
-    const newPassword = prompt("Please create a new password before continuing. It must be at least 12 characters and include uppercase, lowercase, a number, and a special character.");
+    const newPassword = prompt(`Please create a new password before continuing. ${passwordPolicyMessage}`);
     if (!newPassword || !isStrongPassword(newPassword.trim())) {
       alert(strongPasswordMessage(newPassword || ""));
       clearSharedSession();
@@ -9360,7 +9361,7 @@ forgotPassword?.addEventListener("click", async () => {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || "Password reset could not be requested.");
     if (data.resetToken) {
-      const newPassword = prompt("Development reset token was created. Enter a new strong password for this account:");
+      const newPassword = prompt(`Development reset token was created. Enter a new password for this account. ${passwordPolicyMessage}`);
       if (!newPassword || !isStrongPassword(newPassword.trim())) {
         alert(strongPasswordMessage(newPassword || ""));
         return;
