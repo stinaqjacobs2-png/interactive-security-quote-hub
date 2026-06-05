@@ -1797,6 +1797,17 @@ function saveStorageList(key, list) {
   localStorage.setItem(key, JSON.stringify(list));
 }
 
+function hasActiveSuperAdminMember() {
+  return storageList(membersStorageKey).some((member) => (
+    normalizeRole(member.access || member.role) === "Super Admin"
+    && !["Disabled", "Archived"].includes(member.inviteStatus || member.status || "")
+  ));
+}
+
+function isBootstrapSuperAdmin() {
+  return isSignedIn() && !hasActiveSuperAdminMember();
+}
+
 const companyHubs = [
   {
     id: "quotation-hub",
@@ -2154,6 +2165,17 @@ function currentMember() {
   if (member) {
     const role = normalizeRole(member.access || member.role || "Read Only");
     return { ...member, access: role, role };
+  }
+  if (isBootstrapSuperAdmin()) {
+    return {
+      id: session?.userId || slugify(email),
+      name: session?.name || displayNameFromUser(email),
+      email,
+      access: "Super Admin",
+      role: "Super Admin",
+      inviteStatus: "Bootstrap",
+      permissions: permissionDefinitions.map((permission) => permission.key),
+    };
   }
   const role = normalizeRole(session?.role || session?.access || "Read Only");
   return {
@@ -4604,8 +4626,25 @@ function renderGuardingPriceManagement() {
     });
 }
 
+function renderSetupBootstrapNotice() {
+  const section = document.querySelector("#settings-section");
+  if (!section) return;
+  section.querySelector("#setupBootstrapNotice")?.remove();
+  if (!isBootstrapSuperAdmin()) return;
+  const notice = document.createElement("div");
+  notice.id = "setupBootstrapNotice";
+  notice.className = "bootstrap-admin-notice";
+  notice.innerHTML = `
+    <strong>First setup access is active</strong>
+    <p>No active Super Admin exists yet, so your signed-in account has temporary setup access. Add yourself as a Super Admin to make this permanent.</p>
+    <button class="primary-btn" type="button" data-bootstrap-add-self>Add me as Super Admin</button>
+  `;
+  section.querySelector("p")?.insertAdjacentElement("afterend", notice);
+}
+
 function renderSetup() {
   if (!canAccess("settings")) return;
+  renderSetupBootstrapNotice();
   const settings = quotationSettings();
   profitDeductionPercent.value = settings.profitDeductionPercent;
   commissionPercent.value = settings.commissionPercent;
@@ -8919,18 +8958,21 @@ memberForm.addEventListener("submit", async (event) => {
     payload.inviteStatus = "Invite Sent";
     payload.inviteSentAt = new Date().toISOString();
   }
-  try {
-    const response = await fetch("/api/members", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ ...payload, role: payload.access, temporaryPassword }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || "Member could not be saved securely.");
-  } catch (error) {
-    alert(error.message || "Member could not be saved securely.");
-    return;
+  const isBootstrapSave = isBootstrapSuperAdmin() && selectedRole === "Super Admin";
+  if (!isBootstrapSave) {
+    try {
+      const response = await fetch("/api/members", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ ...payload, role: payload.access, temporaryPassword }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Member could not be saved securely.");
+    } catch (error) {
+      alert(error.message || "Member could not be saved securely.");
+      return;
+    }
   }
   const existingIndex = members.findIndex((member) => member.id === id);
   if (existingIndex >= 0) members[existingIndex] = payload;
@@ -8949,6 +8991,20 @@ memberForm.addEventListener("submit", async (event) => {
   writeAudit("Updated member access", payload.email);
   applyPermissions();
   renderSetup();
+});
+
+document.addEventListener("click", (event) => {
+  if (!event.target.closest("[data-bootstrap-add-self]")) return;
+  if (!isBootstrapSuperAdmin()) return;
+  const session = currentSession();
+  const email = normalizeEmail(currentUser());
+  memberName.value = session?.name || displayNameFromUser(email);
+  memberEmail.value = email;
+  memberAccess.value = "Super Admin";
+  memberInviteStatus.value = "Active";
+  memberTempPassword.value = "";
+  renderPermissionChecklist(roleDefaultPermissions["Super Admin"] || []);
+  memberName.focus();
 });
 
 memberList.addEventListener("click", async (event) => {
