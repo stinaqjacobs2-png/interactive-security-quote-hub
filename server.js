@@ -515,8 +515,8 @@ function serveStatic(req, res) {
 
 function serveSetup(res) {
   const db = readDb();
-  const hasUsers = db.members && db.members.some((m) => m.password_hash);
-  if (hasUsers) { res.writeHead(302, { Location: "/" }); res.end(); return; }
+  const hasSuperAdmin = db.members && db.members.some((m) => m.password_hash && normalizeRole(m.role || m.access) === "Super Admin");
+  if (hasSuperAdmin) { res.writeHead(302, { Location: "/" }); res.end(); return; }
 
   const html = `<!doctype html>
 <html lang="en">
@@ -552,8 +552,8 @@ function serveSetup(res) {
 <div class="card">
   <span class="badge">First-time setup</span>
   <h1>Create Super Admin</h1>
-  <p class="sub">This page is only accessible while no users exist in the database.
-  It permanently disables itself as soon as the first account is created.</p>
+  <p class="sub">This page is only accessible while no Super Admin exists in the database.
+  It permanently disables itself as soon as the first Super Admin account is created.</p>
   <form id="form">
     <label><span>Full name</span>
       <input id="name" type="text" placeholder="Jane Smith" required autocomplete="name"/>
@@ -1165,14 +1165,14 @@ async function handleApi(req, res) {
 
   if (req.method === "GET" && url.pathname === "/api/setup/status") {
     const db = readDb();
-    const hasUsers = db.members && db.members.some((m) => m.password_hash);
-    return json(res, 200, { setupRequired: !hasUsers });
+    const hasSuperAdmin = db.members && db.members.some((m) => m.password_hash && normalizeRole(m.role || m.access) === "Super Admin");
+    return json(res, 200, { setupRequired: !hasSuperAdmin });
   }
 
   if (req.method === "POST" && url.pathname === "/api/setup/create-admin") {
     const db = readDb();
-    const hasUsers = db.members && db.members.some((m) => m.password_hash);
-    if (hasUsers) return json(res, 403, { error: "Setup has already been completed." });
+    const hasSuperAdmin = db.members && db.members.some((m) => m.password_hash && normalizeRole(m.role || m.access) === "Super Admin");
+    if (hasSuperAdmin) return json(res, 403, { error: "Setup has already been completed." });
 
     const body = await readBody(req);
     const email = normalizeEmail(body.email);

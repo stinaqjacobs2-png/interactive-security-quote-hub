@@ -237,6 +237,7 @@ const loginScreen = document.querySelector("#loginScreen");
 const loginForm = document.querySelector("#loginForm");
 const loginEmail = document.querySelector("#loginEmail");
 const loginPassword = document.querySelector("#loginPassword");
+const firstSetupButton = document.querySelector("#firstSetupButton");
 const forgotPassword = document.querySelector("#forgotPassword");
 const sectionEyebrow = document.querySelector("#sectionEyebrow");
 const sectionTitle = document.querySelector("#sectionTitle");
@@ -1757,6 +1758,22 @@ async function changeBackendPassword(currentPassword, newPassword) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || "Password could not be changed.");
   return data;
+}
+
+async function refreshFirstSetupAccess() {
+  if (!firstSetupButton || window.location.protocol === "file:") return;
+  try {
+    const response = await fetch("/api/setup/status", { credentials: "include" });
+    const data = await response.json().catch(() => ({}));
+    firstSetupButton.hidden = !data.setupRequired;
+    if (data.setupRequired) {
+      firstSetupButton.onclick = () => {
+        window.location.href = "/setup";
+      };
+    }
+  } catch {
+    firstSetupButton.hidden = true;
+  }
 }
 
 function currentUserName() {
@@ -10106,9 +10123,19 @@ loginForm.addEventListener("submit", async (event) => {
   }
   saveSharedSessionObject(user);
   const member = memberByEmail(email);
-  if (member) {
-    saveMemberRecord({ ...member, ...user, access: user.role, hasLoggedIn: true, inviteStatus: "Active", passwordHash: undefined, legacyPasswordHash: member.legacyPasswordHash });
-  }
+  saveMemberRecord({
+    ...(member || {}),
+    id: user.userId || member?.id || slugify(email),
+    name: user.name || member?.name || displayNameFromUser(email),
+    email,
+    access: user.role,
+    role: user.role,
+    permissions: Array.isArray(user.permissions) ? user.permissions : member?.permissions || [],
+    hasLoggedIn: true,
+    inviteStatus: "Active",
+    passwordHash: undefined,
+    legacyPasswordHash: member?.legacyPasswordHash,
+  });
   loginScreen.hidden = true;
   writeAudit("Signed in", email);
   applyPermissions();
@@ -10601,6 +10628,7 @@ portalHubGrid.addEventListener("change", async (event) => {
 });
 
 seedPortalTables();
+refreshFirstSetupAccess();
 migrateSalesRequestStatuses();
 renderPermissionChecklist(roleDefaultPermissions[memberAccess.value] || []);
 renderRequestSalesRepOptions();
