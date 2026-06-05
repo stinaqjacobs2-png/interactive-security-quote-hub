@@ -60,6 +60,7 @@ const hubPermissionsStorageKey = "interactiveSecurityHubPermissions";
 const userHubAccessStorageKey = "interactiveSecurityUserHubAccess";
 const hubActivitySummaryStorageKey = "interactiveSecurityHubActivitySummary";
 const userPermissionsStorageKey = "interactiveSecurityUserPermissions";
+const permissionHistoryStorageKey = "interactiveSecurityPermissionHistory";
 const quotationSettingsStorageKey = "interactiveSecurityQuotationSettings";
 const salesRequestsStorageKey = "interactiveSecuritySalesQuotationRequests";
 const projectTimelineStorageKey = "interactiveSecurityProjectTimelines";
@@ -1825,6 +1826,15 @@ const companyHubs = [
     features: ["Ageing", "Debtors", "Balances"],
   },
   {
+    id: "administration-governance",
+    name: "Administration & Governance",
+    slug: "administration-governance",
+    description: "Central management of users, hub access, security monitoring, and full system audit activity.",
+    icon: "shield",
+    status: "active",
+    features: ["Users", "Permissions", "Audit"],
+  },
+  {
     id: "fleet",
     name: "Fleet",
     slug: "fleet",
@@ -1976,6 +1986,9 @@ function seedPortalTables() {
   }
   if (!localStorage.getItem(userPermissionsStorageKey)) {
     saveStorageList(userPermissionsStorageKey, []);
+  }
+  if (!localStorage.getItem(permissionHistoryStorageKey)) {
+    saveStorageList(permissionHistoryStorageKey, []);
   }
   if (!localStorage.getItem(quotationSettingsStorageKey)) {
     localStorage.setItem(quotationSettingsStorageKey, JSON.stringify({ profitDeductionPercent: 16.08, commissionPercent: 4 }));
@@ -2257,9 +2270,11 @@ function writeAudit(action, detail, module = moduleFromAction(action), reference
     notes,
     user: currentUser(),
     userName: currentUserName(),
+    ipAddress: "Local prototype / browser session",
+    device: navigator.userAgent || "Unknown device",
     timestamp: new Date().toISOString(),
   });
-  localStorage.setItem(auditStorageKey, JSON.stringify(audit.slice(0, 200)));
+  localStorage.setItem(auditStorageKey, JSON.stringify(audit));
   if (document.body.dataset.activeSection === "audit") renderAudit();
 }
 
@@ -3015,6 +3030,7 @@ function hasHubAccess(hub) {
       permission.hubSlug === hub.slug && permission.accessLevel === member.access
     ));
   }
+  if (hub.slug === "administration-governance") return ["Admin", "Super Admin"].includes(member.access);
   return storageList(hubPermissionsStorageKey).some((permission) => (
     permission.hubSlug === hub.slug && permission.accessLevel === member.access
   ));
@@ -3079,6 +3095,20 @@ const financeTabs = [
   { key: "audit", label: "Audit Trail" },
 ];
 
+const governanceTabs = [
+  { key: "dashboard", label: "System Dashboard" },
+  { key: "users", label: "User Access Management" },
+  { key: "matrix", label: "Hub Access Matrix" },
+  { key: "audit", label: "Full System Audit Trail" },
+  { key: "search", label: "Audit Search Centre" },
+  { key: "reports", label: "Audit Reports" },
+  { key: "security", label: "Login & Security Monitoring" },
+  { key: "history", label: "Permission History" },
+];
+
+let activeGovernanceTab = "dashboard";
+let governanceAuditFilters = { user: "", from: "", to: "", hub: "", action: "", search: "" };
+
 const financeStorageKeys = {
   opening: `${financeStoragePrefix}:openingBalances`,
   closing: `${financeStoragePrefix}:closingBalances`,
@@ -3087,6 +3117,7 @@ const financeStorageKeys = {
   bank: `${financeStoragePrefix}:bankBalances`,
   setup: `${financeStoragePrefix}:setup`,
   openingMeta: `${financeStoragePrefix}:openingMeta`,
+  openingAccounts: `${financeStoragePrefix}:openingAccounts`,
 };
 
 let activeFinanceTab = "dashboard";
@@ -3179,31 +3210,142 @@ function financeOpeningRowKey(row = {}) {
   return `${row.accountCode || ""}|${row.accountName || row.partyName || ""}|${row.rowOrder ?? ""}`;
 }
 
-function financeOpeningBaseRows() {
+function financeOpeningTemplateAccounts() {
+  const accounts = [];
+  let group = "OPERATING COMPANIES";
+  financeOpeningTemplateRows.forEach((row, index) => {
+    if (row.type === "section") {
+      group = row.name;
+      return;
+    }
+    if (row.type !== "account") return;
+    accounts.push({
+      id: `opening-account-${slugify(group)}-${slugify(row.name)}-${index}`,
+      name: row.name,
+      group,
+      accountCode: slugify(row.name).toUpperCase(),
+      branch: "",
+      rowOrder: index,
+      status: "active",
+      archivedAt: "",
+    });
+  });
+  return accounts;
+}
+
+function saveFinanceOpeningAccounts(accounts) {
+  saveStorageList(financeStorageKeys.openingAccounts, accounts);
+}
+
+function financeOpeningAccounts() {
+  const saved = storageList(financeStorageKeys.openingAccounts, []);
+  const templateAccounts = financeOpeningTemplateAccounts();
+  const accounts = saved.length ? [...saved] : [...templateAccounts];
+  const known = new Set(accounts.map((account) => `${account.group || ""}|${account.name || ""}`.toLowerCase()));
+  templateAccounts.forEach((account) => {
+    const key = `${account.group || ""}|${account.name || ""}`.toLowerCase();
+    if (!known.has(key)) {
+      accounts.push(account);
+      known.add(key);
+    }
+  });
+  financeRows("opening").forEach((row) => {
+    if ((row.rowType || "account") !== "account") return;
+    const name = row.accountName || row.partyName || row.accountCode || "";
+    if (!name) return;
+    const group = row.group || row.sectionName || row.branch || "OPERATING COMPANIES";
+    const key = `${group}|${name}`.toLowerCase();
+    if (known.has(key)) return;
+    accounts.push({
+      id: `opening-account-imported-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      name,
+      group,
+      accountCode: row.accountCode || slugify(name).toUpperCase(),
+      branch: row.branch || "",
+      rowOrder: Number(row.rowOrder ?? accounts.length + 1000),
+      status: "active",
+      archivedAt: "",
+    });
+    known.add(key);
+  });
+  if (!saved.length) saveFinanceOpeningAccounts(accounts);
+  return accounts.sort((a, b) => String(a.group || "").localeCompare(String(b.group || "")) || Number(a.rowOrder ?? 9999) - Number(b.rowOrder ?? 9999));
+}
+
+function financeOpeningGroupNames() {
+  const names = financeOpeningTemplateRows.filter((row) => row.type === "section").map((row) => row.name);
+  financeOpeningAccounts().forEach((account) => {
+    if (account.group && !names.includes(account.group)) names.push(account.group);
+  });
+  return names;
+}
+
+function financeCanManageOpeningAccounts() {
+  return ["Admin", "Super Admin"].includes(currentMember().access) || hasPermission("finance_age_analysis");
+}
+
+function financeOpeningBaseRows(includeArchived = financeOpeningView.mode !== "current") {
   const saved = financeRows("opening");
-  const base = financeOpeningTemplateRows.map((row, index) => ({
-    ...row,
-    accountCode: row.type === "account" ? slugify(row.name).toUpperCase() : "",
-    branch: "",
-    rowOrder: index,
-  }));
-  const known = new Set(base.map((row) => row.name.toLowerCase()));
+  const base = [];
+  const accounts = financeOpeningAccounts();
+  financeOpeningGroupNames().forEach((groupName, groupIndex) => {
+    const groupAccounts = accounts.filter((account) => account.group === groupName && (includeArchived || account.status !== "archived"));
+    if (!groupAccounts.length && !includeArchived) return;
+    base.push({ name: groupName, type: "section", accountCode: "", branch: "", rowOrder: groupIndex * 1000 });
+    groupAccounts.forEach((account) => {
+      base.push({
+        id: account.id,
+        name: account.name,
+        type: "account",
+        accountCode: account.accountCode || slugify(account.name).toUpperCase(),
+        branch: account.branch || "",
+        rowOrder: Number(account.rowOrder ?? base.length),
+        status: account.status || "active",
+        group: account.group,
+      });
+    });
+  });
+  const known = new Set(base.map((row) => `${row.group || ""}|${row.name}`.toLowerCase()));
   saved
     .slice()
     .sort((a, b) => Number(a.rowOrder ?? 9999) - Number(b.rowOrder ?? 9999))
     .forEach((row) => {
       const name = row.accountName || row.partyName || row.accountCode || "";
-      if (!name || known.has(name.toLowerCase())) return;
-      known.add(name.toLowerCase());
+      const group = row.group || row.sectionName || "OPERATING COMPANIES";
+      const key = `${group}|${name}`.toLowerCase();
+      if (!name || known.has(key)) return;
+      const registered = accounts.find((account) => account.name.toLowerCase() === name.toLowerCase() && account.group.toLowerCase() === group.toLowerCase());
+      if (registered?.status === "archived" && !includeArchived) return;
+      known.add(key);
       base.push({
         name,
         type: row.rowType || "account",
         accountCode: row.accountCode || slugify(name).toUpperCase(),
         branch: row.branch || "",
         rowOrder: Number(row.rowOrder ?? base.length),
+        group,
       });
     });
   return base;
+}
+
+function financeOpeningGroups() {
+  const groups = [];
+  let currentGroup = null;
+  financeOpeningBaseRows().forEach((row) => {
+    if (row.type === "section") {
+      currentGroup = { name: row.name, rowOrder: row.rowOrder, accounts: [] };
+      groups.push(currentGroup);
+      return;
+    }
+    if (row.type !== "account") return;
+    if (!currentGroup) {
+      currentGroup = { name: "OPERATING COMPANIES", rowOrder: 0, accounts: [] };
+      groups.push(currentGroup);
+    }
+    currentGroup.accounts.push(row);
+  });
+  return groups;
 }
 
 function latestFinanceOpeningDateBefore(dateValue) {
@@ -3217,14 +3359,19 @@ function latestFinanceOpeningDateBefore(dateValue) {
 function ensureFinanceDailyOpeningBalances() {
   const today = todayInputValue();
   const rows = financeRows("opening");
-  if (rows.some((row) => row.openingDate === today)) return;
-
   const previousDate = latestFinanceOpeningDateBefore(today);
   const previousRows = rows.filter((row) => row.openingDate === previousDate);
   const previousByKey = Object.fromEntries(previousRows.map((row) => [financeOpeningRowKey(row), row]));
   const createdAt = new Date().toISOString();
-  const generated = financeOpeningBaseRows().map((base) => {
+  const todayRows = rows.filter((row) => row.openingDate === today);
+  const todayKeys = new Set(todayRows.map((row) => financeOpeningRowKey(row)));
+  const generated = financeOpeningBaseRows(false).filter((base) => {
+    if (base.type !== "account") return false;
+    return !todayKeys.has(`${base.accountCode || ""}|${base.name}|${base.rowOrder ?? ""}`)
+      && !todayRows.some((row) => (row.accountName || row.partyName) === base.name && Number(row.rowOrder ?? -1) === Number(base.rowOrder ?? -2));
+  }).map((base) => {
     const previous = previousByKey[`${base.accountCode || ""}|${base.name}|${base.rowOrder ?? ""}`]
+      || previousRows.find((row) => Number(row.rowOrder ?? -1) === Number(base.rowOrder ?? -2) && (!base.accountCode || row.accountCode === base.accountCode))
       || previousRows.find((row) => (row.accountName || row.partyName) === base.name)
       || {};
     return {
@@ -3233,6 +3380,7 @@ function ensureFinanceDailyOpeningBalances() {
       accountName: base.name,
       partyName: base.name,
       branch: base.branch,
+      group: base.group || "",
       rowType: base.type,
       rowOrder: base.rowOrder,
       openingDate: today,
@@ -3243,6 +3391,7 @@ function ensureFinanceDailyOpeningBalances() {
       importedAt: createdAt,
     };
   });
+  if (!generated.length) return;
   saveFinanceRows("opening", [...rows, ...generated]);
   const meta = JSON.parse(localStorage.getItem(financeStorageKeys.openingMeta) || "{}");
   if (meta.lastDailyDate !== today) {
@@ -3265,13 +3414,202 @@ function financeOpeningVisibleDates() {
   return dates.includes(today) ? [today] : [today];
 }
 
-function renderFinanceOpeningBalances() {
+function financeOpeningPreviousDate(dateValue) {
+  return dateInputValue(addDays(dateValue, -1));
+}
+
+function financeOpeningDateGroups() {
+  return financeOpeningVisibleDates()
+    .slice()
+    .sort()
+    .map((date) => ({
+      date,
+      previousDate: financeOpeningPreviousDate(date),
+    }));
+}
+
+function financeOpeningRowRecord(base, date, allRows, byDateAndRow) {
+  return byDateAndRow.get(`${date}|${base.accountCode || ""}|${base.name}|${base.rowOrder ?? ""}`)
+    || allRows.find((row) => row.openingDate === date && Number(row.rowOrder ?? -1) === Number(base.rowOrder ?? -2) && (!base.accountCode || row.accountCode === base.accountCode))
+    || allRows.find((row) => row.openingDate === date && (row.accountName || row.partyName) === base.name && Number(row.rowOrder ?? -1) === Number(base.rowOrder ?? -2))
+    || allRows.find((row) => row.openingDate === date && (row.accountName || row.partyName) === base.name)
+    || {};
+}
+
+function financeOpeningCellValue(base, column, allRows, byDateAndRow) {
+  const record = financeOpeningRowRecord(base, column.date, allRows, byDateAndRow);
+  return financeNumber(record[column.field]);
+}
+
+function financeOpeningDisplayColumns(dateGroups) {
+  return dateGroups.flatMap((group) => [
+    { date: group.previousDate, field: "availableBalance", label: "AVAILABLE", role: "previous-available" },
+    { date: group.date, field: "openingBalance", label: "BALANCE", role: "today-balance" },
+    { date: group.date, field: "availableBalance", label: "AVAILABLE", role: "today-available" },
+  ]);
+}
+
+function financeOpeningAccountCell(base, column, allRows, byDateAndRow) {
+  const record = financeOpeningRowRecord(base, column.date, allRows, byDateAndRow);
+  const value = financeNumber(record[column.field]);
+  return `
+    <td class="finance-balanse-value finance-balanse-${escapeHtml(column.role)}">
+      <input class="finance-balance-input" type="number" step="0.01" value="${value}"
+        data-finance-opening-edit="${escapeHtml(record.id || "")}"
+        data-finance-opening-date="${escapeHtml(column.date)}"
+        data-finance-opening-name="${escapeHtml(base.name)}"
+        data-finance-opening-group="${escapeHtml(base.group || "")}"
+        data-finance-opening-code="${escapeHtml(base.accountCode || "")}"
+        data-finance-opening-row-order="${escapeHtml(String(base.rowOrder ?? ""))}"
+        data-finance-opening-field="${escapeHtml(column.field)}" />
+    </td>
+  `;
+}
+
+function financeOpeningCalculatedRow(label, accounts, columns, allRows, byDateAndRow, type = "total") {
+  return `
+    <tr class="finance-balanse-${escapeHtml(type)}">
+      <th>${escapeHtml(label)}</th>
+      ${columns.map((column) => {
+        const total = accounts.reduce((sum, account) => sum + financeOpeningCellValue(account, column, allRows, byDateAndRow), 0);
+        return `<td class="finance-balanse-value finance-balanse-${escapeHtml(column.role)}">${money.format(total)}</td>`;
+      }).join("")}
+    </tr>
+  `;
+}
+
+function financeOpeningExportRows() {
   ensureFinanceDailyOpeningBalances();
-  const dates = financeOpeningVisibleDates();
+  const dateGroups = financeOpeningDateGroups();
+  const columns = financeOpeningDisplayColumns(dateGroups);
   const allRows = financeRows("opening");
   const byDateAndRow = new Map(allRows.map((row) => [`${row.openingDate}|${financeOpeningRowKey(row)}`, row]));
-  const templateRows = financeOpeningBaseRows();
-  const dateColumnCount = Math.max(dates.length, 1) * 2;
+  const groups = financeOpeningGroups();
+  const allAccounts = groups.flatMap((group) => group.accounts);
+  const dateHeader = [""];
+  dateGroups.forEach((group) => dateHeader.push(financeOpeningDateLabel(group.previousDate), financeOpeningDateLabel(group.date), financeOpeningDateLabel(group.date)));
+  const typeHeader = ["NEDBANK", ...columns.map((column) => column.label)];
+  const rows = [dateHeader, typeHeader];
+  groups.forEach((group) => {
+    rows.push([group.name, ...columns.map(() => "")]);
+    group.accounts.forEach((account) => {
+      rows.push([
+        account.name,
+        ...columns.map((column) => financeOpeningCellValue(account, column, allRows, byDateAndRow).toFixed(2)),
+      ]);
+    });
+    rows.push([
+      "SUB TOTAL",
+      ...columns.map((column) => group.accounts.reduce((sum, account) => sum + financeOpeningCellValue(account, column, allRows, byDateAndRow), 0).toFixed(2)),
+    ]);
+  });
+  rows.push([
+    "GRAND TOTAL",
+    ...columns.map((column) => allAccounts.reduce((sum, account) => sum + financeOpeningCellValue(account, column, allRows, byDateAndRow), 0).toFixed(2)),
+  ]);
+  return rows;
+}
+
+function renderFinanceOpeningAccountManagement() {
+  if (!financeCanManageOpeningAccounts()) return "";
+  const accounts = financeOpeningAccounts();
+  const groups = financeOpeningGroupNames();
+  return `
+    <details class="finance-account-management" open>
+      <summary>Bank Account Management</summary>
+      <div class="finance-account-add-row">
+        <label>Account name<input id="financeNewOpeningAccountName" placeholder="New bank account name" /></label>
+        <label>Group
+          <select id="financeNewOpeningAccountGroup">
+            ${groups.map((group) => `<option value="${escapeHtml(group)}">${escapeHtml(group)}</option>`).join("")}
+          </select>
+        </label>
+        <label>New group, if needed<input id="financeNewOpeningAccountGroupCustom" placeholder="Optional future group name" /></label>
+        <button class="primary-btn" type="button" data-finance-opening-account-add>Add bank account</button>
+      </div>
+      <div class="finance-account-table">
+        <div class="finance-account-row finance-account-head">
+          <span>Account name</span>
+          <span>Group</span>
+          <span>Status</span>
+          <span>Actions</span>
+        </div>
+        ${accounts.map((account) => `
+          <div class="finance-account-row ${account.status === "archived" ? "archived" : ""}">
+            <span><input value="${escapeHtml(account.name)}" data-finance-opening-account-name="${escapeHtml(account.id)}" /></span>
+            <span>
+              <select data-finance-opening-account-group="${escapeHtml(account.id)}">
+                ${groups.map((group) => `<option value="${escapeHtml(group)}" ${group === account.group ? "selected" : ""}>${escapeHtml(group)}</option>`).join("")}
+              </select>
+            </span>
+            <span><mark>${escapeHtml(account.status === "archived" ? "Archived" : "Active")}</mark></span>
+            <span class="row-actions">
+              <button class="secondary-btn" type="button" data-finance-opening-account-save="${escapeHtml(account.id)}">Save</button>
+              ${account.status === "archived"
+                ? `<button class="secondary-btn" type="button" data-finance-opening-account-restore="${escapeHtml(account.id)}">Restore</button>`
+                : `<button class="danger-btn" type="button" data-finance-opening-account-archive="${escapeHtml(account.id)}">Archive</button>`}
+            </span>
+          </div>
+        `).join("")}
+      </div>
+      <p class="finance-note">Archived accounts are hidden from the current daily view, but their historical balances stay stored for reporting and date-range comparisons.</p>
+    </details>
+  `;
+}
+
+function addFinanceOpeningAccount() {
+  if (!financeCanManageOpeningAccounts()) return;
+  const name = document.querySelector("#financeNewOpeningAccountName")?.value.trim();
+  const selectedGroup = document.querySelector("#financeNewOpeningAccountGroup")?.value || "OPERATING COMPANIES";
+  const customGroup = document.querySelector("#financeNewOpeningAccountGroupCustom")?.value.trim();
+  const group = customGroup || selectedGroup;
+  if (!name) {
+    alert("Please enter a bank account name.");
+    return;
+  }
+  const accounts = financeOpeningAccounts();
+  if (accounts.some((account) => account.name.toLowerCase() === name.toLowerCase() && account.group.toLowerCase() === group.toLowerCase() && account.status !== "archived")) {
+    alert("This active bank account already exists in that group.");
+    return;
+  }
+  const nextOrder = Math.max(0, ...accounts.map((account) => Number(account.rowOrder || 0))) + 1;
+  accounts.push({
+    id: `opening-account-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    name,
+    group,
+    accountCode: slugify(name).toUpperCase(),
+    branch: "",
+    rowOrder: nextOrder,
+    status: "active",
+    archivedAt: "",
+  });
+  saveFinanceOpeningAccounts(accounts);
+  ensureFinanceDailyOpeningBalances();
+  financeAudit("Bank account added", name, `Added to ${group}`);
+  renderFinanceHub("opening");
+}
+
+function updateFinanceOpeningAccount(id, changes = {}) {
+  if (!financeCanManageOpeningAccounts()) return;
+  const accounts = financeOpeningAccounts();
+  const index = accounts.findIndex((account) => account.id === id);
+  if (index < 0) return;
+  const before = accounts[index];
+  accounts[index] = { ...before, ...changes, updatedAt: new Date().toISOString(), updatedBy: currentUserName() };
+  saveFinanceOpeningAccounts(accounts);
+  ensureFinanceDailyOpeningBalances();
+  financeAudit("Bank account updated", before.name, JSON.stringify({ before: { name: before.name, group: before.group, status: before.status }, after: { name: accounts[index].name, group: accounts[index].group, status: accounts[index].status } }));
+  renderFinanceHub("opening");
+}
+
+function renderFinanceOpeningBalances() {
+  ensureFinanceDailyOpeningBalances();
+  const dateGroups = financeOpeningDateGroups();
+  const columns = financeOpeningDisplayColumns(dateGroups);
+  const allRows = financeRows("opening");
+  const byDateAndRow = new Map(allRows.map((row) => [`${row.openingDate}|${financeOpeningRowKey(row)}`, row]));
+  const groups = financeOpeningGroups();
+  const allAccounts = groups.flatMap((group) => group.accounts);
   return `
     <section class="finance-card finance-balanse-card">
       <div class="panel-heading">
@@ -3291,41 +3629,35 @@ function renderFinanceOpeningBalances() {
         <button class="secondary-btn" data-finance-export="opening">Export to Excel</button>
         <button class="secondary-btn" data-finance-print="opening">Export to PDF</button>
       </div>
-      <p class="finance-note">Previous days are hidden from the main view by default, not deleted. The current opening balance date updates automatically each day.</p>
+      <p class="finance-note">Default view shows yesterday's available balance, today's balance, and today's available balance. Previous days remain stored and can be compared with the date filters.</p>
+      ${renderFinanceOpeningAccountManagement()}
       <div class="finance-balanse-table-wrap">
         <table class="finance-balanse-table">
           <thead>
             <tr>
               <th></th>
-              ${dates.map((date) => `<th colspan="2">${escapeHtml(financeOpeningDateLabel(date))}</th>`).join("")}
+              ${dateGroups.map((group) => `<th>${escapeHtml(financeOpeningDateLabel(group.previousDate))}</th><th colspan="2">${escapeHtml(financeOpeningDateLabel(group.date))}</th>`).join("")}
             </tr>
             <tr>
               <th>NEDBANK</th>
-              ${dates.map(() => `<th>BALANCE</th><th>AVAILABLE</th>`).join("")}
+              ${dateGroups.map(() => `<th>AVAILABLE</th><th>BALANCE</th><th>AVAILABLE</th>`).join("")}
             </tr>
           </thead>
           <tbody>
-            ${templateRows.map((base) => {
-              const isEditable = !["section", "total", "grand-total"].includes(base.type);
-              return `
-                <tr class="finance-balanse-${escapeHtml(base.type)}">
-                  <th>${escapeHtml(base.name)}</th>
-                  ${dates.map((date) => {
-                    const record = byDateAndRow.get(`${date}|${base.accountCode || ""}|${base.name}|${base.rowOrder ?? ""}`)
-                      || allRows.find((row) => row.openingDate === date && (row.accountName || row.partyName) === base.name)
-                      || {};
-                    const balance = financeNumber(record.openingBalance);
-                    const available = financeNumber(record.availableBalance);
-                    const balanceDisplay = base.type === "section" ? "" : money.format(balance);
-                    const availableDisplay = base.type === "section" ? "" : money.format(available);
-                    return `
-                      <td>${isEditable ? `<input class="finance-balance-input" type="number" step="0.01" value="${balance}" data-finance-opening-edit="${escapeHtml(record.id || "")}" data-finance-opening-date="${escapeHtml(date)}" data-finance-opening-name="${escapeHtml(base.name)}" data-finance-opening-field="openingBalance" />` : balanceDisplay}</td>
-                      <td>${isEditable ? `<input class="finance-balance-input" type="number" step="0.01" value="${available}" data-finance-opening-edit="${escapeHtml(record.id || "")}" data-finance-opening-date="${escapeHtml(date)}" data-finance-opening-name="${escapeHtml(base.name)}" data-finance-opening-field="availableBalance" />` : availableDisplay}</td>
-                    `;
-                  }).join("")}
+            ${groups.map((group) => `
+              <tr class="finance-balanse-section">
+                <th>${escapeHtml(group.name)}</th>
+                ${columns.map((column) => `<td class="finance-balanse-${escapeHtml(column.role)}"></td>`).join("")}
+              </tr>
+              ${group.accounts.map((account) => `
+                <tr class="finance-balanse-account">
+                  <th>${escapeHtml(account.name)}</th>
+                  ${columns.map((column) => financeOpeningAccountCell(account, column, allRows, byDateAndRow)).join("")}
                 </tr>
-              `;
-            }).join("")}
+              `).join("")}
+              ${financeOpeningCalculatedRow("SUB TOTAL", group.accounts, columns, allRows, byDateAndRow)}
+            `).join("")}
+            ${financeOpeningCalculatedRow("GRAND TOTAL", allAccounts, columns, allRows, byDateAndRow, "grand-total")}
           </tbody>
         </table>
       </div>
@@ -3464,6 +3796,13 @@ function financeRecordsForTable(type) {
 }
 
 function financeExport(type) {
+  if (type === "opening") {
+    const rows = financeOpeningExportRows();
+    const csv = rows.map((row) => row.map(csvEscape).join(",")).join("\n");
+    downloadBlobFile(new Blob([csv], { type: "text/csv;charset=utf-8" }), `finance-opening-balances-${todayInputValue()}.csv`);
+    financeAudit("Export generated", "Opening Balances", "Displayed BALANSE period exported to CSV");
+    return;
+  }
   const rows = financeRecordsForTable(type);
   const headers = Object.keys(rows[0] || { Empty: "" });
   const csv = [headers.map(csvEscape).join(","), ...rows.map((row) => headers.map((header) => csvEscape(row[header])).join(","))].join("\n");
@@ -3472,6 +3811,40 @@ function financeExport(type) {
 }
 
 function financePrintExport(type) {
+  if (type === "opening") {
+    const rows = financeOpeningExportRows();
+    const report = window.open("", "_blank", "noopener");
+    if (!report) return;
+    report.document.write(`
+      <html><head><title>Finance Opening Balances</title><style>
+        body{font-family:Arial,Helvetica,sans-serif;margin:18px;color:#111}
+        h1{margin:0 0 12px;font-size:18px}
+        table{width:100%;border-collapse:collapse;font-size:10.5px}
+        th,td{border:1px solid #000;padding:5px;text-align:right}
+        th:first-child,td:first-child{text-align:left;background:#ffff00;font-weight:700}
+        thead th{background:#ffff00;text-align:center;font-weight:800}
+        tbody tr:nth-child(1) td,tbody tr:nth-child(1) th{background:#ffd966;font-weight:800}
+        .subtotal th,.subtotal td{background:#9dc3e6;font-weight:800}
+        .grand th,.grand td{background:#1f4e79;color:#fff;font-weight:900}
+      </style></head><body>
+        <h1>Finance Balances and Age Analysis - Opening Balances</h1>
+        <table>
+          <thead><tr>${rows[0].map((cell) => `<th>${escapeHtml(cell)}</th>`).join("")}</tr><tr>${rows[1].map((cell) => `<th>${escapeHtml(cell)}</th>`).join("")}</tr></thead>
+          <tbody>
+            ${rows.slice(2).map((row) => {
+              const label = String(row[0] || "").toUpperCase();
+              const cls = label.includes("GRAND") ? "grand" : label.includes("SUB TOTAL") ? "subtotal" : "";
+              return `<tr class="${cls}">${row.map((cell, index) => `<td>${escapeHtml(index === 0 ? cell : money.format(financeNumber(cell)))}</td>`).join("")}</tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+        <script>window.onload=()=>window.print();</script>
+      </body></html>
+    `);
+    report.document.close();
+    financeAudit("Export generated", "Opening Balances", "Displayed BALANSE period exported to PDF/print");
+    return;
+  }
   const rows = financeRecordsForTable(type);
   const headers = Object.keys(rows[0] || { Empty: "" });
   const report = window.open("", "_blank", "noopener");
@@ -3676,6 +4049,336 @@ function renderFinanceHub(tab = activeFinanceTab) {
   financeAudit("User login/access", hub.name, `Opened ${financeTabs.find((item) => item.key === tab)?.label || tab}`);
 }
 
+function isSuperAdmin() {
+  return currentMember().access === "Super Admin";
+}
+
+function isGovernanceAdmin() {
+  return ["Admin", "Super Admin"].includes(currentMember().access);
+}
+
+function governanceMembers() {
+  return storageList(membersStorageKey).map((member) => ({
+    ...member,
+    status: member.inviteStatus || member.status || (member.disabled ? "Disabled" : "Active"),
+    department: member.department || member.branch || "-",
+    position: member.position || member.access || member.role || "-",
+  }));
+}
+
+function governanceHubAccessFor(member, hub) {
+  const explicit = storageList(userHubAccessStorageKey).find((access) => access.hubSlug === hub.slug && normalizeEmail(access.email) === normalizeEmail(member.email));
+  if (explicit) return explicit.status === "active";
+  if (["Admin", "Super Admin"].includes(member.access || member.role || "")) return true;
+  if (hub.slug === "quotation-hub") return memberPermissions(member).has("quotation_hub");
+  if (hub.slug === "finance-age-analysis") return memberPermissions(member).has("finance_age_analysis");
+  return storageList(hubPermissionsStorageKey).some((permission) => permission.hubSlug === hub.slug && permission.accessLevel === (member.access || member.role));
+}
+
+function recordPermissionHistory(member, hub, previousValue, nextValue) {
+  const history = storageList(permissionHistoryStorageKey);
+  history.unshift({
+    id: `permission-history-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    userId: member.id,
+    userEmail: member.email,
+    userName: member.name,
+    hubSlug: hub.slug,
+    hubName: hub.name,
+    granted: Boolean(nextValue),
+    previousPermissions: previousValue ? "Access granted" : "Access removed",
+    newPermissions: nextValue ? "Access granted" : "Access removed",
+    changedBy: currentUserName(),
+    changedByEmail: currentUser(),
+    changedAt: new Date().toISOString(),
+  });
+  saveStorageList(permissionHistoryStorageKey, history);
+  writeAudit(nextValue ? "Granted hub access" : "Removed hub access", `${member.name} - ${hub.name}`, "Administration & Governance", member.email, `${previousValue ? "Access granted" : "Access removed"} -> ${nextValue ? "Access granted" : "Access removed"}`);
+}
+
+function setGovernanceHubAccess(memberId, hubSlug, canAccessHub) {
+  if (!isSuperAdmin()) {
+    alert("Only Super Admin users may change hub access permissions.");
+    return;
+  }
+  const member = governanceMembers().find((item) => item.id === memberId);
+  const hub = companyHubBySlug(hubSlug);
+  if (!member || !hub) return;
+  if (member.access === "Super Admin" && normalizeEmail(member.email) === normalizeEmail(currentUser())) {
+    alert("You cannot remove your own Super Admin hub access.");
+    return;
+  }
+  const previous = governanceHubAccessFor(member, hub);
+  let accessRows = storageList(userHubAccessStorageKey).filter((row) => !(row.hubSlug === hubSlug && normalizeEmail(row.email) === normalizeEmail(member.email)));
+  accessRows.push({
+    id: `hub-access-${member.id}-${hubSlug}`,
+    userId: member.id,
+    email: member.email,
+    hubSlug,
+    status: canAccessHub ? "active" : "removed",
+    updatedAt: new Date().toISOString(),
+    updatedBy: currentUserName(),
+  });
+  saveStorageList(userHubAccessStorageKey, accessRows);
+  recordPermissionHistory(member, hub, previous, canAccessHub);
+  renderGovernanceHub("matrix");
+}
+
+function updateGovernanceMember(memberId, changes = {}) {
+  const members = storageList(membersStorageKey);
+  const index = members.findIndex((member) => member.id === memberId);
+  if (index < 0) return;
+  const before = members[index];
+  if (before.access === "Super Admin" && !isSuperAdmin()) {
+    alert("Only Super Admin users may manage Super Admin accounts.");
+    return;
+  }
+  members[index] = { ...before, ...changes, updatedAt: new Date().toISOString(), updatedBy: currentUserName() };
+  saveStorageList(membersStorageKey, members);
+  writeAudit("Updated user access", before.email, "Administration & Governance", before.email, JSON.stringify(changes));
+  renderGovernanceHub("users");
+}
+
+function addGovernanceUser() {
+  if (!isGovernanceAdmin()) return;
+  const name = prompt("User name:");
+  const email = prompt("Email address:");
+  if (!name || !email) return;
+  if (memberByEmail(email)) {
+    alert("A user with this email already exists.");
+    return;
+  }
+  const department = prompt("Department:", "");
+  const position = prompt("Position:", "");
+  const access = isSuperAdmin() ? (prompt("Role: Super Admin, Admin, Quotation Builder, Sales Representative, Read Only", "Read Only") || "Read Only") : "Read Only";
+  const member = {
+    id: `member-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    name,
+    email: normalizeEmail(email),
+    department,
+    position,
+    access: normalizeRole(access),
+    role: normalizeRole(access),
+    inviteStatus: "Pending",
+    forcePasswordChange: true,
+    createdAt: new Date().toISOString(),
+  };
+  saveMemberRecord(member);
+  writeAudit("Created user", member.email, "Administration & Governance", member.email, `Created by ${currentUserName()}`);
+  renderGovernanceHub("users");
+}
+
+function governanceAuditRows() {
+  const filters = governanceAuditFilters;
+  return loadAudit().filter((entry) => {
+    const timestamp = String(entry.timestamp || "");
+    const haystack = [entry.userName, entry.user, entry.module, entry.action, entry.reference, entry.detail, entry.notes].join(" ").toLowerCase();
+    if (filters.user && ![entry.userName, entry.user].join(" ").toLowerCase().includes(filters.user.toLowerCase())) return false;
+    if (filters.from && timestamp.slice(0, 10) < filters.from) return false;
+    if (filters.to && timestamp.slice(0, 10) > filters.to) return false;
+    if (filters.hub && !String(entry.module || "").toLowerCase().includes(filters.hub.toLowerCase())) return false;
+    if (filters.action && !String(entry.action || "").toLowerCase().includes(filters.action.toLowerCase())) return false;
+    if (filters.search && !haystack.includes(filters.search.toLowerCase())) return false;
+    return true;
+  });
+}
+
+function governanceExportAudit(format = "csv", reportName = "Full system activity report") {
+  if (!isSuperAdmin() && reportName.toLowerCase().includes("full")) {
+    alert("Only Super Admin users may export full audit reports.");
+    return;
+  }
+  const rows = governanceAuditRows();
+  const headers = ["Date", "Time", "User", "Hub", "Section", "Action", "Record affected", "Old value", "New value", "IP Address", "Device"];
+  const csvRows = rows.map((entry) => {
+    const date = new Date(entry.timestamp);
+    return [
+      date.toLocaleDateString("en-ZA"),
+      date.toLocaleTimeString("en-ZA"),
+      entry.userName || displayNameFromUser(entry.user),
+      entry.module || "-",
+      entry.reference || "-",
+      entry.action || "-",
+      entry.detail || entry.reference || "-",
+      entry.oldValue || "-",
+      entry.newValue || entry.notes || "-",
+      entry.ipAddress || "Local prototype / browser session",
+      entry.device || "-",
+    ].map(csvEscape).join(",");
+  });
+  const csv = [headers.map(csvEscape).join(","), ...csvRows].join("\n");
+  if (format === "pdf") {
+    const report = window.open("", "_blank", "noopener");
+    if (!report) return;
+    report.document.write(`
+      <html><head><title>${escapeHtml(reportName)}</title><style>
+        body{font-family:Arial,Helvetica,sans-serif;margin:24px;color:#17212b}
+        h1{margin:0 0 12px;font-size:20px}
+        table{width:100%;border-collapse:collapse;font-size:10px}
+        th,td{border:1px solid #d8e0e6;padding:6px;text-align:left;vertical-align:top}
+        th{background:#f2f5f7}
+      </style></head><body>
+        <h1>${escapeHtml(reportName)}</h1>
+        <table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead><tbody>
+          ${rows.map((entry) => {
+            const date = new Date(entry.timestamp);
+            const values = [
+              date.toLocaleDateString("en-ZA"),
+              date.toLocaleTimeString("en-ZA"),
+              entry.userName || displayNameFromUser(entry.user),
+              entry.module || "-",
+              entry.reference || "-",
+              entry.action || "-",
+              entry.detail || entry.reference || "-",
+              entry.oldValue || "-",
+              entry.newValue || entry.notes || "-",
+              entry.ipAddress || "Local prototype / browser session",
+              entry.device || "-",
+            ];
+            return `<tr>${values.map((value) => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`;
+          }).join("")}
+        </tbody></table>
+        <script>window.onload=()=>window.print();</script>
+      </body></html>
+    `);
+    report.document.close();
+    writeAudit("Exported governance report", reportName, "Administration & Governance", reportName, `${rows.length} rows exported to PDF`);
+    return;
+  }
+  downloadBlobFile(new Blob([csv], { type: "text/csv;charset=utf-8" }), `governance-${slugify(reportName)}-${todayInputValue()}.${format === "excel" ? "csv" : "csv"}`);
+  writeAudit("Exported governance report", reportName, "Administration & Governance", reportName, `${rows.length} rows exported`);
+}
+
+function renderGovernanceDashboard() {
+  const members = governanceMembers();
+  const auditToday = loadAudit().filter((entry) => String(entry.timestamp || "").slice(0, 10) === todayInputValue());
+  const quotes = storageList(approvalsStorageKey);
+  const financeEvents = loadAudit().filter((entry) => String(entry.module || "").includes("Finance"));
+  const failedLoginsToday = loadAudit().filter((entry) => String(entry.action || "").toLowerCase().includes("failed") && String(entry.timestamp || "").slice(0, 10) === todayInputValue());
+  return `
+    <div class="governance-summary-grid">
+      ${renderSummaryCard("Total users", members.length)}
+      ${renderSummaryCard("Active users", members.filter((member) => !["Disabled", "Archived"].includes(member.status)).length)}
+      ${renderSummaryCard("Online users", currentSession()?.email ? 1 : 0)}
+      ${renderSummaryCard("Quotations processed", quotes.length)}
+      ${renderSummaryCard("Finance records updated", financeEvents.length)}
+      ${renderSummaryCard("Audit events today", auditToday.length)}
+      ${renderSummaryCard("Failed login attempts today", failedLoginsToday.length)}
+    </div>
+    <section class="finance-card">
+      <h2>System Activity Overview</h2>
+      <p class="finance-note">This dashboard reads from all shared platform records and audit events. Audit history is stored permanently in this prototype storage and archived users remain visible in reports.</p>
+    </section>
+  `;
+}
+
+function renderGovernanceUsers() {
+  const members = governanceMembers();
+  return `
+    <section class="finance-card">
+      <div class="panel-heading"><div><p class="eyebrow">User access management</p><h2>Users</h2></div><button class="primary-btn" type="button" data-governance-add-user>Add user</button></div>
+      <div class="finance-table">
+        <div class="finance-table-row finance-table-head" style="grid-template-columns: repeat(9, minmax(140px, 1fr));">
+          ${["Name", "Email", "Position", "Department", "Status", "Last login", "Last activity", "Role", "Actions"].map((header) => `<span>${header}</span>`).join("")}
+        </div>
+        ${members.map((member) => `<div class="finance-table-row" style="grid-template-columns: repeat(9, minmax(140px, 1fr));">
+          <span>${escapeHtml(member.name)}</span><span>${escapeHtml(member.email)}</span><span>${escapeHtml(member.position || "-")}</span><span>${escapeHtml(member.department || "-")}</span><span>${escapeHtml(member.status)}</span><span>${escapeHtml(formatDate(String(member.lastLoginAt || member.signedInAt || "").slice(0, 10)))}</span><span>${escapeHtml(formatDate(String(member.lastActivityAt || member.updatedAt || "").slice(0, 10)))}</span><span>${escapeHtml(member.access || member.role || "-")}</span>
+          <span class="row-actions">
+            <button class="secondary-btn" data-governance-edit-user="${escapeHtml(member.id)}">Edit</button>
+            <button class="secondary-btn" data-governance-force-password="${escapeHtml(member.id)}">Force password</button>
+            <button class="secondary-btn" data-governance-reset-password="${escapeHtml(member.id)}">Reset</button>
+            <button class="secondary-btn" data-governance-deactivate-user="${escapeHtml(member.id)}">Deactivate</button>
+            ${isSuperAdmin() ? `<button class="danger-btn" data-governance-archive-user="${escapeHtml(member.id)}">Archive</button>` : ""}
+          </span>
+        </div>`).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderGovernanceMatrix() {
+  const members = governanceMembers();
+  const hubs = storageList(hubsStorageKey).filter((hub) => companyHubBySlug(hub.slug)).sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
+  return `
+    <section class="finance-card">
+      <div class="panel-heading"><div><p class="eyebrow">Hub access control</p><h2>Hub Access Matrix</h2></div><button class="secondary-btn" data-governance-copy-permissions>Copy permissions</button></div>
+      <p class="finance-note">Only Super Admin users may change hub access. Every change is written to permission history and the full audit trail.</p>
+      <div class="governance-matrix-wrap">
+        <table class="governance-matrix">
+          <thead><tr><th>User Name</th>${hubs.map((hub) => `<th>${escapeHtml(hub.name)}</th>`).join("")}</tr></thead>
+          <tbody>${members.map((member) => `<tr><th>${escapeHtml(member.name)}</th>${hubs.map((hub) => {
+            const checked = governanceHubAccessFor(member, hub);
+            return `<td><input type="checkbox" ${checked ? "checked" : ""} ${isSuperAdmin() ? "" : "disabled"} data-governance-hub-access data-member-id="${escapeHtml(member.id)}" data-hub-slug="${escapeHtml(hub.slug)}" /></td>`;
+          }).join("")}</tr>`).join("")}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderGovernanceAuditTable(rows = governanceAuditRows()) {
+  return `<div class="finance-table"><div class="finance-table-row finance-table-head" style="grid-template-columns: repeat(11, minmax(150px, 1fr));">${["Date/time", "User", "Hub", "Section", "Action", "Record", "Old value", "New value", "IP", "Device", "Notes"].map((h) => `<span>${h}</span>`).join("")}</div>${rows.map((entry) => `<div class="finance-table-row" style="grid-template-columns: repeat(11, minmax(150px, 1fr));"><span>${escapeHtml(new Date(entry.timestamp).toLocaleString("en-ZA"))}</span><span>${escapeHtml(entry.userName || displayNameFromUser(entry.user))}</span><span>${escapeHtml(entry.module || "-")}</span><span>${escapeHtml(entry.reference || "-")}</span><span>${escapeHtml(entry.action || "-")}</span><span>${escapeHtml(entry.detail || "-")}</span><span>${escapeHtml(entry.oldValue || "-")}</span><span>${escapeHtml(entry.newValue || "-")}</span><span>${escapeHtml(entry.ipAddress || "Local prototype")}</span><span>${escapeHtml(entry.device || "-")}</span><span>${escapeHtml(entry.notes || "-")}</span></div>`).join("") || `<p class="empty-state">No audit activity matches the selected filters.</p>`}</div>`;
+}
+
+function renderGovernanceSearch() {
+  return `
+    <section class="finance-card">
+      <h2>Audit Search Centre</h2>
+      <div class="approval-filterbar governance-filters">
+        <label>User<input data-governance-filter="user" value="${escapeHtml(governanceAuditFilters.user)}" placeholder="User name or email" /></label>
+        <label>From date<input type="date" data-governance-filter="from" value="${escapeHtml(governanceAuditFilters.from)}" /></label>
+        <label>To date<input type="date" data-governance-filter="to" value="${escapeHtml(governanceAuditFilters.to)}" /></label>
+        <label>Hub<input data-governance-filter="hub" value="${escapeHtml(governanceAuditFilters.hub)}" placeholder="Hub/module" /></label>
+        <label>Action type<input data-governance-filter="action" value="${escapeHtml(governanceAuditFilters.action)}" placeholder="Action" /></label>
+        <label>Client / quote / account / department<input data-governance-filter="search" value="${escapeHtml(governanceAuditFilters.search)}" placeholder="Search all details" /></label>
+      </div>
+      ${renderGovernanceAuditTable()}
+    </section>
+  `;
+}
+
+function renderGovernanceReports() {
+  const reports = ["User activity report", "Hub activity report", "Security report", "Login report", "Failed login report", "Approval report", "Full system activity report"];
+  return `<section class="finance-card"><h2>Audit Reports</h2><p class="finance-note">Reports respect the current Audit Search Centre filters. Full system exports are restricted to Super Admin users.</p><div class="governance-report-grid">${reports.map((report) => `<article><strong>${escapeHtml(report)}</strong><div class="row-actions"><button class="secondary-btn" data-governance-export="pdf" data-report="${escapeHtml(report)}">PDF</button><button class="secondary-btn" data-governance-export="csv" data-report="${escapeHtml(report)}">CSV</button><button class="secondary-btn" data-governance-export="excel" data-report="${escapeHtml(report)}">Excel</button></div></article>`).join("")}</div></section>`;
+}
+
+function renderGovernanceSecurity() {
+  const members = governanceMembers();
+  const session = currentSession();
+  return `<section class="finance-card"><h2>Login & Security Monitoring</h2><div class="governance-summary-grid">${renderSummaryCard("Current online users", session?.email ? 1 : 0)}${renderSummaryCard("Locked accounts", members.filter((m) => m.lockedUntil && new Date(m.lockedUntil) > new Date()).length)}${renderSummaryCard("Password reset requests", members.filter((m) => m.passwordResetRequested).length)}${renderSummaryCard("Active sessions", session?.email ? 1 : 0)}</div><div class="finance-table"><div class="finance-table-row finance-table-head" style="grid-template-columns: repeat(7, minmax(150px,1fr));">${["User", "Last login", "Failed attempts", "Locked until", "Reset requested", "Session", "Actions"].map((h) => `<span>${h}</span>`).join("")}</div>${members.map((member) => `<div class="finance-table-row" style="grid-template-columns: repeat(7, minmax(150px,1fr));"><span>${escapeHtml(member.name)}</span><span>${escapeHtml(formatDate(String(member.lastLoginAt || "").slice(0,10)))}</span><span>${escapeHtml(String(member.failedLoginAttempts || 0))}</span><span>${escapeHtml(member.lockedUntil ? new Date(member.lockedUntil).toLocaleString("en-ZA") : "-")}</span><span>${member.passwordResetRequested ? "Yes" : "No"}</span><span>${normalizeEmail(session?.email || "") === normalizeEmail(member.email) ? "Active" : "-"}</span><span class="row-actions"><button class="secondary-btn" data-governance-unlock-user="${escapeHtml(member.id)}">Unlock</button><button class="secondary-btn" data-governance-reset-password="${escapeHtml(member.id)}">Reset password</button><button class="secondary-btn" data-governance-force-logout="${escapeHtml(member.id)}">Force logout</button></span></div>`).join("")}</div></section>`;
+}
+
+function renderGovernanceHistory() {
+  const rows = storageList(permissionHistoryStorageKey);
+  return `<section class="finance-card"><h2>Permission History</h2><p class="finance-note">No permission change may occur without being logged here and in the full audit trail.</p><div class="finance-table"><div class="finance-table-row finance-table-head" style="grid-template-columns: repeat(7, minmax(150px,1fr));">${["Date/time", "User", "Hub", "Changed by", "Previous", "New", "Result"].map((h) => `<span>${h}</span>`).join("")}</div>${rows.map((row) => `<div class="finance-table-row" style="grid-template-columns: repeat(7, minmax(150px,1fr));"><span>${escapeHtml(new Date(row.changedAt).toLocaleString("en-ZA"))}</span><span>${escapeHtml(row.userName || row.userEmail)}</span><span>${escapeHtml(row.hubName)}</span><span>${escapeHtml(row.changedBy)}</span><span>${escapeHtml(row.previousPermissions)}</span><span>${escapeHtml(row.newPermissions)}</span><span>${row.granted ? "Granted" : "Removed"}</span></div>`).join("") || `<p class="empty-state">No permission changes recorded yet.</p>`}</div></section>`;
+}
+
+function governanceTabFromHash() {
+  const key = window.location.hash.slice(1);
+  return governanceTabs.some((item) => item.key === key) ? key : activeGovernanceTab;
+}
+
+function renderGovernanceHub(tab = activeGovernanceTab) {
+  activeGovernanceTab = tab;
+  const hub = companyHubBySlug("administration-governance");
+  const content = {
+    dashboard: renderGovernanceDashboard(),
+    users: renderGovernanceUsers(),
+    matrix: renderGovernanceMatrix(),
+    audit: `<section class="finance-card"><h2>Full System Audit Trail</h2>${renderGovernanceAuditTable(loadAudit())}</section>`,
+    search: renderGovernanceSearch(),
+    reports: renderGovernanceReports(),
+    security: renderGovernanceSecurity(),
+    history: renderGovernanceHistory(),
+  }[tab] || renderGovernanceDashboard();
+  portalHubGrid.innerHTML = `<section class="finance-hub-shell governance-hub-shell"><aside class="finance-sidebar"><div class="brand"><img class="brand-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" /><div><strong>${escapeHtml(hub.name)}</strong><small>System governance</small></div></div><nav>${governanceTabs.map((item) => `<button class="nav-item ${item.key === tab ? "active" : ""}" type="button" data-governance-tab="${item.key}">${escapeHtml(item.label)}</button>`).join("")}</nav><div class="finance-user-panel"><small>Signed in as</small><strong>${escapeHtml(currentUserName())}</strong><span>${escapeHtml(currentMember().access || "Member")}</span><button class="secondary-btn" type="button" data-finance-logout>Logout</button></div></aside><main class="finance-main"><div class="panel-heading"><div><p class="eyebrow">Administration & Governance</p><h1>${escapeHtml(governanceTabs.find((item) => item.key === tab)?.label || "System Dashboard")}</h1></div><strong class="finance-active-date">${escapeHtml(isSuperAdmin() ? "Super Admin" : "Admin view")}</strong></div>${content}</main></section>`;
+  writeAudit("Opened governance tab", tab, "Administration & Governance", tab, currentUserName());
+}
+
+function financeTabFromHash() {
+  const key = window.location.hash.slice(1);
+  return financeTabs.some((item) => item.key === key) ? key : activeFinanceTab;
+}
+
 function renderPortal() {
   const routeHub = companyHubBySlug(currentCompanyHubSlug());
   if (routeHub && routeHub.slug !== "quotation-hub") {
@@ -3686,7 +4389,12 @@ function renderPortal() {
     }
     if (routeHub.slug === "finance-age-analysis") {
       document.body.classList.add("finance-hub-active");
-      renderFinanceHub(activeFinanceTab);
+      renderFinanceHub(financeTabFromHash());
+      return;
+    }
+    if (routeHub.slug === "administration-governance") {
+      document.body.classList.add("finance-hub-active");
+      renderGovernanceHub(governanceTabFromHash());
       return;
     }
     document.body.classList.remove("finance-hub-active");
@@ -9553,7 +10261,94 @@ portalHubGrid.addEventListener("click", (event) => {
   }
   const financeTab = event.target.closest("[data-finance-tab]");
   if (financeTab) {
+    window.location.hash = financeTab.dataset.financeTab;
     renderFinanceHub(financeTab.dataset.financeTab);
+    return;
+  }
+  const governanceTab = event.target.closest("[data-governance-tab]");
+  if (governanceTab) {
+    window.location.hash = governanceTab.dataset.governanceTab;
+    renderGovernanceHub(governanceTab.dataset.governanceTab);
+    return;
+  }
+  if (event.target.closest("[data-governance-add-user]")) {
+    addGovernanceUser();
+    return;
+  }
+  const governanceEditUser = event.target.closest("[data-governance-edit-user]")?.dataset.governanceEditUser;
+  if (governanceEditUser) {
+    const member = governanceMembers().find((item) => item.id === governanceEditUser);
+    if (!member) return;
+    const name = prompt("Name:", member.name);
+    const position = prompt("Position:", member.position || "");
+    const department = prompt("Department:", member.department || "");
+    if (!name) return;
+    updateGovernanceMember(governanceEditUser, { name, position, department });
+    return;
+  }
+  const governanceDeactivateUser = event.target.closest("[data-governance-deactivate-user]")?.dataset.governanceDeactivateUser;
+  if (governanceDeactivateUser) {
+    updateGovernanceMember(governanceDeactivateUser, { inviteStatus: "Disabled", status: "Disabled", deactivatedAt: new Date().toISOString(), deactivatedBy: currentUserName() });
+    return;
+  }
+  const governanceArchiveUser = event.target.closest("[data-governance-archive-user]")?.dataset.governanceArchiveUser;
+  if (governanceArchiveUser) {
+    if (!isSuperAdmin()) {
+      alert("Only Super Admin users may archive users.");
+      return;
+    }
+    updateGovernanceMember(governanceArchiveUser, { inviteStatus: "Archived", status: "Archived", archivedAt: new Date().toISOString(), archivedBy: currentUserName() });
+    return;
+  }
+  const governanceForcePassword = event.target.closest("[data-governance-force-password]")?.dataset.governanceForcePassword;
+  if (governanceForcePassword) {
+    updateGovernanceMember(governanceForcePassword, { forcePasswordChange: true });
+    return;
+  }
+  const governanceResetPassword = event.target.closest("[data-governance-reset-password]")?.dataset.governanceResetPassword;
+  if (governanceResetPassword) {
+    const tempPassword = generatePassword();
+    updateGovernanceMember(governanceResetPassword, { temporaryPasswordSetAt: new Date().toISOString(), forcePasswordChange: true, passwordResetRequested: false, inviteStatus: "Pending" });
+    alert(`Temporary password generated for admin handover:\n${tempPassword}\n\nFor production this must be emailed securely and stored only as a hash.`);
+    writeAudit("Reset password", governanceResetPassword, "Administration & Governance", governanceResetPassword, "Temporary password generated; production must hash and email securely");
+    return;
+  }
+  const governanceUnlockUser = event.target.closest("[data-governance-unlock-user]")?.dataset.governanceUnlockUser;
+  if (governanceUnlockUser) {
+    updateGovernanceMember(governanceUnlockUser, { lockedUntil: "", failedLoginAttempts: 0 });
+    return;
+  }
+  const governanceForceLogout = event.target.closest("[data-governance-force-logout]")?.dataset.governanceForceLogout;
+  if (governanceForceLogout) {
+    const member = governanceMembers().find((item) => item.id === governanceForceLogout);
+    if (member && normalizeEmail(member.email) === normalizeEmail(currentUser())) clearSharedSession();
+    writeAudit("Forced user logout", member?.email || governanceForceLogout, "Administration & Governance", member?.email || governanceForceLogout, `Forced by ${currentUserName()}`);
+    renderGovernanceHub("security");
+    return;
+  }
+  if (event.target.closest("[data-governance-copy-permissions]")) {
+    if (!isSuperAdmin()) {
+      alert("Only Super Admin users may copy permissions.");
+      return;
+    }
+    const fromEmail = prompt("Copy permissions from user email:");
+    const toEmail = prompt("Copy permissions to user email:");
+    const fromMember = governanceMembers().find((member) => normalizeEmail(member.email) === normalizeEmail(fromEmail || ""));
+    const toMember = governanceMembers().find((member) => normalizeEmail(member.email) === normalizeEmail(toEmail || ""));
+    if (!fromMember || !toMember) {
+      alert("Could not find one or both users.");
+      return;
+    }
+    storageList(hubsStorageKey).filter((hub) => companyHubBySlug(hub.slug)).forEach((hub) => {
+      setGovernanceHubAccess(toMember.id, hub.slug, governanceHubAccessFor(fromMember, hub));
+    });
+    writeAudit("Copied hub permissions", `${fromMember.email} -> ${toMember.email}`, "Administration & Governance", toMember.email, `Copied by ${currentUserName()}`);
+    renderGovernanceHub("matrix");
+    return;
+  }
+  const governanceExport = event.target.closest("[data-governance-export]");
+  if (governanceExport) {
+    governanceExportAudit(governanceExport.dataset.governanceExport, governanceExport.dataset.report || "Full system activity report");
     return;
   }
   const financeOpeningViewButton = event.target.closest("[data-finance-opening-view]");
@@ -9588,6 +10383,31 @@ portalHubGrid.addEventListener("click", (event) => {
   const financePrintType = event.target.closest("[data-finance-print]")?.dataset.financePrint;
   if (financePrintType) {
     financePrintExport(financePrintType);
+    return;
+  }
+  if (event.target.closest("[data-finance-opening-account-add]")) {
+    addFinanceOpeningAccount();
+    return;
+  }
+  const accountSaveId = event.target.closest("[data-finance-opening-account-save]")?.dataset.financeOpeningAccountSave;
+  if (accountSaveId) {
+    const name = document.querySelector(`[data-finance-opening-account-name="${CSS.escape(accountSaveId)}"]`)?.value.trim();
+    const group = document.querySelector(`[data-finance-opening-account-group="${CSS.escape(accountSaveId)}"]`)?.value || "OPERATING COMPANIES";
+    if (!name) {
+      alert("Please enter a bank account name.");
+      return;
+    }
+    updateFinanceOpeningAccount(accountSaveId, { name, group });
+    return;
+  }
+  const accountArchiveId = event.target.closest("[data-finance-opening-account-archive]")?.dataset.financeOpeningAccountArchive;
+  if (accountArchiveId) {
+    updateFinanceOpeningAccount(accountArchiveId, { status: "archived", archivedAt: new Date().toISOString(), archivedBy: currentUserName() });
+    return;
+  }
+  const accountRestoreId = event.target.closest("[data-finance-opening-account-restore]")?.dataset.financeOpeningAccountRestore;
+  if (accountRestoreId) {
+    updateFinanceOpeningAccount(accountRestoreId, { status: "active", archivedAt: "", archivedBy: "" });
     return;
   }
   if (event.target.closest("[data-save-finance-setup]")) {
@@ -9660,19 +10480,53 @@ portalHubGrid.addEventListener("click", (event) => {
 });
 
 portalHubGrid.addEventListener("change", async (event) => {
+  if (event.target.matches("[data-governance-hub-access]")) {
+    setGovernanceHubAccess(event.target.dataset.memberId, event.target.dataset.hubSlug, event.target.checked);
+    return;
+  }
+  if (event.target.matches("[data-governance-filter]")) {
+    governanceAuditFilters[event.target.dataset.governanceFilter] = event.target.value;
+    writeAudit("Changed audit search filter", event.target.dataset.governanceFilter, "Administration & Governance", "Audit Search Centre", event.target.value);
+    renderGovernanceHub("search");
+    return;
+  }
   const openingEdit = event.target.dataset.financeOpeningEdit;
   if (openingEdit !== undefined) {
     const field = event.target.dataset.financeOpeningField;
     const date = event.target.dataset.financeOpeningDate;
     const name = event.target.dataset.financeOpeningName;
+    const group = event.target.dataset.financeOpeningGroup || "";
+    const accountCode = event.target.dataset.financeOpeningCode || slugify(name).toUpperCase();
+    const rowOrder = Number(event.target.dataset.financeOpeningRowOrder || 9999);
     const rows = financeRows("opening");
     let updated = false;
     const nextRows = rows.map((row) => {
-      const matches = (openingEdit && row.id === openingEdit) || (row.openingDate === date && (row.accountName || row.partyName) === name);
+      const matches = (openingEdit && row.id === openingEdit)
+        || (row.openingDate === date && Number(row.rowOrder ?? -1) === rowOrder && (!accountCode || row.accountCode === accountCode))
+        || (row.openingDate === date && (row.accountName || row.partyName) === name && Number(row.rowOrder ?? -1) === rowOrder);
       if (!matches) return row;
       updated = true;
       return { ...row, [field]: Number(event.target.value || 0), source: "Manual", importedAt: new Date().toISOString(), importedBy: currentUserName() };
     });
+    if (!updated) {
+      nextRows.push({
+        id: `finance-opening-manual-${date}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        accountCode,
+        accountName: name,
+        partyName: name,
+        group,
+        branch: "",
+        rowType: "account",
+        rowOrder,
+        openingDate: date,
+        openingBalance: field === "openingBalance" ? Number(event.target.value || 0) : 0,
+        availableBalance: field === "availableBalance" ? Number(event.target.value || 0) : 0,
+        source: "Manual",
+        importedAt: new Date().toISOString(),
+        importedBy: currentUserName(),
+      });
+      updated = true;
+    }
     if (updated) {
       saveFinanceRows("opening", nextRows);
       financeAudit("Balance manually edited", `${name} - ${financeOpeningDateLabel(date)}`, `${field}: ${event.target.value}`);
