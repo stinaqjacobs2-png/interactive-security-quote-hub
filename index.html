@@ -1,229 +1,521 @@
-import re, subprocess
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <title>Interactive Security Portal</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <section class="login-screen" id="loginScreen">
+      <form class="login-card" id="loginForm">
+        <div class="brand login-brand">
+          <img class="brand-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+          <div>
+            <strong>Interactive Security Portal</strong>
+            <small>Company hub</small>
+          </div>
+        </div>
+        <h1>Sign in</h1>
+        <p>Use your company email address and password to access the company portal.</p>
+        <label>
+          Email address
+          <input id="loginEmail" type="email" placeholder="name@interactivesecurity.co.za" required />
+        </label>
+        <label>
+          Password
+          <input id="loginPassword" type="password" placeholder="Password" required />
+        </label>
+        <button class="primary-btn" type="submit">Sign in</button>
+        <button class="link-btn" id="forgotPassword" type="button">Forgot password?</button>
+        <p class="login-note">Invited members must use the password sent by the admin.</p>
+      </form>
+    </section>
 
-# ── 1. styles.css ─────────────────────────────────────────────────────────────
-with open('styles.css', 'r') as f: css = f.read()
-css = css.replace(
-    '.approval-table { overflow: hidden;',
-    '.approval-table { overflow-x: auto; -webkit-overflow-scrolling: touch;'
-)
-marker = '/* ── Sales request list: horizontal scroll'
-if marker in css:
-    css = css[:css.index(marker)].rstrip() + '\n'
-with open('styles.css', 'w') as f: f.write(css)
-print('✓ styles.css')
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Main navigation">
+        <div class="brand">
+          <img class="brand-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+          <div>
+            <strong>Interactive Security Portal</strong>
+            <small>Company hubs</small>
+          </div>
+        </div>
+        <nav>
+          <button class="nav-item active" type="button" data-section="portal"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"></path><path d="M5 10.5V20h14v-9.5"></path><path d="M9 20v-6h6v6"></path></svg><span class="nav-label">Portal Dashboard</span></button>
+          <button class="nav-item" type="button" data-section="projections"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16"></path><path d="M4 19V5"></path><path d="m7 15 4-4 3 3 5-7"></path><path d="M17 7h2v2"></path></svg><span class="nav-label">Projections</span></button>
+          <button class="nav-item" type="button" data-section="dashboard"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"></path><path d="M4 19h16"></path><path d="M8 16v-5"></path><path d="M12 16V8"></path><path d="M16 16v-3"></path></svg><span class="nav-label">Dashboard</span></button>
+          <button class="nav-item" type="button" data-section="builder"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"></path><path d="M14 3v5h5"></path><path d="M9.5 13h5"></path><path d="M9.5 17h5"></path></svg><span class="nav-label">Building Technical Quotation</span></button>
+          <button class="nav-item" type="button" data-section="guardingBuilder"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 3 8.5 7 10 4-1.5 7-5.5 7-10V6z"></path><path d="M9 12l2 2 4-5"></path></svg><span class="nav-label">Building Guarding Quotation</span></button>
+          <button class="nav-item" type="button" data-section="armedResponseBuilder"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20"></path><path d="M5 7h14"></path><path d="M7 7l2 12"></path><path d="M17 7l-2 12"></path><path d="M8 13h8"></path></svg><span class="nav-label">Building Armed Response Quotation</span></button>
+          <button class="nav-item request-nav" type="button" data-section="salesRequests"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"></path><path d="m8 7 4-4 4 4"></path><path d="M5 15v4h14v-4"></path></svg><span class="nav-label">Sales Quotation Requests</span><span id="salesRequestCount">0</span></button>
+          <button class="nav-item approval-nav" type="button" data-section="approvals">
+            <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path><path d="M12 3a9 9 0 1 1-8.4 5.8"></path></svg>
+            <span class="nav-label">Approval</span>
+            <span id="approvalCount">0</span>
+          </button>
+          <button class="nav-item" type="button" data-section="library"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v13H4z"></path><path d="M4 7l2-4h12l2 4"></path><path d="M9 12h6"></path></svg><span class="nav-label">Quote Library</span></button>
+          <button class="nav-item" type="button" data-section="projectTimeline"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5v14"></path><path d="M9 7h10"></path><path d="M9 12h10"></path><path d="M9 17h10"></path><circle cx="5" cy="7" r="1.5"></circle><circle cx="5" cy="12" r="1.5"></circle><circle cx="5" cy="17" r="1.5"></circle></svg><span class="nav-label">Project Timeline</span></button>
+          <button class="nav-item" type="button" data-section="settings"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path><path d="M19.4 15a8 8 0 0 0 .1-2l2-1.5-2-3.4-2.4 1a7.8 7.8 0 0 0-1.7-1L15 5.5h-4l-.4 2.6a7.8 7.8 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.5a8 8 0 0 0 .1 2l-2 1.5 2 3.4 2.4-1a7.8 7.8 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.8 7.8 0 0 0 1.7-1l2.4 1 2-3.4Z"></path></svg><span class="nav-label">Setup</span></button>
+          <button class="nav-item" type="button" data-section="audit"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13"></path><path d="M8 12h13"></path><path d="M8 18h13"></path><path d="m3 6 1 1 2-2"></path><path d="m3 12 1 1 2-2"></path><path d="m3 18 1 1 2-2"></path></svg><span class="nav-label">Audit Trail</span></button>
+        </nav>
+      </aside>
 
-# ── 2. server.js ──────────────────────────────────────────────────────────────
-with open('server.js', 'r') as f: js = f.read()
-if '"finance_age_analysis"' not in js:
-    js = js.replace('  "sales_quotation_requests",\n];',
-        '  "sales_quotation_requests",\n  "finance_age_analysis",\n];')
-if '"finance_balances"' not in js:
-    js = js.replace('"password_reset_tokens"].forEach',
-        '"password_reset_tokens",\n   "finance_balances"].forEach')
-if '/api/finance/balances' not in js:
-    routes = '''  // ── Finance Age Analysis ─────────────────────────────────────────────────
+      <main>
+        <header class="topbar">
+          <div>
+            <p class="eyebrow" id="sectionEyebrow">Interactive Security</p>
+            <h1 id="sectionTitle">Quotation platform</h1>
+          </div>
+          <div class="status-pill" id="sectionStatus">
+            <span></span>
+            Workspace
+          </div>
+        </header>
 
-  if (req.method === "GET" && url.pathname === "/api/finance/balances") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-    if (!hasPermission(session, "finance_age_analysis")) return json(res, 403, { error: "Access denied" });
-    const db = readDb();
-    return json(res, 200, { balances: db.finance_balances || [] });
-  }
+        <section class="hidden-state" id="projections-section" hidden>
+          <h2>Projections</h2>
+          <p>Management view for technical quotation sales, sales rep target progress, and outstanding client approval.</p>
 
-  if (req.method === "POST" && url.pathname === "/api/finance/balances") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-    if (!hasPermission(session, "finance_age_analysis")) return json(res, 403, { error: "Access denied" });
-    const body = await readBody(req);
-    if (!body.client_name || String(body.client_name).trim() === "") return json(res, 400, { error: "Client name is required." });
-    const db = readDb();
-    if (!Array.isArray(db.finance_balances)) db.finance_balances = [];
-    const now = new Date().toISOString();
-    const toNum = (v) => Number(v) || 0;
-    const isNew = !body.id;
-    const id = body.id || crypto.randomUUID();
-    const current=toNum(body.current),days30=toNum(body.days_30),days60=toNum(body.days_60);
-    const days90=toNum(body.days_90),days120=toNum(body.days_120_plus);
-    const total=current+days30+days60+days90+days120;
-    const record = { id, client_name: String(body.client_name).trim(),
-      account_number: String(body.account_number||"").trim(), current,
-      days_30:days30, days_60:days60, days_90:days90, days_120_plus:days120, total,
-      notes: String(body.notes||"").trim(), last_updated: String(body.last_updated||now.slice(0,10)),
-      created_at: isNew ? now : (db.finance_balances.find((r)=>r.id===id)?.created_at||now), updated_at: now };
-    const idx=db.finance_balances.findIndex((r)=>r.id===id);
-    if (idx>=0) db.finance_balances[idx]=record; else db.finance_balances.push(record);
-    writeAudit(db, isNew?"Added finance balance record":"Updated finance balance record",
-      session,"Finance",record.client_name,"Total: R"+total.toFixed(2));
-    writeDb(db);
-    return json(res, 200, { balance: record });
-  }
-
-  if (req.method === "DELETE" && url.pathname === "/api/finance/balances") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-    if (!hasPermission(session, "finance_age_analysis")) return json(res, 403, { error: "Access denied" });
-    const id = url.searchParams.get("id");
-    if (!id) return json(res, 400, { error: "id is required" });
-    const db = readDb();
-    if (!Array.isArray(db.finance_balances)) db.finance_balances = [];
-    const record = db.finance_balances.find((r)=>r.id===id);
-    db.finance_balances = db.finance_balances.filter((r)=>r.id!==id);
-    writeAudit(db,"Deleted finance balance record",session,"Finance",record?.client_name||id,"");
-    writeDb(db);
-    return json(res, 200, { ok: true });
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/finance/import") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-    if (!hasPermission(session, "finance_age_analysis")) return json(res, 403, { error: "Access denied" });
-    const body = await readBody(req);
-    if (!Array.isArray(body.rows)||body.rows.length===0) return json(res,400,{error:"No rows provided."});
-    const db = readDb();
-    if (!Array.isArray(db.finance_balances)) db.finance_balances = [];
-    const now=new Date().toISOString();
-    const toNum=(v)=>Number(String(v).replace(/[^0-9.\\-]/g,""))||0;
-    let imported=0; const errors=[];
-    body.rows.forEach((row,i)=>{
-      const clientName=String(row.client_name||"").trim();
-      if(!clientName){errors.push("Row "+(i+1)+": missing client_name");return;}
-      const current=toNum(row.current),days30=toNum(row.days_30),days60=toNum(row.days_60);
-      const days90=toNum(row.days_90),days120=toNum(row.days_120_plus);
-      const total=current+days30+days60+days90+days120;
-      const existing=db.finance_balances.find((r)=>r.client_name.toLowerCase()===clientName.toLowerCase());
-      const record={id:existing?.id||crypto.randomUUID(),client_name:clientName,
-        account_number:String(row.account_number||existing?.account_number||"").trim(),
-        current,days_30:days30,days_60:days60,days_90:days90,days_120_plus:days120,total,
-        notes:String(row.notes||existing?.notes||"").trim(),
-        last_updated:String(row.last_updated||now.slice(0,10)),
-        created_at:existing?.created_at||now,updated_at:now};
-      if(existing){const idx=db.finance_balances.findIndex((r)=>r.id===existing.id);db.finance_balances[idx]=record;}
-      else db.finance_balances.push(record);
-      imported++;
-    });
-    writeAudit(db,"Imported finance balance records",session,"Finance",imported+" records",
-      errors.length?"Errors: "+errors.join("; "):"");
-    writeDb(db);
-    return json(res, 200, { imported, errors });
-  }
-
-'''
-    setup = '  // ── First-time setup routes'
-    if setup in js:
-        js = js.replace(setup, routes + setup)
-    else:
-        js = js.replace('  return json(res, 404, { error: "API route not found" });',
-                        routes + '  return json(res, 404, { error: "API route not found" });')
-with open('server.js', 'w') as f: f.write(js)
-print('✓ server.js')
-
-# ── 3. index.html ─────────────────────────────────────────────────────────────
-with open('index.html', 'r') as f: html = f.read()
-if 'data-section="finance"' not in html:
-    i = html.find('data-section="audit"')
-    i = html.find('</button>', i) + len('</button>')
-    html = html[:i] + '\n          <button class="nav-item" type="button" data-section="finance"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20"></path><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg><span class="nav-label">Finance Age Analysis</span></button>' + html[i:]
-if 'id="finance-section"' not in html:
-    fs = '''
-        <section class="hidden-state" id="finance-section" hidden>
-          <h2>Finance Age Analysis</h2>
-          <p>Debtor age analysis, outstanding balances, and collections oversight.</p>
-          <div class="approval-workspace">
-            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:18px;">
-              <input id="financeSearch" type="search" placeholder="Search client or account\u2026" style="flex:1;min-width:200px;max-width:340px;" />
-              <button class="secondary-btn" type="button" id="financeAddBtn">+ Add record</button>
-              <button class="secondary-btn" type="button" id="financeImportBtn">Import CSV</button>
-              <button class="secondary-btn" type="button" id="financeExportBtn">Export CSV</button>
+          <div class="dashboard-controls projections-controls">
+            <div class="dashboard-filter-grid">
+              <label>
+                Month
+                <input id="projectionsMonth" type="month" />
+              </label>
+              <label>
+                Date from
+                <input id="projectionsFromDate" type="date" />
+              </label>
+              <label>
+                Date to
+                <input id="projectionsToDate" type="date" />
+              </label>
+              <label>
+                Sales rep
+                <input id="projectionsSalesRepFilter" type="search" placeholder="All sales reps" />
+              </label>
+              <label>
+                Branch
+                <input id="projectionsBranchFilter" type="search" placeholder="All branches" />
+              </label>
+              <label>
+                Quotation type
+                <select id="projectionsQuotationType">
+                  <option value="">All quotation types</option>
+                  <option value="Technical Quotation">Technical quotations</option>
+                  <option value="Guarding Quotation">Guarding quotations</option>
+                  <option value="Monthly Armed Response Quotation">Monthly armed response</option>
+                </select>
+              </label>
             </div>
-            <div id="financeImportPanel" class="panel" style="display:none;margin-bottom:18px;">
-              <h3>Import CSV</h3>
-              <p style="font-size:13px;color:var(--muted);margin-bottom:10px;">Columns: <strong>client_name, account_number, current, days_30, days_60, days_90, days_120_plus, notes, last_updated</strong></p>
-              <label>Select CSV file<input id="financeCsvFile" type="file" accept=".csv" /></label>
-              <div style="display:flex;gap:8px;margin-top:10px;">
-                <button class="primary-btn" type="button" id="financeCsvImportSubmit">Import</button>
-                <button class="secondary-btn" type="button" id="financeCsvImportCancel">Cancel</button>
-              </div>
-              <p id="financeCsvStatus" style="margin-top:8px;font-size:13px;"></p>
-            </div>
-            <div id="financeFormPanel" class="panel" style="display:none;margin-bottom:18px;">
-              <h3 id="financeFormTitle">Add Balance Record</h3>
-              <form class="setup-form" id="financeForm" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">
-                <input id="financeRecordId" type="hidden" />
-                <label style="grid-column:1/-1;">Client name<input id="financeClientName" type="text" placeholder="Client name" required /></label>
-                <label>Account number<input id="financeAccountNumber" type="text" placeholder="ACC-001" /></label>
-                <label>Last updated<input id="financeLastUpdated" type="date" /></label>
-                <label>Current (R)<input id="financeCurrent" type="number" min="0" step="0.01" value="0" /></label>
-                <label>30 days (R)<input id="financeDays30" type="number" min="0" step="0.01" value="0" /></label>
-                <label>60 days (R)<input id="financeDays60" type="number" min="0" step="0.01" value="0" /></label>
-                <label>90 days (R)<input id="financeDays90" type="number" min="0" step="0.01" value="0" /></label>
-                <label>120+ days (R)<input id="financeDays120" type="number" min="0" step="0.01" value="0" /></label>
-                <label style="grid-column:1/-1;">Notes<input id="financeNotes" type="text" placeholder="Optional notes" /></label>
-                <div style="grid-column:1/-1;display:flex;gap:8px;">
-                  <button class="primary-btn" type="submit" id="financeFormSubmit">Save record</button>
-                  <button class="secondary-btn" type="button" id="financeFormCancel">Cancel</button>
-                </div>
-              </form>
-            </div>
-            <div class="finance-table" id="financeTable">
-              <div class="finance-table-row finance-table-head" style="display:grid;grid-template-columns:minmax(160px,2fr) minmax(100px,.8fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(100px,.8fr) minmax(80px,.6fr);"><span>Client</span><span>Account</span><span>Current</span><span>30 Days</span><span>60 Days</span><span>90 Days</span><span>120+ Days</span><span>Total</span><span>Actions</span></div>
-              <div id="financeTableBody"></div>
-              <div id="financeTableEmpty" class="approval-table-empty" style="display:none;">No balance records found.</div>
-              <div class="finance-table-row" id="financeTotalsRow" style="display:grid;grid-template-columns:minmax(160px,2fr) minmax(100px,.8fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(100px,.8fr) minmax(80px,.6fr);background:var(--surface);font-weight:700;border-top:2px solid var(--line);"><span><strong>TOTALS</strong></span><span></span><span id="finTotalCurrent">R 0.00</span><span id="finTotal30">R 0.00</span><span id="finTotal60">R 0.00</span><span id="finTotal90">R 0.00</span><span id="finTotal120">R 0.00</span><span id="finTotalAll">R 0.00</span><span></span></div>
+            <div class="dashboard-actions">
+              <button class="secondary-btn" id="projectionsPreviousMonth" type="button">Previous month</button>
+              <button class="secondary-btn" id="projectionsNextMonth" type="button">Next month</button>
+              <button class="secondary-btn" id="projectionsExportExcel" type="button">Export projections to Excel</button>
+              <button class="secondary-btn" id="projectionsExportPdf" type="button">Export projections to PDF</button>
             </div>
           </div>
+
+          <div class="dashboard-summary-grid" id="projectionsSummary"></div>
+
+          <section class="dashboard-panel projections-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Quotation Activity Summary</p>
+                <h2>Full quotation performance</h2>
+              </div>
+              <span class="status-badge status-info">Filtered reporting</span>
+            </div>
+            <div class="dashboard-summary-grid projection-activity-summary" id="projectionsActivitySummary"></div>
+            <div class="dashboard-chart-grid projections-chart-grid">
+              <section class="projection-chart-tile">
+                <div class="panel-heading"><div><p class="eyebrow">Pipeline</p><h2>Submitted vs approved vs rejected</h2></div></div>
+                <div id="projectionsSubmittedApprovedRejectedBar" class="dashboard-bar-chart"></div>
+              </section>
+              <section class="projection-chart-tile">
+                <div class="panel-heading"><div><p class="eyebrow">Status split</p><h2>Quotation status split</h2></div></div>
+                <div id="projectionsStatusPieChart" class="projection-pie-wrap"></div>
+              </section>
+              <section class="projection-chart-tile">
+                <div class="panel-heading"><div><p class="eyebrow">Submissions</p><h2>Quotations submitted per month</h2></div></div>
+                <div id="projectionsSubmittedLineChart" class="projection-line-chart"></div>
+              </section>
+              <section class="projection-chart-tile">
+                <div class="panel-heading"><div><p class="eyebrow">Internal approvals</p><h2>Approved per sales rep</h2></div></div>
+                <div id="projectionsApprovedRepBar" class="dashboard-bar-chart"></div>
+              </section>
+              <section class="projection-chart-tile">
+                <div class="panel-heading"><div><p class="eyebrow">Client acceptance</p><h2>Accepted by client per sales rep</h2></div></div>
+                <div id="projectionsAcceptedRepBar" class="dashboard-bar-chart"></div>
+              </section>
+              <section class="projection-chart-tile">
+                <div class="panel-heading"><div><p class="eyebrow">Quotation value</p><h2>Approved value vs accepted value</h2></div></div>
+                <div id="projectionsValueApprovedAcceptedBar" class="dashboard-bar-chart"></div>
+              </section>
+            </div>
+          </section>
+
+          <section class="dashboard-panel projections-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Sales Rep Target Performance</p>
+                <h2>Monthly technical work sold target</h2>
+              </div>
+              <span class="status-badge status-info">R100,000 excl. VAT per rep</span>
+            </div>
+            <div id="projectionsRepProgress" class="projection-progress-grid"></div>
+          </section>
+
+          <div class="dashboard-chart-grid projections-chart-grid">
+            <section class="dashboard-panel">
+              <div class="panel-heading"><div><p class="eyebrow">Technical sales</p><h2>Sold per sales rep</h2></div></div>
+              <div id="projectionsSalesRepBar" class="dashboard-bar-chart"></div>
+            </section>
+            <section class="dashboard-panel">
+              <div class="panel-heading"><div><p class="eyebrow">Target progress</p><h2>Achieved vs outstanding</h2></div></div>
+              <div id="projectionsPieChart" class="projection-pie-wrap"></div>
+            </section>
+            <section class="dashboard-panel">
+              <div class="panel-heading"><div><p class="eyebrow">Monthly trend</p><h2>Technical sales sold per month</h2></div></div>
+              <div id="projectionsLineChart" class="projection-line-chart"></div>
+            </section>
+            <section class="dashboard-panel">
+              <div class="panel-heading"><div><p class="eyebrow">Conversion</p><h2>Approved vs client accepted quotations</h2></div></div>
+              <div id="projectionsApprovedAcceptedBar" class="dashboard-bar-chart"></div>
+            </section>
+          </div>
+
+          <section class="dashboard-panel">
+            <div class="panel-heading"><div><p class="eyebrow">Target report</p><h2>Sales rep target detail</h2></div></div>
+            <div id="projectionsTargetTable"></div>
+          </section>
         </section>
-'''
-    html = html[:html.rfind('</main>')] + fs + html[html.rfind('</main>'):]
-with open('index.html', 'w') as f: f.write(html)
-print('✓ index.html')
 
-# ── 4. app.js ─────────────────────────────────────────────────────────────────
-with open('app.js', 'r') as f: js = f.read()
-if '"finance_age_analysis"' not in js:
-    js = js.replace(
-        '  { key: "sales_quotation_requests", label: "Sales Quotation Requests", section: "salesRequests" },\n];',
-        '  { key: "sales_quotation_requests", label: "Sales Quotation Requests", section: "salesRequests" },\n  { key: "finance_age_analysis", label: "Finance Age Analysis", section: "finance" },\n];')
-if 'title: "Age Analysis"' not in js:
-    js = js.replace(
-        '  settings: {\n    eyebrow: "Platform setup",\n    title: "Setup",',
-        '  finance: {\n    eyebrow: "Finance",\n    title: "Age Analysis",\n    status: "Finance",\n  },\n  settings: {\n    eyebrow: "Platform setup",\n    title: "Setup",')
-js = js.replace(
-    '"salesRequests", "approvals", "library", "projectTimeline", "settings", "audit"].includes(targetSection)',
-    '"salesRequests", "approvals", "library", "projectTimeline", "settings", "audit", "finance"].includes(targetSection)')
-if 'loadFinanceBalances' not in js:
-    js += r"""
+        <section class="hidden-state" id="dashboard-section" hidden>
+          <h2>Dashboard</h2>
+          <p>Main reporting area for quotation activity, approvals, client acceptance, and sales rep performance.</p>
 
-// ── Finance Age Analysis ──────────────────────────────────────────────────────
-const financeSearch=document.querySelector("#financeSearch"),financeAddBtn=document.querySelector("#financeAddBtn"),financeImportBtn=document.querySelector("#financeImportBtn"),financeExportBtn=document.querySelector("#financeExportBtn"),financeImportPanel=document.querySelector("#financeImportPanel"),financeCsvFile=document.querySelector("#financeCsvFile"),financeCsvImportSubmit=document.querySelector("#financeCsvImportSubmit"),financeCsvImportCancel=document.querySelector("#financeCsvImportCancel"),financeCsvStatus=document.querySelector("#financeCsvStatus"),financeFormPanel=document.querySelector("#financeFormPanel"),financeFormTitle=document.querySelector("#financeFormTitle"),financeForm=document.querySelector("#financeForm"),financeFormCancel=document.querySelector("#financeFormCancel"),financeTableBody=document.querySelector("#financeTableBody"),financeTableEmpty=document.querySelector("#financeTableEmpty"),financeTotalsRow=document.querySelector("#financeTotalsRow");
-let financeBalances=[];
-const FIN_COLS="minmax(160px,2fr) minmax(100px,.8fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(100px,.8fr) minmax(80px,.6fr)";
-function fmtR(v){return"R "+Number(v||0).toLocaleString("en-ZA",{minimumFractionDigits:2,maximumFractionDigits:2});}
-async function loadFinanceBalances(){try{const r=await fetch("/api/finance/balances",{credentials:"include"});if(!r.ok)return;const d=await r.json();financeBalances=d.balances||[];renderFinanceTable();}catch(e){console.warn("[finance]",e);}}
-function renderFinanceTable(){if(!financeTableBody)return;const q=(financeSearch?financeSearch.value:"").toLowerCase();const rows=financeBalances.filter(r=>!q||r.client_name.toLowerCase().includes(q)||(r.account_number||"").toLowerCase().includes(q));if(!rows.length){financeTableBody.innerHTML="";if(financeTableEmpty)financeTableEmpty.style.display="";if(financeTotalsRow)financeTotalsRow.style.display="none";return;}if(financeTableEmpty)financeTableEmpty.style.display="none";financeTableBody.innerHTML=rows.map(r=>`<div class="finance-table-row" style="display:grid;grid-template-columns:${FIN_COLS};align-items:center;"><span><strong>${escapeHtml(r.client_name)}</strong>${r.notes?`<small style="display:block;color:var(--muted);font-size:11px;">${escapeHtml(r.notes)}</small>`:""}</span><span>${escapeHtml(r.account_number||"—")}</span><span>${fmtR(r.current)}</span><span>${fmtR(r.days_30)}</span><span>${fmtR(r.days_60)}</span><span>${fmtR(r.days_90)}</span><span style="color:${r.days_120_plus>0?"var(--red,#c0392b)":"inherit"};font-weight:${r.days_120_plus>0?"700":"400"};">${fmtR(r.days_120_plus)}</span><span><strong>${fmtR(r.total)}</strong></span><span style="display:flex;gap:6px;"><button class="link-btn" style="font-size:12px;" onclick="financeEditRecord('${escapeHtml(r.id)}')">Edit</button><button class="link-btn" style="font-size:12px;color:var(--red,#c0392b);" onclick="financeDeleteRecord('${escapeHtml(r.id)}')">Delete</button></span></div>`).join("");const sum=k=>rows.reduce((a,r)=>a+Number(r[k]||0),0);document.querySelector("#finTotalCurrent").textContent=fmtR(sum("current"));document.querySelector("#finTotal30").textContent=fmtR(sum("days_30"));document.querySelector("#finTotal60").textContent=fmtR(sum("days_60"));document.querySelector("#finTotal90").textContent=fmtR(sum("days_90"));document.querySelector("#finTotal120").textContent=fmtR(sum("days_120_plus"));document.querySelector("#finTotalAll").textContent=fmtR(sum("total"));if(financeTotalsRow)financeTotalsRow.style.display="grid";}
-function financeShowForm(r){if(!financeFormPanel)return;financeFormPanel.style.display="";financeFormTitle.textContent=r?"Edit Balance Record":"Add Balance Record";document.querySelector("#financeRecordId").value=r?r.id:"";document.querySelector("#financeClientName").value=r?r.client_name:"";document.querySelector("#financeAccountNumber").value=r?(r.account_number||""):"";document.querySelector("#financeLastUpdated").value=r?(r.last_updated||new Date().toISOString().slice(0,10)):new Date().toISOString().slice(0,10);document.querySelector("#financeCurrent").value=r?(r.current??0):0;document.querySelector("#financeDays30").value=r?(r.days_30??0):0;document.querySelector("#financeDays60").value=r?(r.days_60??0):0;document.querySelector("#financeDays90").value=r?(r.days_90??0):0;document.querySelector("#financeDays120").value=r?(r.days_120_plus??0):0;document.querySelector("#financeNotes").value=r?(r.notes||""):"";financeFormPanel.scrollIntoView({behavior:"smooth",block:"nearest"});}
-function financeHideForm(){if(financeFormPanel)financeFormPanel.style.display="none";if(financeForm)financeForm.reset();}
-window.financeEditRecord=id=>{const r=financeBalances.find(b=>b.id===id);if(r)financeShowForm(r);};
-window.financeDeleteRecord=async id=>{const r=financeBalances.find(b=>b.id===id);if(!r||!confirm('Delete "'+r.client_name+'"?'))return;try{const res=await fetch("/api/finance/balances?id="+encodeURIComponent(id),{method:"DELETE",credentials:"include"});if(!res.ok){const d=await res.json();alert(d.error||"Delete failed");return;}await loadFinanceBalances();}catch(e){alert("Network error");}};
-if(financeAddBtn)financeAddBtn.addEventListener("click",()=>financeShowForm(null));
-if(financeFormCancel)financeFormCancel.addEventListener("click",financeHideForm);
-if(financeSearch)financeSearch.addEventListener("input",renderFinanceTable);
-if(financeForm)financeForm.addEventListener("submit",async e=>{e.preventDefault();const btn=document.querySelector("#financeFormSubmit");if(btn){btn.disabled=true;btn.textContent="Saving…";}const p={id:document.querySelector("#financeRecordId").value||undefined,client_name:document.querySelector("#financeClientName").value,account_number:document.querySelector("#financeAccountNumber").value,last_updated:document.querySelector("#financeLastUpdated").value,current:document.querySelector("#financeCurrent").value,days_30:document.querySelector("#financeDays30").value,days_60:document.querySelector("#financeDays60").value,days_90:document.querySelector("#financeDays90").value,days_120_plus:document.querySelector("#financeDays120").value,notes:document.querySelector("#financeNotes").value};try{const res=await fetch("/api/finance/balances",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});const d=await res.json();if(!res.ok){alert(d.error||"Save failed");return;}financeHideForm();await loadFinanceBalances();}catch(e){alert("Network error");}finally{if(btn){btn.disabled=false;btn.textContent="Save record";}}});
-if(financeImportBtn)financeImportBtn.addEventListener("click",()=>{if(financeImportPanel)financeImportPanel.style.display=financeImportPanel.style.display==="none"?"":"none";});
-if(financeCsvImportCancel)financeCsvImportCancel.addEventListener("click",()=>{if(financeImportPanel)financeImportPanel.style.display="none";if(financeCsvStatus)financeCsvStatus.textContent="";});
-if(financeCsvImportSubmit)financeCsvImportSubmit.addEventListener("click",async()=>{const file=financeCsvFile&&financeCsvFile.files&&financeCsvFile.files[0];if(!file){if(financeCsvStatus)financeCsvStatus.textContent="Please select a CSV file.";return;}const text=await file.text();const lines=text.trim().split("\n");if(lines.length<2){if(financeCsvStatus)financeCsvStatus.textContent="CSV appears empty.";return;}const headers=lines[0].split(",").map(h=>h.trim().replace(/^"|"$/g,"").toLowerCase().replace(/\s+/g,"_"));const rows=lines.slice(1).filter(Boolean).map(line=>{const vals=line.split(",").map(v=>v.trim().replace(/^"|"$/g,""));return Object.fromEntries(headers.map((h,i)=>[h,vals[i]||""]));});if(financeCsvStatus)financeCsvStatus.textContent="Parsed "+rows.length+" rows…";try{const res=await fetch("/api/finance/import",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({rows})});const d=await res.json();if(!res.ok){if(financeCsvStatus)financeCsvStatus.textContent=d.error||"Import failed";return;}if(financeCsvStatus)financeCsvStatus.textContent="✓ Imported "+d.imported+" records."+(d.errors&&d.errors.length?" Errors: "+d.errors.join("; "):"");if(financeCsvFile)financeCsvFile.value="";await loadFinanceBalances();}catch(e){if(financeCsvStatus)financeCsvStatus.textContent="Network error.";}});
-if(financeExportBtn)financeExportBtn.addEventListener("click",()=>{if(!financeBalances.length){alert("No records to export.");return;}const h=["client_name","account_number","current","days_30","days_60","days_90","days_120_plus","total","notes","last_updated"];const csv=[h.join(","),...financeBalances.map(r=>h.map(k=>'"'+String(r[k]!==undefined?r[k]:"").replace(/"/g,'""')+'"').join(","))].join("\n");const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="age-analysis-"+new Date().toISOString().slice(0,10)+".csv";a.click();});
-(function(){const s=document.querySelector("#finance-section");if(!s)return;new MutationObserver(()=>{if(!s.hidden)loadFinanceBalances();}).observe(s,{attributes:true,attributeFilter:["hidden"]});})();
-"""
-with open('app.js', 'w') as f: f.write(js)
-print('✓ app.js')
+          <div class="dashboard-controls">
+            <div class="dashboard-filter-grid">
+              <label>
+                Select month
+                <input id="dashboardMonth" type="month" />
+              </label>
+              <label>
+                From date
+                <input id="dashboardFromDate" type="date" />
+              </label>
+              <label>
+                To date
+                <input id="dashboardToDate" type="date" />
+              </label>
+              <label>
+                Quotation Type
+                <select id="dashboardTypeFilter">
+                  <option value="">All</option>
+                  <option value="Technical Quotation">Technical</option>
+                  <option value="Guarding Quotation">Guarding</option>
+                  <option value="Monthly Armed Response Quotation">Monthly Armed Response</option>
+                </select>
+              </label>
+              <label>
+                Sales Representative
+                <input id="dashboardSalesRepFilter" type="search" placeholder="All sales reps" />
+              </label>
+            </div>
+            <div class="dashboard-actions">
+              <button class="secondary-btn" id="dashboardPrevMonth" type="button">Previous month</button>
+              <button class="secondary-btn" id="dashboardNextMonth" type="button">Next month</button>
+              <button class="primary-btn" id="dashboardApplyFilters" type="button">Apply filters</button>
+              <button class="secondary-btn" id="dashboardExportCsv" type="button">Export dashboard CSV</button>
+              <button class="secondary-btn" id="dashboardExportSalesCsv" type="button">Export sales rep CSV</button>
+              <button class="secondary-btn" id="dashboardExportOutstandingCsv" type="button">Export outstanding CSV</button>
+              <button class="secondary-btn" id="dashboardPrintReport" type="button">Print / PDF report</button>
+            </div>
+          </div>
 
-# ── 5. Commit & push ──────────────────────────────────────────────────────────
-subprocess.run(['git','add','server.js','index.html','app.js','styles.css'],check=True)
-subprocess.run(['git','commit','-m','feat: finance age analysis + scroll fix + auth fixes'],check=True)
-subprocess.run(['git','push'],check=True)
-print('\n✅ Done — Render redeploys in ~60 seconds.')
-<div>
+          <div class="dashboard-summary-grid" id="dashboardSummary"></div>
+
+          <div class="dashboard-chart-grid">
+            <section class="dashboard-panel">
+              <h3>Approved vs Accepted</h3>
+              <div class="dashboard-chart" id="approvedAcceptedChart"></div>
+            </section>
+            <section class="dashboard-panel">
+              <h3>Quotations per sales rep</h3>
+              <div class="dashboard-chart" id="salesRepQuoteChart"></div>
+            </section>
+            <section class="dashboard-panel">
+              <h3>Income/value per sales rep</h3>
+              <div class="dashboard-chart" id="salesRepValueChart"></div>
+            </section>
+          </div>
+
+          <div class="dashboard-table-grid">
+            <section class="dashboard-panel">
+              <h3>Sales rep totals</h3>
+              <div class="dashboard-table" id="salesRepTotalsTable"></div>
+            </section>
+            <section class="dashboard-panel">
+              <h3>Outstanding client approval</h3>
+              <div class="dashboard-table" id="outstandingClientTable"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="hidden-state" id="portal-section" hidden>
+          <div class="portal-hero">
+            <div class="portal-hero-brand">
+              <img src="./interactive-security-logo.jpg" alt="Interactive Security" />
+              <span>Central Portal</span>
+            </div>
+            <p class="eyebrow">Interactive Security Operations</p>
+            <h2>Choose your secure workspace</h2>
+            <p>Open the hub or module you need while keeping this central dashboard available for quick navigation.</p>
+          </div>
+          <div class="hub-grid portal-module-grid" id="portalHubGrid"></div>
+        </section>
+
+        <section class="workspace" id="builder-section" hidden>
+          <form class="quote-form" id="quoteForm">
+            <div class="validation-summary" id="validationSummary" hidden></div>
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Company</p>
+                  <h2>Project details</h2>
+                </div>
+                <div class="button-group">
+                  <button class="secondary-btn" id="newQuote" type="button">New quotation</button>
+                  <button class="secondary-btn" id="fillSample" type="button">Sample</button>
+                </div>
+              </div>
+
+              <div class="field-grid">
+                <label>
+                  Quoting company
+                  <select id="selectedCompany">
+                    <option value="">Select quoting company</option>
+                    <option value="isc-sa">Interactive Security Consultants SA CC</option>
+                    <option value="isc-limpopo">Interactive Security Consultants Limpopo (Pty) Ltd</option>
+                    <option value="isc-24">Interactive Security Consultants 24 (Pty) Ltd</option>
+                    <option value="isc-converted">Interactive Security Consultants (Pty) Ltd</option>
+                  </select>
+                </label>
+                <label>
+                  Business / client name
+                  <input id="clientName" type="text" placeholder="Acme Projects" spellcheck="true" />
+                </label>
+                <label>
+                  Business / client address
+                  <input id="clientAddress" type="text" placeholder="Client address" spellcheck="true" />
+                </label>
+                <label>
+                  Contact name and surname
+                  <input id="contactPerson" type="text" placeholder="Client contact name" spellcheck="true" />
+                </label>
+                <label>
+                  Contact email
+                  <input id="contactEmail" type="email" placeholder="client@example.co.za" />
+                </label>
+                <label>
+                  Contact number
+                  <input id="contactNumber" type="tel" placeholder="000 000 0000" />
+                </label>
+                <label>
+                  Sales rep
+                  <select id="salesRep">
+                    <option value="">Select sales rep</option>
+                    <option value="elzeri-wright">Elzeri Wright</option>
+                    <option value="renier-de-meyer">Renier de Meyer</option>
+                    <option value="rene-viljoen">Rene Viljoen</option>
+                    <option value="darryn-cock">Darryn Cock</option>
+                    <option value="gordon-van-aswegen">Gordon Van Aswegen</option>
+                    <option value="dean-de-kok">Dean de Kok</option>
+                    <option value="adriaan-van-deventer">Adriaan van Deventer</option>
+                    <option value="jethro-muleya">Jethro Muleya</option>
+                  </select>
+                </label>
+                <label>
+                  Quote number
+                  <input id="quoteNumber" type="text" readonly />
+                </label>
+                <label>
+                  Quotation date
+                  <input id="quoteDate" type="date" readonly />
+                </label>
+                <label>
+                  Validity days
+                  <input id="validityDays" type="number" min="1" step="1" value="30" />
+                </label>
+                <label>
+                  Valid until
+                  <input id="validUntil" type="date" readonly />
+                </label>
+              </div>
+
+              <label>
+                Additional scope wording
+                <textarea id="projectSummary" rows="4" placeholder="Add extra wording for this quotation..." spellcheck="true"></textarea>
+              </label>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Pricing</p>
+                  <h2>Line items</h2>
+                </div>
+                <div class="pricing-controls">
+                  <label>
+                    Markup %
+                    <input id="markupPercent" type="number" min="0" step="0.01" list="markupPercentOptions" value="20" />
+                    <datalist id="markupPercentOptions">
+                      <option value="0">0%</option>
+                      <option value="5">5%</option>
+                      <option value="10">10%</option>
+                      <option value="15">15%</option>
+                      <option value="20">20%</option>
+                      <option value="25">25%</option>
+                      <option value="30">30%</option>
+                      <option value="35">35%</option>
+                      <option value="40">40%</option>
+                      <option value="45">45%</option>
+                      <option value="50">50%</option>
+                      <option value="55">55%</option>
+                      <option value="60">60%</option>
+                      <option value="65">65%</option>
+                    </datalist>
+                  </label>
+                  <button class="primary-btn" id="addItem" type="button">Add item</button>
+                </div>
+              </div>
+
+              <div class="items-table" role="table" aria-label="Quote line items">
+                <div class="items-header" role="row">
+                  <span>Stock code</span>
+                  <span>Description</span>
+                  <span>Qty</span>
+                  <span>Supplier cost</span>
+                  <span>Cost excl. VAT</span>
+                  <span>Total</span>
+                  <span></span>
+                </div>
+                <div id="itemsBody"></div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Costing</p>
+                  <h2>Costing of the Quotation</h2>
+                </div>
+              </div>
+
+              <div class="costing-table">
+                <div class="costing-header">
+                  <span>Description</span>
+                  <span>Cost</span>
+                  <span>Markup</span>
+                  <span>Total</span>
+                </div>
+                <div class="costing-row">
+                  <strong>Stock</strong>
+                  <input id="costingStockCost" class="costing-input" type="number" min="0" step="0.01" value="0" />
+                  <span id="costingStockMarkup">R0.00</span>
+                  <strong id="costingStockTotal">R0.00</strong>
+                </div>
+                <div class="costing-row">
+                  <strong>Consumables</strong>
+                  <input id="costingConsumablesCost" class="costing-input" type="number" min="0" step="0.01" value="0" />
+                  <span id="costingConsumablesMarkup">R0.00</span>
+                  <strong id="costingConsumablesTotal">R0.00</strong>
+                </div>
+                <div class="costing-row">
+                  <strong>Labour</strong>
+                  <input id="costingLabourCost" class="costing-input" type="number" min="0" step="0.01" value="0" />
+                  <span id="costingLabourMarkup">R0.00</span>
+                  <strong id="costingLabourTotal">R0.00</strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>Costing total</strong>
+                  <span id="costingRawTotal">R0.00</span>
+                  <span></span>
+                  <strong id="costingGrandTotal">R0.00</strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>Total Markup</strong>
+                  <span></span>
+                  <span id="costingTotalMarkup">R0.00</span>
+                  <strong></strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>Labour Amount</strong>
+                  <span></span>
+                  <span></span>
+                  <strong id="costingLabourAmount">R0.00</strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>Markup + Labour Total</strong>
+                  <span></span>
+                  <span></span>
+                  <strong id="costingMarkupLabourTotal">R0.00</strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>16.08% Deduction</strong>
+                  <span></span>
+                  <span></span>
+                  <strong id="costingDeduction16">R0.00</strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>Profit</strong>
+                  <span></span>
+                  <span></span>
+                  <strong id="costingProfit">R0.00</strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>4% Calculation</strong>
+                  <span></span>
+                  <span></span>
+                  <strong id="costingCommission4">R0.00</strong>
+                </div>
+                <div class="costing-row costing-total-row">
+                  <strong>Total Quotation Profit</strong>
+                  <span></span>
+                  <span></span>
+                  <strong id="costingTotalQuotationProfit">R0.00</strong>
+                </div>
+              </div>
+              <p class="upload-note" id="costingBalanceNote">Costing total must match quotation total excluding VAT.</p>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">AI assistant</p>
+                  <h2>Generated wording</h2>
+                </div>
+                <button class="primary-btn" id="generateAi" type="button">Generate draft</button>
+              </div>
+
+              <div class="assistant-grid">
+                <label>
+                  AI instruction / focus
+                  <input id="aiInstruction" type="text" placeholder="Example: Focus on installation assumptions, exclusions, payment terms, or client responsibilities." spellcheck="true" />
+                </label>
+                <label>
+                  Terms and assumptions
+                  <textarea id="termsText" rows="6" spellcheck="true"></textarea>
+                </label>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
                   <p class="eyebrow">Supplier quotation</p>
                   <h2>Approval attachment</h2>
                 </div>
@@ -397,7 +689,7 @@ print('\n✅ Done — Render redeploys in ~60 seconds.')
                   <span>Billing type</span>
                   <span>Unit / notes</span>
                   <span>Experience</span>
-                  <span>Equipment &amp; duties</span>
+                  <span>Equipment & duties</span>
                   <span>Rate / officer</span>
                   <span>Qty</span>
                   <span>Total</span>
@@ -615,6 +907,7 @@ print('\n✅ Done — Render redeploys in ~60 seconds.')
             </section>
           </aside>
         </section>
+
         <section class="hidden-state" id="salesRequests-section" hidden>
           <h2>Sales Quotation Requests</h2>
           <p>Submit supplier quotations and supporting information for quotation builders.</p>
@@ -732,6 +1025,7 @@ print('\n✅ Done — Render redeploys in ~60 seconds.')
         <section class="hidden-state" id="settings-section" hidden>
           <h2>Setup</h2>
           <p>Manage system data, users, access levels, clients, sales reps, and supplier pricing.</p>
+
           <div class="setup-grid">
             <section class="setup-panel">
               <h3>Member access management</h3>
@@ -768,11 +1062,11 @@ print('\n✅ Done — Render redeploys in ~60 seconds.')
               <form class="setup-form" id="quotationSettingsForm">
                 <label>
                   Profit deduction percentage
-                  <input id="profitDeductionPercent" type="number" min="0" step="0.01" value="16.08" />
+                  <input id="profitDeductionPercent" type="number" min="0" step="0.01" value="16.08" title="Internal deduction used in the profit calculation. This can be changed in Setup." />
                 </label>
                 <label>
                   Commission percentage
-                  <input id="commissionPercent" type="number" min="0" step="0.01" value="4" />
+                  <input id="commissionPercent" type="number" min="0" step="0.01" value="4" title="Commission percentage deducted from markup and labour profit. This can be changed in Setup." />
                 </label>
                 <button class="primary-btn" type="submit">Save quotation settings</button>
               </form>
@@ -912,65 +1206,7 @@ print('\n✅ Done — Render redeploys in ~60 seconds.')
           </div>
           <div class="audit-list" id="auditList"></div>
         </section>
-
-        <section class="hidden-state" id="finance-section" hidden>
-          <h2>Finance Age Analysis</h2>
-          <p>Debtor age analysis, outstanding balances, and collections oversight. Accessible to Admin and Super Admin only.</p>
-          <div class="approval-workspace">
-            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:18px;">
-              <input id="financeSearch" type="search" placeholder="Search client name or account…" style="flex:1;min-width:200px;max-width:340px;" />
-              <button class="secondary-btn" type="button" id="financeAddBtn">+ Add record</button>
-              <button class="secondary-btn" type="button" id="financeImportBtn">Import CSV</button>
-              <button class="secondary-btn" type="button" id="financeExportBtn">Export CSV</button>
-            </div>
-            <div id="financeImportPanel" class="panel" style="display:none;margin-bottom:18px;">
-              <h3>Import CSV</h3>
-              <p style="font-size:13px;color:var(--muted);margin-bottom:10px;">
-                CSV must have columns: <strong>client_name, account_number, current, days_30, days_60, days_90, days_120_plus, notes, last_updated</strong><br/>
-                Amounts must be numeric (no currency symbols). Existing clients are updated by name match.
-              </p>
-              <label>Select CSV file<input id="financeCsvFile" type="file" accept=".csv" /></label>
-              <div style="display:flex;gap:8px;margin-top:10px;">
-                <button class="primary-btn" type="button" id="financeCsvImportSubmit">Import</button>
-                <button class="secondary-btn" type="button" id="financeCsvImportCancel">Cancel</button>
-              </div>
-              <p id="financeCsvStatus" style="margin-top:8px;font-size:13px;"></p>
-            </div>
-            <div id="financeFormPanel" class="panel" style="display:none;margin-bottom:18px;">
-              <h3 id="financeFormTitle">Add Balance Record</h3>
-              <form class="setup-form" id="financeForm" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;">
-                <input id="financeRecordId" type="hidden" />
-                <label style="grid-column:1/-1;">Client name<input id="financeClientName" type="text" placeholder="Client name" required /></label>
-                <label>Account number<input id="financeAccountNumber" type="text" placeholder="ACC-001" /></label>
-                <label>Last updated<input id="financeLastUpdated" type="date" /></label>
-                <label>Current (R)<input id="financeCurrent" type="number" min="0" step="0.01" value="0" /></label>
-                <label>30 days (R)<input id="financeDays30" type="number" min="0" step="0.01" value="0" /></label>
-                <label>60 days (R)<input id="financeDays60" type="number" min="0" step="0.01" value="0" /></label>
-                <label>90 days (R)<input id="financeDays90" type="number" min="0" step="0.01" value="0" /></label>
-                <label>120+ days (R)<input id="financeDays120" type="number" min="0" step="0.01" value="0" /></label>
-                <label style="grid-column:1/-1;">Notes<input id="financeNotes" type="text" placeholder="Optional notes" /></label>
-                <div style="grid-column:1/-1;display:flex;gap:8px;">
-                  <button class="primary-btn" type="submit" id="financeFormSubmit">Save record</button>
-                  <button class="secondary-btn" type="button" id="financeFormCancel">Cancel</button>
-                </div>
-              </form>
-            </div>
-            <div class="finance-table" id="financeTable">
-              <div class="finance-table-row finance-table-head" style="display:grid;grid-template-columns:minmax(160px,2fr) minmax(100px,.8fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(100px,.8fr) minmax(80px,.6fr);">
-                <span>Client</span><span>Account</span><span>Current</span><span>30 Days</span><span>60 Days</span><span>90 Days</span><span>120+ Days</span><span>Total</span><span>Actions</span>
-              </div>
-              <div id="financeTableBody"></div>
-              <div id="financeTableEmpty" class="approval-table-empty" style="display:none;">No balance records found.</div>
-              <div class="finance-table-row" id="financeTotalsRow" style="display:grid;grid-template-columns:minmax(160px,2fr) minmax(100px,.8fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(90px,.7fr) minmax(100px,.8fr) minmax(80px,.6fr);background:var(--surface);font-weight:700;border-top:2px solid var(--line);">
-                <span><strong>TOTALS</strong></span><span></span>
-                <span id="finTotalCurrent">R0.00</span><span id="finTotal30">R0.00</span>
-                <span id="finTotal60">R0.00</span><span id="finTotal90">R0.00</span>
-                <span id="finTotal120">R0.00</span><span id="finTotalAll">R0.00</span><span></span>
-              </div>
-            </div>
-          </div>
-        </section>
-</main>
+      </main>
     </div>
 
     <script src="/app.js"></script>

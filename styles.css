@@ -1104,7 +1104,7 @@ select {
 .approval-filterbar { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; padding: 16px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-xl); box-shadow: var(--shadow-sm); }
 .approval-filterbar label { min-width: 180px; }
 
-.approval-table { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--line); border-radius: var(--r-xl); background: var(--paper); box-shadow: var(--shadow-sm); }
+.approval-table { overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-xl); background: var(--paper); box-shadow: var(--shadow-sm); }
 
 .approval-table-header, .approval-table-row {
   display: grid;
