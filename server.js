@@ -7,7 +7,7 @@ const { spawnSync } = require("child_process");
 const bcrypt = require("./vendor/bcrypt");
 
 const root = __dirname;
-const dataDir = path.join(root, "data");
+const dataDir = process.env.DATA_DIR || process.env.RENDER_PERSISTENT_DIR || path.join(root, "data");
 const dbPath = path.join(dataDir, "app-db.json");
 const port = Number(process.env.PORT || 3100);
 const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS || 12);
@@ -33,6 +33,7 @@ const permissionKeys = [
   "member_access_management",
   "quotation_hub",
   "finance_age_analysis",
+  "administration_governance",
   "sales_quotation_requests",
 ];
 
@@ -197,6 +198,17 @@ function publicUser(member) {
     mustChangePassword: Boolean(member.mustChangePassword),
     mfaEnabled: Boolean(member.mfaEnabled),
     mfaRequired: Boolean(member.mfaRequired),
+  };
+}
+
+function persistentPermissionsForMember(member) {
+  const role = normalizeRole(member.role || member.access || "Read Only");
+  const explicit = Boolean(member.permissionsExplicit);
+  const permissions = sanitizePermissions(member.permissions);
+  return {
+    role,
+    permissions: explicit ? permissions : (permissions.length ? permissions : defaultPermissionsForRole(role)),
+    permissionsExplicit: explicit || permissions.length > 0,
   };
 }
 
@@ -366,15 +378,27 @@ function getSession(req) {
     return null;
   }
 
-  // Normalize role/permissions from session (do not read from member record here)
-  const role = normalizeRole(session.role || session.access || "Read Only");
-  const sanitizedPermissions = sanitizePermissions(session.permissions);
-  const permissions = session.permissionsExplicit
-    ? sanitizedPermissions
-    : (sanitizedPermissions.length ? sanitizedPermissions : defaultPermissionsForRole(role));
+  const member = db.members.find(
+    (m) => m.id === session.userId || normalizeEmail(m.email) === normalizeEmail(session.email)
+  );
+  if (!member || ["Disabled", "Archived"].includes(member.inviteStatus || member.status || "")) {
+    db.sessions.splice(sessionIndex, 1);
+    writeAudit(db, "Session revoked", session, "Authentication", session.email, "Member missing, disabled, or archived");
+    writeDb(db);
+    return null;
+  }
+  const { role, permissions, permissionsExplicit } = persistentPermissionsForMember(member);
 
-  // Update lastActivityAt on the session record only
-  db.sessions[sessionIndex] = { ...session, role, permissions, lastActivityAt: now.toISOString() };
+  db.sessions[sessionIndex] = {
+    ...session,
+    userId: member.id,
+    email: member.email,
+    name: member.name || member.email,
+    role,
+    permissions,
+    permissionsExplicit,
+    lastActivityAt: now.toISOString(),
+  };
   writeDb(db);
 
   return db.sessions[sessionIndex];
@@ -385,20 +409,27 @@ function saveSession(user) {
   const settings = securitySettings(db);
   const sid = crypto.randomBytes(32).toString("hex");
   const now = new Date();
-  const role = normalizeRole(user.role || user.access || "Read Only");
-  const userPermissions = sanitizePermissions(user.permissions);
-  const hasExplicitPermissions = Boolean(user.permissionsExplicit) || userPermissions.length > 0;
+  const member = db.members.find(
+    (m) => normalizeEmail(m.email) === normalizeEmail(user.email) || m.id === (user.userId || user.id)
+  );
+  const persisted = member
+    ? persistentPermissionsForMember(member)
+    : {
+      role: normalizeRole(user.role || user.access || "Read Only"),
+      permissions: sanitizePermissions(user.permissions).length ? sanitizePermissions(user.permissions) : defaultPermissionsForRole(user.role || user.access),
+      permissionsExplicit: Boolean(user.permissionsExplicit) || sanitizePermissions(user.permissions).length > 0,
+    };
 
   const session = {
     sid,
-    userId: user.userId || user.id || user.email,
-    email: user.email,
-    name: user.name || user.email,
-    role,
-    permissions: hasExplicitPermissions ? userPermissions : defaultPermissionsForRole(role),
-    permissionsExplicit: hasExplicitPermissions,
-    mfaEnabled: Boolean(user.mfaEnabled),
-    mfaRequired: Boolean(user.mfaRequired),
+    userId: member?.id || user.userId || user.id || user.email,
+    email: member?.email || user.email,
+    name: member?.name || user.name || user.email,
+    role: persisted.role,
+    permissions: persisted.permissions,
+    permissionsExplicit: persisted.permissionsExplicit,
+    mfaEnabled: Boolean(member?.mfaEnabled ?? user.mfaEnabled),
+    mfaRequired: Boolean(member?.mfaRequired ?? user.mfaRequired),
     createdAt: now.toISOString(),
     lastActivityAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + settings.sessionAbsoluteHours * 60 * 60 * 1000).toISOString(),
@@ -414,24 +445,20 @@ function saveSession(user) {
   // NEVER touch: password_hash, passwordAlgorithm, mustChangePassword,
   //              failedLoginAttempts, lockedUntil — those are managed
   //              by the auth/password endpoints exclusively.
-  const memberIndex = db.members.findIndex(
-    (m) => normalizeEmail(m.email) === normalizeEmail(session.email) || m.id === session.userId
-  );
+  const memberIndex = db.members.findIndex((m) => m.id === session.userId || normalizeEmail(m.email) === normalizeEmail(session.email));
   if (memberIndex >= 0) {
     const existing = db.members[memberIndex];
     db.members[memberIndex] = {
       ...existing,
-      // Safe profile fields only
       name: session.name || existing.name,
-      role: session.role,
-      access: session.role,
-      permissions: session.permissions,
-      permissionsExplicit: hasExplicitPermissions,
-      mfaEnabled: Boolean(user.mfaEnabled),
-      mfaRequired: Boolean(user.mfaRequired),
+      role: existing.role || session.role,
+      access: existing.access || session.role,
+      permissions: Array.isArray(existing.permissions) ? existing.permissions : session.permissions,
+      permissionsExplicit: Boolean(existing.permissionsExplicit),
+      mfaEnabled: Boolean(existing.mfaEnabled),
+      mfaRequired: Boolean(existing.mfaRequired),
       inviteStatus: user.inviteStatus || existing.inviteStatus || "Active",
       updated_at: now.toISOString(),
-      // Explicitly preserve all security fields from the stored record
       password_hash: existing.password_hash,
       passwordAlgorithm: existing.passwordAlgorithm,
       mustChangePassword: existing.mustChangePassword,
@@ -452,7 +479,7 @@ function saveSession(user) {
       role: session.role,
       access: session.role,
       permissions: session.permissions,
-      permissionsExplicit: hasExplicitPermissions,
+      permissionsExplicit: session.permissionsExplicit,
       mfaEnabled: Boolean(user.mfaEnabled),
       mfaRequired: Boolean(user.mfaRequired),
       password_hash: "",
@@ -474,6 +501,7 @@ function canAccessHub(session, hubSlug) {
   const hubPermissionMap = {
     "quotation-hub": "quotation_hub",
     "finance-age-analysis": "finance_age_analysis",
+    "administration-governance": "administration_governance",
   };
   const permissionKey = hubPermissionMap[hubSlug];
   return permissionKey ? hasPermission(session, permissionKey) : ["Super Admin", "Admin"].includes(normalizeRole(session.role || session.access));
@@ -882,6 +910,8 @@ async function handleApi(req, res) {
     member.password_hash = newHash;
     member.passwordAlgorithm = "bcrypt";
     member.mustChangePassword = false;
+    member.inviteStatus = "Active";
+    member.status = "Active";
     member.passwordChangedAt = new Date().toISOString();
     member.failedLoginAttempts = 0;
     member.lockedUntil = null;

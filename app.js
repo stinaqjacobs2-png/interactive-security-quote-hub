@@ -452,6 +452,7 @@ const permissionDefinitions = [
   { key: "member_access_management", label: "Member Access Management", section: "settings" },
   { key: "quotation_hub", label: "Quotation Hub", hubSlug: "quotation-hub" },
   { key: "finance_age_analysis", label: "Finance Balances and Age Analysis", hubSlug: "finance-age-analysis" },
+  { key: "administration_governance", label: "Administration & Governance", hubSlug: "administration-governance" },
   { key: "sales_quotation_requests", label: "Sales Quotation Requests", section: "salesRequests" },
 ];
 
@@ -1525,6 +1526,137 @@ function clearValidation() {
   });
   validationSummary.hidden = true;
   validationSummary.textContent = "";
+}
+
+function cssEscapeValue(value = "") {
+  if (window.CSS?.escape) return CSS.escape(String(value));
+  return String(value).replace(/["\\]/g, "\\$&");
+}
+
+function selectorForElement(element) {
+  if (!element || element === window || element === document) return "";
+  if (element.id) return `#${cssEscapeValue(element.id)}`;
+  const stableAttributes = [
+    "data-section",
+    "data-finance-opening-edit",
+    "data-finance-opening-date",
+    "data-finance-opening-name",
+    "data-finance-opening-field",
+    "data-governance-filter",
+    "data-field",
+    "data-request-filter",
+    "data-line-index",
+    "name",
+  ];
+  const stableSelector = stableAttributes
+    .filter((attribute) => element.hasAttribute?.(attribute))
+    .map((attribute) => `[${attribute}="${cssEscapeValue(element.getAttribute(attribute))}"]`)
+    .join("");
+  if (stableSelector) {
+    const tag = element.tagName ? element.tagName.toLowerCase() : "";
+    const selector = `${tag}${stableSelector}`;
+    if (document.querySelectorAll(selector).length === 1) return selector;
+  }
+  const path = [];
+  let node = element;
+  while (node && node.nodeType === 1 && node !== document.body) {
+    const tag = node.tagName.toLowerCase();
+    const siblings = Array.from(node.parentElement?.children || []).filter((child) => child.tagName === node.tagName);
+    const index = siblings.indexOf(node) + 1;
+    path.unshift(`${tag}:nth-of-type(${Math.max(index, 1)})`);
+    node = node.parentElement;
+  }
+  return path.length ? `body > ${path.join(" > ")}` : "";
+}
+
+function preferredScrollableElements() {
+  return Array.from(document.querySelectorAll([
+    ".finance-balanse-table-wrap",
+    ".finance-table",
+    ".governance-matrix-wrap",
+    ".approval-table",
+    ".items-table",
+    ".setup-list",
+    ".timeline-table",
+    ".library-table",
+    ".finance-main",
+    ".preview-wrap",
+  ].join(",")));
+}
+
+function scrollableElements() {
+  const preferred = preferredScrollableElements();
+  const discovered = Array.from(document.querySelectorAll("body *")).filter((element) => (
+    element.scrollLeft || element.scrollTop || element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1
+  ));
+  return Array.from(new Set([...preferred, ...discovered]));
+}
+
+function captureUiPosition() {
+  const active = document.activeElement;
+  const focus = active && ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(active.tagName)
+    ? {
+      selector: selectorForElement(active),
+      start: active.selectionStart,
+      end: active.selectionEnd,
+      value: "value" in active ? active.value : "",
+    }
+    : null;
+  return {
+    windowX: window.scrollX,
+    windowY: window.scrollY,
+    focus,
+    scrolls: scrollableElements()
+      .map((element) => ({
+        selector: selectorForElement(element),
+        left: element.scrollLeft,
+        top: element.scrollTop,
+        preferred: preferredScrollableElements().includes(element),
+      }))
+      .filter((item) => item.selector && (item.preferred || item.left || item.top)),
+  };
+}
+
+function restoreUiPosition(state) {
+  if (!state) return;
+  const restore = () => {
+    state.scrolls.forEach((item) => {
+      const element = document.querySelector(item.selector);
+      if (!element) return;
+      element.scrollLeft = item.left;
+      element.scrollTop = item.top;
+    });
+    window.scrollTo(state.windowX, state.windowY);
+    if (state.focus?.selector) {
+      const element = document.querySelector(state.focus.selector);
+      if (element && document.contains(element)) {
+        element.focus({ preventScroll: true });
+        if ("selectionStart" in element && state.focus.start !== null && state.focus.start !== undefined) {
+          try {
+            const end = state.focus.end ?? state.focus.start;
+            element.setSelectionRange(state.focus.start, end);
+          } catch {}
+        }
+      }
+    }
+  };
+  requestAnimationFrame(() => {
+    restore();
+    requestAnimationFrame(restore);
+  });
+}
+
+function preserveUiPosition(fn) {
+  const state = captureUiPosition();
+  const result = fn();
+  restoreUiPosition(state);
+  return result;
+}
+
+function withUiPositionPreserved(fn) {
+  return function preservedRenderer(...args) {
+    return preserveUiPosition(() => fn.apply(this, args));
+  };
 }
 
 function currentSession() {
@@ -3073,7 +3205,7 @@ function hasHubAccess(hub) {
       permission.hubSlug === hub.slug && permission.accessLevel === member.access
     ));
   }
-  if (hub.slug === "administration-governance") return ["Admin", "Super Admin"].includes(member.access);
+  if (hub.slug === "administration-governance") return hasPermission("administration_governance", member);
   return storageList(hubPermissionsStorageKey).some((permission) => (
     permission.hubSlug === hub.slug && permission.accessLevel === member.access
   ));
@@ -4479,7 +4611,7 @@ function renderPortal() {
         <button class="primary-btn" type="button" data-open-hub="${escapeHtml(hub.slug)}">Open hub</button>
       </article>
     `).join("")
-    : `<p class="empty-state">No hubs are available for your access level yet.</p>`;
+    : `<p class="empty-state">No hub access has been assigned. Please contact an administrator.</p>`;
 }
 
 function exportDashboardCsv(type = "all") {
@@ -10627,6 +10759,40 @@ portalHubGrid.addEventListener("change", async (event) => {
   event.target.value = "";
 });
 
+function installUiPositionPreservation() {
+  renderAll = withUiPositionPreserved(renderAll);
+  renderPreview = withUiPositionPreserved(renderPreview);
+  renderCosting = withUiPositionPreserved(renderCosting);
+  renderDashboard = withUiPositionPreserved(renderDashboard);
+  renderProjections = withUiPositionPreserved(renderProjections);
+  renderAudit = withUiPositionPreserved(renderAudit);
+  renderSetup = withUiPositionPreserved(renderSetup);
+  renderMembers = withUiPositionPreserved(renderMembers);
+  renderSetupSalesReps = withUiPositionPreserved(renderSetupSalesReps);
+  renderSupplierPrices = withUiPositionPreserved(renderSupplierPrices);
+  renderGuardingPriceManagement = withUiPositionPreserved(renderGuardingPriceManagement);
+  renderClients = withUiPositionPreserved(renderClients);
+  renderSalesRequests = withUiPositionPreserved(renderSalesRequests);
+  renderSalesRequestDocuments = withUiPositionPreserved(renderSalesRequestDocuments);
+  renderSalesRequestSummary = withUiPositionPreserved(renderSalesRequestSummary);
+  renderGuardingBuilder = withUiPositionPreserved(renderGuardingBuilder);
+  renderGuardingLineItemRows = withUiPositionPreserved(renderGuardingLineItemRows);
+  renderGuardingPreview = withUiPositionPreserved(renderGuardingPreview);
+  renderArmedResponseBuilder = withUiPositionPreserved(renderArmedResponseBuilder);
+  renderArmedResponseRows = withUiPositionPreserved(renderArmedResponseRows);
+  renderArmedResponsePreview = withUiPositionPreserved(renderArmedResponsePreview);
+  renderProjectTimeline = withUiPositionPreserved(renderProjectTimeline);
+  renderProjectTimelineDetail = withUiPositionPreserved(renderProjectTimelineDetail);
+  renderApprovals = withUiPositionPreserved(renderApprovals);
+  renderApprovalDetail = withUiPositionPreserved(renderApprovalDetail);
+  renderQuoteLibrary = withUiPositionPreserved(renderQuoteLibrary);
+  renderQuoteLibraryDetail = withUiPositionPreserved(renderQuoteLibraryDetail);
+  renderFinanceHub = withUiPositionPreserved(renderFinanceHub);
+  renderGovernanceHub = withUiPositionPreserved(renderGovernanceHub);
+  renderPortal = withUiPositionPreserved(renderPortal);
+}
+
+installUiPositionPreservation();
 seedPortalTables();
 refreshFirstSetupAccess();
 migrateSalesRequestStatuses();
