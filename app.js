@@ -3510,6 +3510,26 @@ function financeOpeningGroupNames() {
   return names;
 }
 
+function financeOpeningTemplateTotalLabels() {
+  const labels = {};
+  let currentGroup = "";
+  let grandTotalLabel = "GRAND TOTAL AVAILABLE";
+  financeOpeningTemplateRows.forEach((row) => {
+    if (row.type === "section") {
+      currentGroup = row.name;
+      return;
+    }
+    if (row.type === "grand-total") {
+      grandTotalLabel = row.name;
+      return;
+    }
+    if (row.type === "total" && currentGroup && !labels[currentGroup]) {
+      labels[currentGroup] = row.name;
+    }
+  });
+  return { labels, grandTotalLabel };
+}
+
 function financeCanManageOpeningAccounts() {
   return ["Admin", "Super Admin"].includes(currentMember().access) || hasPermission("finance_age_analysis");
 }
@@ -3562,15 +3582,16 @@ function financeOpeningBaseRows(includeArchived = financeOpeningView.mode !== "c
 function financeOpeningGroups() {
   const groups = [];
   let currentGroup = null;
+  const { labels } = financeOpeningTemplateTotalLabels();
   financeOpeningBaseRows().forEach((row) => {
     if (row.type === "section") {
-      currentGroup = { name: row.name, rowOrder: row.rowOrder, accounts: [] };
+      currentGroup = { name: row.name, rowOrder: row.rowOrder, totalLabel: labels[row.name] || "SUB TOTAL", accounts: [] };
       groups.push(currentGroup);
       return;
     }
     if (row.type !== "account") return;
     if (!currentGroup) {
-      currentGroup = { name: "OPERATING COMPANIES", rowOrder: 0, accounts: [] };
+      currentGroup = { name: "OPERATING COMPANIES", rowOrder: 0, totalLabel: labels["OPERATING COMPANIES"] || "SUB TOTAL", accounts: [] };
       groups.push(currentGroup);
     }
     currentGroup.accounts.push(row);
@@ -3671,6 +3692,27 @@ function financeOpeningCellValue(base, column, allRows, byDateAndRow) {
   return financeNumber(record[column.field]);
 }
 
+function financeOpeningMoney(value) {
+  const amount = roundCurrency(financeNumber(value));
+  const formatted = `R ${Math.abs(amount).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return amount < 0 ? `-(${formatted})` : formatted;
+}
+
+function financeOpeningColumnTotal(accounts, column, allRows, byDateAndRow) {
+  return accounts
+    .filter((account) => account.type === "account" && account.status !== "archived")
+    .reduce((sum, account) => sum + financeOpeningCellValue(account, column, allRows, byDateAndRow), 0);
+}
+
+function financeOpeningGroupSubtotal(group, columns, allRows, byDateAndRow) {
+  return columns.map((column) => financeOpeningColumnTotal(group.accounts, column, allRows, byDateAndRow));
+}
+
+function financeOpeningGrandTotals(groups, columns, allRows, byDateAndRow) {
+  const groupSubtotals = groups.map((group) => financeOpeningGroupSubtotal(group, columns, allRows, byDateAndRow));
+  return columns.map((_, columnIndex) => groupSubtotals.reduce((sum, subtotal) => sum + financeNumber(subtotal[columnIndex]), 0));
+}
+
 function financeOpeningDisplayColumns(dateGroups) {
   return dateGroups.flatMap((group) => [
     { date: group.previousDate, field: "availableBalance", label: "AVAILABLE", role: "previous-available" },
@@ -3701,9 +3743,20 @@ function financeOpeningCalculatedRow(label, accounts, columns, allRows, byDateAn
     <tr class="finance-balanse-${escapeHtml(type)}">
       <th>${escapeHtml(label)}</th>
       ${columns.map((column) => {
-        const total = accounts.reduce((sum, account) => sum + financeOpeningCellValue(account, column, allRows, byDateAndRow), 0);
-        return `<td class="finance-balanse-value finance-balanse-${escapeHtml(column.role)}">${money.format(total)}</td>`;
+        const total = financeOpeningColumnTotal(accounts, column, allRows, byDateAndRow);
+        return `<td class="finance-balanse-value finance-balanse-${escapeHtml(column.role)}">${escapeHtml(financeOpeningMoney(total))}</td>`;
       }).join("")}
+    </tr>
+  `;
+}
+
+function financeOpeningGrandTotalRow(groups, columns, allRows, byDateAndRow) {
+  const totals = financeOpeningGrandTotals(groups, columns, allRows, byDateAndRow);
+  const { grandTotalLabel } = financeOpeningTemplateTotalLabels();
+  return `
+    <tr class="finance-balanse-grand-total">
+      <th>${escapeHtml(grandTotalLabel)}</th>
+      ${totals.map((total, index) => `<td class="finance-balanse-value finance-balanse-${escapeHtml(columns[index].role)}">${escapeHtml(financeOpeningMoney(total))}</td>`).join("")}
     </tr>
   `;
 }
@@ -3715,7 +3768,6 @@ function financeOpeningExportRows() {
   const allRows = financeRows("opening");
   const byDateAndRow = new Map(allRows.map((row) => [`${row.openingDate}|${financeOpeningRowKey(row)}`, row]));
   const groups = financeOpeningGroups();
-  const allAccounts = groups.flatMap((group) => group.accounts);
   const dateHeader = [""];
   dateGroups.forEach((group) => dateHeader.push(financeOpeningDateLabel(group.previousDate), financeOpeningDateLabel(group.date), financeOpeningDateLabel(group.date)));
   const typeHeader = ["NEDBANK", ...columns.map((column) => column.label)];
@@ -3729,13 +3781,14 @@ function financeOpeningExportRows() {
       ]);
     });
     rows.push([
-      "SUB TOTAL",
-      ...columns.map((column) => group.accounts.reduce((sum, account) => sum + financeOpeningCellValue(account, column, allRows, byDateAndRow), 0).toFixed(2)),
+      group.totalLabel || "SUB TOTAL",
+      ...financeOpeningGroupSubtotal(group, columns, allRows, byDateAndRow).map((total) => total.toFixed(2)),
     ]);
   });
+  const { grandTotalLabel } = financeOpeningTemplateTotalLabels();
   rows.push([
-    "GRAND TOTAL",
-    ...columns.map((column) => allAccounts.reduce((sum, account) => sum + financeOpeningCellValue(account, column, allRows, byDateAndRow), 0).toFixed(2)),
+    grandTotalLabel,
+    ...financeOpeningGrandTotals(groups, columns, allRows, byDateAndRow).map((total) => total.toFixed(2)),
   ]);
   return rows;
 }
@@ -3839,7 +3892,6 @@ function renderFinanceOpeningBalances() {
   const allRows = financeRows("opening");
   const byDateAndRow = new Map(allRows.map((row) => [`${row.openingDate}|${financeOpeningRowKey(row)}`, row]));
   const groups = financeOpeningGroups();
-  const allAccounts = groups.flatMap((group) => group.accounts);
   return `
     <section class="finance-card finance-balanse-card">
       <div class="panel-heading">
@@ -3885,9 +3937,9 @@ function renderFinanceOpeningBalances() {
                   ${columns.map((column) => financeOpeningAccountCell(account, column, allRows, byDateAndRow)).join("")}
                 </tr>
               `).join("")}
-              ${financeOpeningCalculatedRow("SUB TOTAL", group.accounts, columns, allRows, byDateAndRow)}
+              ${financeOpeningCalculatedRow(group.totalLabel || "SUB TOTAL", group.accounts, columns, allRows, byDateAndRow)}
             `).join("")}
-            ${financeOpeningCalculatedRow("GRAND TOTAL", allAccounts, columns, allRows, byDateAndRow, "grand-total")}
+            ${financeOpeningGrandTotalRow(groups, columns, allRows, byDateAndRow)}
           </tbody>
         </table>
       </div>
@@ -4053,7 +4105,7 @@ function financePrintExport(type) {
         th,td{border:1px solid #000;padding:5px;text-align:right}
         th:first-child,td:first-child{text-align:left;background:#ffff00;font-weight:700}
         thead th{background:#ffff00;text-align:center;font-weight:800}
-        tbody tr:nth-child(1) td,tbody tr:nth-child(1) th{background:#ffd966;font-weight:800}
+        .section th,.section td{background:#ffd966;font-weight:800;text-transform:uppercase}
         .subtotal th,.subtotal td{background:#9dc3e6;font-weight:800}
         .grand th,.grand td{background:#1f4e79;color:#fff;font-weight:900}
       </style></head><body>
@@ -4063,8 +4115,9 @@ function financePrintExport(type) {
           <tbody>
             ${rows.slice(2).map((row) => {
               const label = String(row[0] || "").toUpperCase();
-              const cls = label.includes("GRAND") ? "grand" : label.includes("SUB TOTAL") ? "subtotal" : "";
-              return `<tr class="${cls}">${row.map((cell, index) => `<td>${escapeHtml(index === 0 ? cell : money.format(financeNumber(cell)))}</td>`).join("")}</tr>`;
+              const isSection = row.slice(1).every((cell) => String(cell || "") === "");
+              const cls = label.includes("GRAND") ? "grand" : (label.includes("SUB TOTAL") || label.includes("TOTAL AVAILABLE")) ? "subtotal" : isSection ? "section" : "";
+              return `<tr class="${cls}">${row.map((cell, index) => `<td>${escapeHtml(index === 0 || isSection ? cell : financeOpeningMoney(cell))}</td>`).join("")}</tr>`;
             }).join("")}
           </tbody>
         </table>
