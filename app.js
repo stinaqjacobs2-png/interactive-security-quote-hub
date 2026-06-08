@@ -441,7 +441,7 @@ const permissionDefinitions = [
   { key: "dashboard", label: "Dashboard", section: "dashboard" },
   { key: "build_quotation", label: "Building Technical Quotation", section: "builder" },
   { key: "build_guarding_quotation", label: "Building Guarding Quotation", section: "guardingBuilder" },
-  { key: "build_armed_response_quotation", label: "Building Armed Response Quotation", section: "armedResponseBuilder" },
+  { key: "build_armed_response_quotation", label: "Building Monthly Armed Response Quotation", section: "armedResponseBuilder" },
   { key: "quote_library", label: "Quote Library", section: "library" },
   { key: "project_timeline", label: "Project Timeline", section: "projectTimeline" },
   { key: "approval", label: "Approval", section: "approvals" },
@@ -2168,7 +2168,8 @@ function seedPortalTables() {
 
 function renderPermissionChecklist(selectedKeys = []) {
   const selected = new Set(selectedKeys);
-  memberPermissionChecklist.innerHTML = `<legend>Allowed tabs/pages</legend>` + permissionDefinitions.map((permission) => `
+  const setupPermissions = permissionDefinitions.filter((permission) => permission.key === "quotation_hub" || quotationHubPermissionKeys.includes(permission.key));
+  memberPermissionChecklist.innerHTML = `<legend>Allowed Quotation Hub access</legend>` + setupPermissions.map((permission) => `
     <label class="permission-option">
       <input type="checkbox" value="${escapeHtml(permission.key)}" ${selected.has(permission.key) ? "checked" : ""} />
       ${escapeHtml(permission.label)}
@@ -2178,6 +2179,55 @@ function renderPermissionChecklist(selectedKeys = []) {
 
 function selectedPermissionKeys() {
   return Array.from(memberPermissionChecklist.querySelectorAll("input[type='checkbox']:checked")).map((input) => input.value);
+}
+
+const quotationHubPermissionKeys = [
+  "dashboard",
+  "sales_quotation_requests",
+  "build_quotation",
+  "build_guarding_quotation",
+  "build_armed_response_quotation",
+  "approval",
+  "quote_library",
+  "project_timeline",
+  "setup",
+  "audit_trail",
+];
+
+function quotationHubPermissionDefinitions() {
+  return permissionDefinitions.filter((permission) => quotationHubPermissionKeys.includes(permission.key));
+}
+
+function isInactiveMember(member) {
+  return ["disabled", "archived", "deactivated"].includes(String(member.inviteStatus || member.status || "").toLowerCase());
+}
+
+function setSetupMemberNotice(memberId, message, tone = "success") {
+  setupMemberNotice = { memberId, message, tone };
+}
+
+function renderSetupMemberNotice(memberId) {
+  if (!setupMemberNotice || setupMemberNotice.memberId !== memberId) return "";
+  return `<span class="setup-inline-notice ${escapeHtml(setupMemberNotice.tone)}">${escapeHtml(setupMemberNotice.message)}</span>`;
+}
+
+function writeQuotationPermissionAudit(member, permission, previousValue, nextValue) {
+  const audit = loadAudit();
+  audit.unshift({
+    action: "Updated Quotation Hub permission",
+    detail: `${member.email} - ${permission.label}`,
+    module: "Quotation Hub Setup",
+    reference: permission.section || permission.key,
+    oldValue: previousValue ? "Access granted" : "Access removed",
+    newValue: nextValue ? "Access granted" : "Access removed",
+    notes: `Changed by ${currentUserName()}`,
+    user: currentUser(),
+    userName: currentUserName(),
+    ipAddress: "Local prototype / browser session",
+    device: navigator.userAgent || "Unknown device",
+    timestamp: new Date().toISOString(),
+  });
+  localStorage.setItem(auditStorageKey, JSON.stringify(audit));
 }
 
 function saveUserPermissions(member) {
@@ -2373,7 +2423,7 @@ function hasPermission(permissionKey, member = currentMember()) {
   if (!isSignedIn()) return false;
   if (isBootstrapSuperAdmin()) return true;
   const role = normalizeRole(member.access || member.role || "Read Only");
-  if (["Super Admin", "Admin"].includes(role)) return true;
+  if (role === "Super Admin") return true;
   const permissions = memberPermissions(member);
   if (permissionKey === "build_guarding_quotation" && permissions.has("build_quotation")) return true;
   if (permissionKey === "build_armed_response_quotation" && permissions.has("build_quotation")) return true;
@@ -2383,6 +2433,7 @@ function hasPermission(permissionKey, member = currentMember()) {
 function canAccess(section) {
   if (!isSignedIn()) return false;
   if (section === "portal") return true;
+  if (isInactiveMember(currentMember())) return false;
   if (section === "settings") return ["setup", "supplier_prices", "member_access_management"].some((permission) => hasPermission(permission));
   const permissionKey = permissionKeyForSection(section);
   return hasPermission(permissionKey);
@@ -2404,7 +2455,7 @@ function enforceAccess(section) {
 function applyPermissions() {
   document.querySelectorAll(".nav-item").forEach((button) => {
     const section = button.dataset.section;
-    const allowed = canAccess(section) && !["portal", "dashboard"].includes(section);
+    const allowed = canAccess(section) && section !== "portal";
     button.hidden = !allowed;
     button.disabled = !allowed;
   });
@@ -3285,6 +3336,8 @@ let activeGovernanceTab = "dashboard";
 let governanceAuditFilters = { user: "", from: "", to: "", hub: "", action: "", search: "" };
 let governanceEditingUserId = "";
 let governanceUserNotice = null;
+let setupEditingMemberId = "";
+let setupMemberNotice = null;
 
 const financeStorageKeys = {
   opening: `${financeStoragePrefix}:openingBalances`,
@@ -4839,35 +4892,96 @@ function setupRow(title, detail, id, type) {
   return row;
 }
 
+function renderSetupMemberPermissionChecks(member) {
+  const permissions = memberPermissions(member);
+  return quotationHubPermissionDefinitions().map((permission) => `
+    <label class="permission-option">
+      <input type="checkbox" value="${escapeHtml(permission.key)}" data-setup-member-permission="${escapeHtml(permission.key)}" ${permissions.has(permission.key) ? "checked" : ""} />
+      ${escapeHtml(permission.label)}
+    </label>
+  `).join("");
+}
+
+function renderSetupMemberEditPanel(member) {
+  const role = normalizeRole(member.access || member.role || "Read Only");
+  const status = member.inviteStatus || member.status || (member.hasLoggedIn ? "Active" : "Pending");
+  return `
+    <div class="setup-member-edit-panel" data-setup-member-edit-panel="${escapeHtml(member.id)}">
+      <div class="governance-edit-grid">
+        <label>Name<input data-setup-member-field="name" value="${escapeHtml(member.name || "")}" /></label>
+        <label>Email<input type="email" data-setup-member-field="email" value="${escapeHtml(member.email || "")}" /></label>
+        <label>Position<input data-setup-member-field="position" value="${escapeHtml(member.position || "")}" /></label>
+        <label>Department<input data-setup-member-field="department" value="${escapeHtml(member.department || member.branch || "")}" /></label>
+        <label>Status<select data-setup-member-field="inviteStatus">
+          ${["Active", "Pending", "Invite Sent", "Disabled"].map((item) => `<option value="${item}" ${status === item ? "selected" : ""}>${item}</option>`).join("")}
+        </select></label>
+        <label>Role<select data-setup-member-field="access">
+          ${platformRoles.map((item) => `<option value="${item}" ${role === item ? "selected" : ""}>${item}</option>`).join("")}
+        </select></label>
+      </div>
+      <fieldset class="member-permission-checklist setup-member-permission-grid">
+        <legend>Quotation Hub section access</legend>
+        ${renderSetupMemberPermissionChecks(member)}
+      </fieldset>
+      <div class="row-actions">
+        <button class="primary-btn" type="button" data-save-setup-member="${escapeHtml(member.id)}">Save changes</button>
+        <button class="secondary-btn" type="button" data-cancel-setup-member-edit>Cancel</button>
+        <button class="secondary-btn" type="button" data-force-setup-member-password="${escapeHtml(member.id)}">Force password change</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderSetupMemberRows(members, mode = "active") {
+  if (!members.length) {
+    return `<p class="empty-state">${mode === "active" ? "No active members saved yet." : "No deactivated members found."}</p>`;
+  }
+  return members.map((member) => {
+    const inviteStatus = member.inviteStatus || member.status || (member.hasLoggedIn ? "Active" : "Pending");
+    const role = normalizeRole(member.access || member.role || "Read Only");
+    const permissions = Array.from(memberPermissions(member))
+      .filter((key) => quotationHubPermissionKeys.includes(key))
+      .map((key) => permissionDefinitions.find((permission) => permission.key === key)?.label || key)
+      .join(", ") || "None selected";
+    return `
+      <article class="setup-row ${mode === "deactivated" ? "setup-row-deactivated" : ""}">
+        <div>
+          <strong>${escapeHtml(member.name)}</strong>
+          ${renderSetupMemberNotice(member.id)}
+          <small>${escapeHtml(member.email)} | ${escapeHtml(role)} | ${escapeHtml(inviteStatus)}</small>
+          <small>Quotation Hub permissions: ${escapeHtml(permissions)}</small>
+          <small>${member.inviteSentAt ? `Invite sent: ${escapeHtml(formatDate(member.inviteSentAt.slice(0, 10)))}` : "Invite not sent yet"}</small>
+        </div>
+        <div class="setup-actions">
+          <button class="secondary-btn" type="button" data-edit-setup-member="${escapeHtml(member.id)}">Edit</button>
+          ${mode === "active" ? `<button class="secondary-btn" type="button" data-deactivate-setup-member="${escapeHtml(member.id)}">Deactivate</button>` : `<button class="primary-btn" type="button" data-reactivate-setup-member="${escapeHtml(member.id)}">Reactivate</button>`}
+        </div>
+      </article>
+      ${setupEditingMemberId === member.id ? renderSetupMemberEditPanel(member) : ""}
+    `;
+  }).join("");
+}
+
 function renderMembers() {
   const members = storageList(membersStorageKey);
+  const activeMembers = members.filter((member) => !isInactiveMember(member));
+  const deactivatedMembers = members.filter(isInactiveMember);
   memberList.innerHTML = "";
   if (!members.length) {
     memberList.innerHTML = `<p class="empty-state">No members saved yet. Add members and assign exact role/module access before they can use the platform.</p>`;
     return;
   }
-
-  members.forEach((member) => {
-    const row = document.createElement("article");
-    const inviteStatus = member.inviteStatus || (member.hasLoggedIn ? "Active" : "Pending");
-    const role = normalizeRole(member.access || member.role || "Read Only");
-    row.className = "setup-row";
-    row.innerHTML = `
-      <div>
-        <strong>${escapeHtml(member.name)}</strong>
-        <small>${escapeHtml(member.email)} | ${escapeHtml(role)} | ${escapeHtml(inviteStatus)}</small>
-        <small>Permissions: ${escapeHtml(Array.from(memberPermissions(member)).map((key) => permissionDefinitions.find((permission) => permission.key === key)?.label || key).join(", ") || "None selected")}</small>
-        <small>${member.inviteSentAt ? `Invite sent: ${escapeHtml(formatDate(member.inviteSentAt.slice(0, 10)))}` : "Invite not sent yet"}</small>
-      </div>
-      <div class="setup-actions">
-        <button class="secondary-btn" type="button" data-edit-member="${escapeHtml(member.id)}">Edit</button>
-        ${inviteStatus !== "Active" && inviteStatus !== "Disabled" ? `<button class="secondary-btn" type="button" data-resend-member="${escapeHtml(member.id)}">Resend invite</button>` : ""}
-        <button class="secondary-btn" type="button" data-toggle-member="${escapeHtml(member.id)}">${inviteStatus === "Disabled" ? "Enable" : "Disable"}</button>
-        <button class="danger-btn" type="button" data-delete-member="${escapeHtml(member.id)}">Delete</button>
-      </div>
-    `;
-    memberList.appendChild(row);
-  });
+  memberList.innerHTML = `
+    <section class="setup-member-section">
+      <div class="panel-heading"><div><p class="eyebrow">Quotation Hub permissions</p><h3>Active Users</h3></div><span class="finance-active-date">${activeMembers.length}</span></div>
+      ${renderSetupMemberRows(activeMembers, "active")}
+    </section>
+    <section class="setup-member-section">
+      <div class="panel-heading"><div><p class="eyebrow">Archived access</p><h3>Deactivated Users</h3></div><span class="finance-active-date">${deactivatedMembers.length}</span></div>
+      <p class="finance-note">Deactivated users are hidden from the active permissions list and cannot access the Quotation Hub, but their quotation and audit history stays available.</p>
+      ${renderSetupMemberRows(deactivatedMembers, "deactivated")}
+    </section>
+  `;
 }
 
 function renderSetupSalesReps() {
@@ -9326,99 +9440,121 @@ document.addEventListener("click", (event) => {
 memberList.addEventListener("click", async (event) => {
   if (!enforceAccess("settings")) return;
   const members = storageList(membersStorageKey);
-  const editId = event.target.dataset.editMember;
-  const deleteId = event.target.dataset.deleteMember;
-  const resendId = event.target.dataset.resendMember;
-  const toggleId = event.target.dataset.toggleMember;
+  const editId = event.target.dataset.editSetupMember;
+  const saveId = event.target.dataset.saveSetupMember;
+  const deactivateId = event.target.dataset.deactivateSetupMember;
+  const reactivateId = event.target.dataset.reactivateSetupMember;
+  const forcePasswordId = event.target.dataset.forceSetupMemberPassword;
+  const cancelEdit = event.target.closest("[data-cancel-setup-member-edit]");
   if (editId) {
-    const member = members.find((item) => item.id === editId);
-    if (!member) return;
-    memberForm.dataset.editId = member.id;
-    memberName.value = member.name;
-    memberEmail.value = member.email;
-    memberAccess.value = normalizeRole(member.access || member.role);
-    renderPermissionChecklist(member.permissions || Array.from(memberPermissions(member)));
-    memberInviteStatus.value = member.inviteStatus || (member.hasLoggedIn ? "Active" : "Pending");
-    memberTempPassword.value = "";
+    setupEditingMemberId = setupEditingMemberId === editId ? "" : editId;
+    renderSetup();
+    return;
   }
-  if (resendId) {
-    const member = members.find((item) => item.id === resendId);
-    if (!member) return;
-    const temporaryPassword = generatePassword();
-    const updated = {
-      ...member,
-      mustChangePassword: true,
-      hasLoggedIn: false,
-      inviteStatus: "Invite Sent",
-      inviteSentAt: new Date().toISOString(),
-    };
-    try {
-      const response = await fetch("/api/members", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ ...updated, role: updated.access, temporaryPassword }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || "Invite could not be resent securely.");
-    } catch (error) {
-      alert(error.message || "Invite could not be resent securely.");
+  if (cancelEdit) {
+    setupEditingMemberId = "";
+    renderSetup();
+    return;
+  }
+  if (saveId) {
+    const index = members.findIndex((item) => item.id === saveId);
+    const member = members[index];
+    const panel = memberList.querySelector(`[data-setup-member-edit-panel="${CSS.escape(saveId)}"]`);
+    if (index < 0 || !member || !panel) return;
+    const fieldValue = (field) => panel.querySelector(`[data-setup-member-field="${field}"]`)?.value?.trim() || "";
+    const nextEmail = normalizeEmail(fieldValue("email"));
+    const duplicate = members.find((item) => item.id !== saveId && normalizeEmail(item.email) === nextEmail);
+    if (!fieldValue("name") || !nextEmail) {
+      setSetupMemberNotice(saveId, "Name and email are required.", "warning");
+      renderSetup();
       return;
     }
-    saveMemberRecord(updated);
-    sendInviteEmail(updated, temporaryPassword, true);
-    writeAudit("Invite resent", updated.email, "Setup - Member access", updated.email, `Access level: ${updated.access}`);
-    renderSetup();
-  }
-  if (toggleId) {
-    const member = members.find((item) => item.id === toggleId);
-    if (!member) return;
-    const disabled = (member.inviteStatus || "") === "Disabled";
-    const updated = {
-      ...member,
-      inviteStatus: disabled ? (member.hasLoggedIn ? "Active" : "Pending") : "Disabled",
-    };
-    try {
-      const response = await fetch("/api/members", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ ...updated, role: normalizeRole(updated.access || updated.role) }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || "Member status could not be updated securely.");
-    } catch (error) {
-      alert(error.message || "Member status could not be updated securely.");
+    if (duplicate) {
+      setSetupMemberNotice(saveId, "Another member already uses this email address.", "warning");
+      renderSetup();
       return;
     }
-    saveMemberRecord(updated);
-    writeAudit(disabled ? "Enabled member access" : "Disabled member access", member.email);
-    applyPermissions();
-    renderSetup();
-  }
-  if (deleteId) {
-    const member = members.find((item) => item.id === deleteId);
-    if (member) {
-      const disabledMember = { ...member, inviteStatus: "Disabled" };
-      try {
-        const response = await fetch("/api/members", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ ...disabledMember, role: normalizeRole(disabledMember.access || disabledMember.role) }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || "Member could not be disabled securely.");
-      } catch (error) {
-        alert(error.message || "Member could not be disabled securely.");
-        return;
-      }
+    const previousPermissions = memberPermissions(member);
+    const nextPermissions = new Set(Array.isArray(member.permissions) ? member.permissions : Array.from(previousPermissions));
+    quotationHubPermissionDefinitions().forEach((permission) => {
+      const checked = Boolean(panel.querySelector(`[data-setup-member-permission="${permission.key}"]`)?.checked);
+      const previous = previousPermissions.has(permission.key);
+      if (checked) nextPermissions.add(permission.key);
+      else nextPermissions.delete(permission.key);
+      if (previous !== checked) writeQuotationPermissionAudit(member, permission, previous, checked);
+    });
+    const changes = {
+      name: fieldValue("name"),
+      email: nextEmail,
+      position: fieldValue("position"),
+      department: fieldValue("department"),
+      access: normalizeRole(fieldValue("access")),
+      role: normalizeRole(fieldValue("access")),
+      inviteStatus: fieldValue("inviteStatus") || "Active",
+      status: fieldValue("inviteStatus") || "Active",
+      permissions: Array.from(nextPermissions),
+      permissionsExplicit: true,
+    };
+    if (changes.inviteStatus === "Disabled" && !isInactiveMember(member)) {
+      changes.deactivatedAt = new Date().toISOString();
+      changes.deactivatedBy = currentUserName();
     }
-    saveStorageList(membersStorageKey, members.filter((item) => item.id !== deleteId));
-    saveStorageList(userPermissionsStorageKey, storageList(userPermissionsStorageKey).filter((permission) => permission.user_id !== deleteId));
-    writeAudit("Deleted member access", deleteId);
+    if (changes.inviteStatus === "Active" && isInactiveMember(member)) {
+      changes.reactivatedAt = new Date().toISOString();
+      changes.reactivatedBy = currentUserName();
+      changes.deactivatedAt = "";
+      changes.deactivatedBy = "";
+    }
+    const changedEntries = Object.entries(changes).filter(([key, value]) => JSON.stringify(member[key] ?? "") !== JSON.stringify(value ?? ""));
+    if (!changedEntries.length) {
+      setSetupMemberNotice(saveId, "No changes to save.");
+      setupEditingMemberId = "";
+      renderSetup();
+      return;
+    }
+    const updated = { ...member, ...Object.fromEntries(changedEntries), updatedAt: new Date().toISOString(), updatedBy: currentUserName() };
+    try {
+      await syncGovernanceMemberToBackend(updated);
+    } catch (error) {
+      setSetupMemberNotice(saveId, error.message || "Saved locally, but server sync failed.", "warning");
+    }
+    members[index] = updated;
+    saveStorageList(membersStorageKey, members);
+    saveUserPermissions(updated);
+    changedEntries
+      .filter(([key]) => !["permissions", "permissionsExplicit"].includes(key))
+      .forEach(([key, value]) => {
+        writeAudit("Updated Quotation Hub member", `${member.email} - ${key}`, "Quotation Hub Setup", key, `${member[key] ?? "-"} -> ${value ?? "-"}`);
+      });
+    setSetupMemberNotice(saveId, "Member permissions saved.");
+    setupEditingMemberId = "";
     applyPermissions();
     renderSetup();
+    return;
+  }
+  if (deactivateId || reactivateId || forcePasswordId) {
+    const targetId = deactivateId || reactivateId || forcePasswordId;
+    const index = members.findIndex((item) => item.id === targetId);
+    const member = members[index];
+    if (index < 0 || !member) return;
+    const changes = forcePasswordId
+      ? { forcePasswordChange: true, passwordResetRequested: true }
+      : deactivateId
+        ? { inviteStatus: "Disabled", status: "Disabled", deactivatedAt: new Date().toISOString(), deactivatedBy: currentUserName() }
+        : { inviteStatus: "Active", status: "Active", reactivatedAt: new Date().toISOString(), reactivatedBy: currentUserName(), deactivatedAt: "", deactivatedBy: "" };
+    const updated = { ...member, ...changes, updatedAt: new Date().toISOString(), updatedBy: currentUserName() };
+    try {
+      await syncGovernanceMemberToBackend(updated);
+    } catch (error) {
+      setSetupMemberNotice(targetId, error.message || "Saved locally, but server sync failed.", "warning");
+    }
+    members[index] = updated;
+    saveStorageList(membersStorageKey, members);
+    writeAudit(forcePasswordId ? "Forced password change" : deactivateId ? "Deactivated Quotation Hub member" : "Reactivated Quotation Hub member", member.email, "Quotation Hub Setup", member.email, `Changed by ${currentUserName()}`);
+    setSetupMemberNotice(targetId, forcePasswordId ? "Password change will be required." : deactivateId ? "Member deactivated." : "Member reactivated.");
+    applyPermissions();
+    renderSetup();
+    return;
   }
 });
 
