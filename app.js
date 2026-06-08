@@ -1949,7 +1949,7 @@ function saveStorageList(key, list) {
 function hasActiveSuperAdminMember() {
   return storageList(membersStorageKey).some((member) => (
     normalizeRole(member.access || member.role) === "Super Admin"
-    && !["Disabled", "Archived"].includes(member.inviteStatus || member.status || "")
+    && !["disabled", "archived", "deactivated"].includes(String(member.inviteStatus || member.status || "").toLowerCase())
   ));
 }
 
@@ -3192,10 +3192,10 @@ function hasHubAccess(hub) {
   if (!isSignedIn()) return false;
   if (!hub || !["active", "placeholder"].includes(hub.status)) return false;
   const member = currentMember();
-  if ((member.inviteStatus || "") === "Disabled") return false;
+  if (["disabled", "archived", "deactivated"].includes(String(member.inviteStatus || member.status || "").toLowerCase())) return false;
 
   const explicitAccess = storageList(userHubAccessStorageKey).find((access) => (
-    access.hubSlug === hub.slug && normalizeEmail(access.email) === normalizeEmail(member.email)
+    access.hubSlug === hub.slug && (access.userId === member.id || normalizeEmail(access.email) === normalizeEmail(member.email))
   ));
   if (explicitAccess) return explicitAccess.status === "active";
 
@@ -3283,6 +3283,8 @@ const governanceTabs = [
 
 let activeGovernanceTab = "dashboard";
 let governanceAuditFilters = { user: "", from: "", to: "", hub: "", action: "", search: "" };
+let governanceEditingUserId = "";
+let governanceUserNotice = null;
 
 const financeStorageKeys = {
   opening: `${financeStoragePrefix}:openingBalances`,
@@ -4241,8 +4243,30 @@ function governanceMembers() {
   }));
 }
 
+function isDeactivatedGovernanceMember(member) {
+  const status = String(member.inviteStatus || member.status || "").toLowerCase();
+  return ["disabled", "archived", "deactivated"].includes(status);
+}
+
+function governanceActiveMembers() {
+  return governanceMembers().filter((member) => !isDeactivatedGovernanceMember(member));
+}
+
+function governanceDeactivatedMembers() {
+  return governanceMembers().filter(isDeactivatedGovernanceMember);
+}
+
+function setGovernanceUserNotice(memberId, message, tone = "success") {
+  governanceUserNotice = { memberId, message, tone };
+}
+
+function renderGovernanceUserNotice(memberId) {
+  if (!governanceUserNotice || governanceUserNotice.memberId !== memberId) return "";
+  return `<div class="governance-inline-notice ${escapeHtml(governanceUserNotice.tone)}">${escapeHtml(governanceUserNotice.message)}</div>`;
+}
+
 function governanceHubAccessFor(member, hub) {
-  const explicit = storageList(userHubAccessStorageKey).find((access) => access.hubSlug === hub.slug && normalizeEmail(access.email) === normalizeEmail(member.email));
+  const explicit = storageList(userHubAccessStorageKey).find((access) => access.hubSlug === hub.slug && (access.userId === member.id || normalizeEmail(access.email) === normalizeEmail(member.email)));
   if (explicit) return explicit.status === "active";
   if (["Admin", "Super Admin"].includes(member.access || member.role || "")) return true;
   if (hub.slug === "quotation-hub") return memberPermissions(member).has("quotation_hub");
@@ -4267,10 +4291,25 @@ function recordPermissionHistory(member, hub, previousValue, nextValue) {
     changedAt: new Date().toISOString(),
   });
   saveStorageList(permissionHistoryStorageKey, history);
-  writeAudit(nextValue ? "Granted hub access" : "Removed hub access", `${member.name} - ${hub.name}`, "Administration & Governance", member.email, `${previousValue ? "Access granted" : "Access removed"} -> ${nextValue ? "Access granted" : "Access removed"}`);
+  const audit = loadAudit();
+  audit.unshift({
+    action: nextValue ? "Granted hub access" : "Removed hub access",
+    detail: `${member.name} - ${hub.name}`,
+    module: "Administration & Governance",
+    reference: member.email,
+    oldValue: previousValue ? "Access granted" : "Access removed",
+    newValue: nextValue ? "Access granted" : "Access removed",
+    notes: `Changed by ${currentUserName()}`,
+    user: currentUser(),
+    userName: currentUserName(),
+    ipAddress: "Local prototype / browser session",
+    device: navigator.userAgent || "Unknown device",
+    timestamp: new Date().toISOString(),
+  });
+  localStorage.setItem(auditStorageKey, JSON.stringify(audit));
 }
 
-function setGovernanceHubAccess(memberId, hubSlug, canAccessHub) {
+function setGovernanceHubAccess(memberId, hubSlug, canAccessHub, options = {}) {
   if (!isSuperAdmin()) {
     alert("Only Super Admin users may change hub access permissions.");
     return;
@@ -4283,7 +4322,8 @@ function setGovernanceHubAccess(memberId, hubSlug, canAccessHub) {
     return;
   }
   const previous = governanceHubAccessFor(member, hub);
-  let accessRows = storageList(userHubAccessStorageKey).filter((row) => !(row.hubSlug === hubSlug && normalizeEmail(row.email) === normalizeEmail(member.email)));
+  if (previous === Boolean(canAccessHub)) return;
+  let accessRows = storageList(userHubAccessStorageKey).filter((row) => !(row.hubSlug === hubSlug && (row.userId === member.id || normalizeEmail(row.email) === normalizeEmail(member.email))));
   accessRows.push({
     id: `hub-access-${member.id}-${hubSlug}`,
     userId: member.id,
@@ -4294,11 +4334,40 @@ function setGovernanceHubAccess(memberId, hubSlug, canAccessHub) {
     updatedBy: currentUserName(),
   });
   saveStorageList(userHubAccessStorageKey, accessRows);
+  const permissionKey = permissionDefinitions.find((permission) => permission.hubSlug === hubSlug)?.key || hubSlug.replace(/-/g, "_");
+  const members = storageList(membersStorageKey);
+  const memberIndex = members.findIndex((item) => item.id === memberId);
+  if (memberIndex >= 0) {
+    const nextPermissions = new Set(Array.isArray(members[memberIndex].permissions) ? members[memberIndex].permissions : Array.from(memberPermissions(members[memberIndex])));
+    if (canAccessHub) nextPermissions.add(permissionKey);
+    else nextPermissions.delete(permissionKey);
+    members[memberIndex] = { ...members[memberIndex], permissions: Array.from(nextPermissions), permissionsExplicit: true, updatedAt: new Date().toISOString(), updatedBy: currentUserName() };
+    saveStorageList(membersStorageKey, members);
+    syncGovernanceMemberToBackend(members[memberIndex]).catch((error) => console.warn("Governance hub access backend sync failed", error));
+  }
   recordPermissionHistory(member, hub, previous, canAccessHub);
-  renderGovernanceHub("matrix");
+  if (options.render !== false) renderGovernanceHub(options.tab || "matrix");
 }
 
-function updateGovernanceMember(memberId, changes = {}) {
+async function syncGovernanceMemberToBackend(member) {
+  if (window.location.protocol === "file:") return;
+  const role = normalizeRole(member.access || member.role || "Read Only");
+  const response = await fetch("/api/members", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({
+      ...member,
+      role,
+      access: role,
+      permissions: Array.isArray(member.permissions) ? member.permissions : Array.from(memberPermissions(member)),
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "User changes could not be saved to the server.");
+}
+
+async function updateGovernanceMember(memberId, changes = {}, options = {}) {
   const members = storageList(membersStorageKey);
   const index = members.findIndex((member) => member.id === memberId);
   if (index < 0) return;
@@ -4307,10 +4376,40 @@ function updateGovernanceMember(memberId, changes = {}) {
     alert("Only Super Admin users may manage Super Admin accounts.");
     return;
   }
-  members[index] = { ...before, ...changes, updatedAt: new Date().toISOString(), updatedBy: currentUserName() };
+  const changedEntries = Object.entries(changes).filter(([key, value]) => before[key] !== value);
+  if (!changedEntries.length) {
+    if (options.notice) setGovernanceUserNotice(memberId, options.notice);
+    if (options.render !== false) renderGovernanceHub(options.tab || "users");
+    return;
+  }
+  members[index] = { ...before, ...Object.fromEntries(changedEntries), updatedAt: new Date().toISOString(), updatedBy: currentUserName() };
   saveStorageList(membersStorageKey, members);
-  writeAudit("Updated user access", before.email, "Administration & Governance", before.email, JSON.stringify(changes));
-  renderGovernanceHub("users");
+  try {
+    await syncGovernanceMemberToBackend(members[index]);
+  } catch (error) {
+    console.warn("Governance user backend sync failed", error);
+    setGovernanceUserNotice(memberId, error.message || "Saved locally, but server sync failed.", "warning");
+  }
+  changedEntries.forEach(([key, value]) => {
+    const audit = loadAudit();
+    audit.unshift({
+      action: "Updated user access",
+      detail: `${before.email} - ${key}`,
+      module: "Administration & Governance",
+      reference: before.email,
+      oldValue: String(before[key] ?? "-"),
+      newValue: String(value ?? "-"),
+      notes: `Changed by ${currentUserName()}`,
+      user: currentUser(),
+      userName: currentUserName(),
+      ipAddress: "Local prototype / browser session",
+      device: navigator.userAgent || "Unknown device",
+      timestamp: new Date().toISOString(),
+    });
+    localStorage.setItem(auditStorageKey, JSON.stringify(audit));
+  });
+  if (options.notice) setGovernanceUserNotice(memberId, options.notice);
+  if (options.render !== false) renderGovernanceHub(options.tab || "users");
 }
 
 function addGovernanceUser() {
@@ -4432,7 +4531,7 @@ function renderGovernanceDashboard() {
   return `
     <div class="governance-summary-grid">
       ${renderSummaryCard("Total users", members.length)}
-      ${renderSummaryCard("Active users", members.filter((member) => !["Disabled", "Archived"].includes(member.status)).length)}
+      ${renderSummaryCard("Active users", governanceActiveMembers().length)}
       ${renderSummaryCard("Online users", currentSession()?.email ? 1 : 0)}
       ${renderSummaryCard("Quotations processed", quotes.length)}
       ${renderSummaryCard("Finance records updated", financeEvents.length)}
@@ -4446,26 +4545,90 @@ function renderGovernanceDashboard() {
   `;
 }
 
-function renderGovernanceUsers() {
-  const members = governanceMembers();
+function renderGovernanceHubPermissionChecks(member) {
+  const hubs = storageList(hubsStorageKey).filter((hub) => companyHubBySlug(hub.slug)).sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
+  return hubs.map((hub) => `
+    <label>
+      <input type="checkbox" ${governanceHubAccessFor(member, hub) ? "checked" : ""} ${isSuperAdmin() ? "" : "disabled"} data-governance-edit-hub="${escapeHtml(hub.slug)}" />
+      ${escapeHtml(hub.name)}
+    </label>
+  `).join("");
+}
+
+function renderGovernanceEditPanel(member) {
+  const roleOptions = ["Super Admin", "Admin", "Quotation Builder", "Sales Representative", "Read Only"];
+  const currentStatus = String(member.inviteStatus || member.status || "Active");
+  const statusOptions = isSuperAdmin() ? ["Active", "Pending", "Disabled", "Archived"] : ["Active", "Pending", "Disabled"];
+  if (!statusOptions.includes(currentStatus)) statusOptions.push(currentStatus);
   return `
-    <section class="finance-card">
-      <div class="panel-heading"><div><p class="eyebrow">User access management</p><h2>Users</h2></div><button class="primary-btn" type="button" data-governance-add-user>Add user</button></div>
-      <div class="finance-table">
-        <div class="finance-table-row finance-table-head" style="grid-template-columns: repeat(9, minmax(140px, 1fr));">
-          ${["Name", "Email", "Position", "Department", "Status", "Last login", "Last activity", "Role", "Actions"].map((header) => `<span>${header}</span>`).join("")}
-        </div>
-        ${members.map((member) => `<div class="finance-table-row" style="grid-template-columns: repeat(9, minmax(140px, 1fr));">
-          <span>${escapeHtml(member.name)}</span><span>${escapeHtml(member.email)}</span><span>${escapeHtml(member.position || "-")}</span><span>${escapeHtml(member.department || "-")}</span><span>${escapeHtml(member.status)}</span><span>${escapeHtml(formatDate(String(member.lastLoginAt || member.signedInAt || "").slice(0, 10)))}</span><span>${escapeHtml(formatDate(String(member.lastActivityAt || member.updatedAt || "").slice(0, 10)))}</span><span>${escapeHtml(member.access || member.role || "-")}</span>
-          <span class="row-actions">
-            <button class="secondary-btn" data-governance-edit-user="${escapeHtml(member.id)}">Edit</button>
-            <button class="secondary-btn" data-governance-force-password="${escapeHtml(member.id)}">Force password</button>
-            <button class="secondary-btn" data-governance-reset-password="${escapeHtml(member.id)}">Reset</button>
-            <button class="secondary-btn" data-governance-deactivate-user="${escapeHtml(member.id)}">Deactivate</button>
-            ${isSuperAdmin() ? `<button class="danger-btn" data-governance-archive-user="${escapeHtml(member.id)}">Archive</button>` : ""}
-          </span>
-        </div>`).join("")}
+    <div class="governance-edit-panel" data-governance-edit-panel="${escapeHtml(member.id)}">
+      <div class="governance-edit-grid">
+        <label>Name<input data-governance-edit-field="name" value="${escapeHtml(member.name || "")}" /></label>
+        <label>Email<input type="email" data-governance-edit-field="email" value="${escapeHtml(member.email || "")}" /></label>
+        <label>Position<input data-governance-edit-field="position" value="${escapeHtml(member.position === "-" ? "" : member.position || "")}" /></label>
+        <label>Department<input data-governance-edit-field="department" value="${escapeHtml(member.department === "-" ? "" : member.department || "")}" /></label>
+        <label>Status<select data-governance-edit-field="inviteStatus" ${currentStatus === "Archived" && !isSuperAdmin() ? "disabled" : ""}>
+          ${statusOptions.map((status) => `<option value="${status}" ${currentStatus === status ? "selected" : ""}>${status}</option>`).join("")}
+        </select></label>
+        <label>Role<select data-governance-edit-field="access" ${isSuperAdmin() ? "" : "disabled"}>
+          ${roleOptions.map((role) => `<option value="${role}" ${normalizeRole(member.access || member.role || "Read Only") === role ? "selected" : ""}>${role}</option>`).join("")}
+        </select></label>
       </div>
+      <div class="governance-edit-permissions">
+        <strong>Hub access permissions</strong>
+        <div>${renderGovernanceHubPermissionChecks(member)}</div>
+      </div>
+      <div class="row-actions">
+        <button class="primary-btn" type="button" data-governance-save-user="${escapeHtml(member.id)}">Save changes</button>
+        <button class="secondary-btn" type="button" data-governance-cancel-edit>Cancel</button>
+        <button class="secondary-btn" type="button" data-governance-force-password="${escapeHtml(member.id)}">Force password change</button>
+        <button class="secondary-btn" type="button" data-governance-reset-password="${escapeHtml(member.id)}">Reset password</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderGovernanceUserRows(members, mode = "active") {
+  if (!members.length) return `<p class="empty-state">${mode === "active" ? "No active users found." : "No deactivated users found."}</p>`;
+  return `
+    <div class="finance-table">
+      <div class="finance-table-row finance-table-head" style="grid-template-columns: repeat(9, minmax(140px, 1fr));">
+        ${["Name", "Email", "Position", "Department", "Status", "Last login", "Last activity", "Role", "Actions"].map((header) => `<span>${header}</span>`).join("")}
+      </div>
+      ${members.map((member) => `
+        <div class="finance-table-row ${mode === "deactivated" ? "governance-deactivated-row" : ""}" style="grid-template-columns: repeat(9, minmax(140px, 1fr));">
+          <span><strong>${escapeHtml(member.name)}</strong>${renderGovernanceUserNotice(member.id)}</span>
+          <span>${escapeHtml(member.email)}</span>
+          <span>${escapeHtml(member.position || "-")}</span>
+          <span>${escapeHtml(member.department || "-")}</span>
+          <span>${escapeHtml(member.status)}</span>
+          <span>${escapeHtml(formatDate(String(member.lastLoginAt || member.signedInAt || "").slice(0, 10)))}</span>
+          <span>${escapeHtml(formatDate(String(member.lastActivityAt || member.updatedAt || "").slice(0, 10)))}</span>
+          <span>${escapeHtml(member.access || member.role || "-")}</span>
+          <span class="row-actions">
+            <button class="secondary-btn" type="button" data-governance-edit-user="${escapeHtml(member.id)}">Edit</button>
+            ${mode === "active" ? `<button class="secondary-btn" type="button" data-governance-deactivate-user="${escapeHtml(member.id)}">Deactivate</button>` : `<button class="primary-btn" type="button" data-governance-reactivate-user="${escapeHtml(member.id)}">Reactivate</button>`}
+            ${isSuperAdmin() && mode === "active" ? `<button class="danger-btn" type="button" data-governance-archive-user="${escapeHtml(member.id)}">Archive</button>` : ""}
+          </span>
+        </div>
+        ${governanceEditingUserId === member.id ? renderGovernanceEditPanel(member) : ""}
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderGovernanceUsers() {
+  const activeMembers = governanceActiveMembers();
+  const deactivatedMembers = governanceDeactivatedMembers();
+  return `
+    <section class="finance-card governance-user-section">
+      <div class="panel-heading"><div><p class="eyebrow">User access management</p><h2>Active Users</h2></div><button class="primary-btn" type="button" data-governance-add-user>Add user</button></div>
+      ${renderGovernanceUserRows(activeMembers, "active")}
+    </section>
+    <section class="finance-card governance-user-section">
+      <div class="panel-heading"><div><p class="eyebrow">Archived access</p><h2>Deactivated Users</h2></div><span class="finance-active-date">${deactivatedMembers.length}</span></div>
+      <p class="finance-note">Deactivated and archived users cannot sign in, but their historical audit records remain available for reporting.</p>
+      ${renderGovernanceUserRows(deactivatedMembers, "deactivated")}
     </section>
   `;
 }
@@ -5280,7 +5443,7 @@ async function requestFileMetadata(file) {
 function salesRepSearchRecords(query = "") {
   const normalizedQuery = query.trim().toLowerCase();
   const members = storageList(membersStorageKey)
-    .filter((member) => (member.inviteStatus || (member.hasLoggedIn ? "Active" : "Pending")) !== "Disabled")
+    .filter((member) => !["disabled", "archived", "deactivated"].includes(String(member.inviteStatus || member.status || (member.hasLoggedIn ? "Active" : "Pending")).toLowerCase()))
     .map((member) => ({
       id: member.id,
       name: member.name,
@@ -10471,7 +10634,7 @@ function openPlaceholderHub(hubSlug) {
   writeAudit("Opened hub", hub.name, "Portal", hub.slug, "Opened placeholder company hub");
 }
 
-portalHubGrid.addEventListener("click", (event) => {
+portalHubGrid.addEventListener("click", async (event) => {
   if (event.target.closest("[data-finance-logout]")) {
     clearSharedSession();
     loginScreen.hidden = false;
@@ -10496,18 +10659,81 @@ portalHubGrid.addEventListener("click", (event) => {
   }
   const governanceEditUser = event.target.closest("[data-governance-edit-user]")?.dataset.governanceEditUser;
   if (governanceEditUser) {
-    const member = governanceMembers().find((item) => item.id === governanceEditUser);
-    if (!member) return;
-    const name = prompt("Name:", member.name);
-    const position = prompt("Position:", member.position || "");
-    const department = prompt("Department:", member.department || "");
-    if (!name) return;
-    updateGovernanceMember(governanceEditUser, { name, position, department });
+    governanceEditingUserId = governanceEditingUserId === governanceEditUser ? "" : governanceEditUser;
+    renderGovernanceHub("users");
+    return;
+  }
+  if (event.target.closest("[data-governance-cancel-edit]")) {
+    governanceEditingUserId = "";
+    renderGovernanceHub("users");
+    return;
+  }
+  const governanceSaveUser = event.target.closest("[data-governance-save-user]")?.dataset.governanceSaveUser;
+  if (governanceSaveUser) {
+    const member = governanceMembers().find((item) => item.id === governanceSaveUser);
+    const panel = document.querySelector(`[data-governance-edit-panel="${CSS.escape(governanceSaveUser)}"]`);
+    if (!member || !panel) return;
+    const fieldValue = (field) => panel.querySelector(`[data-governance-edit-field="${field}"]`)?.value?.trim() || "";
+    const nextEmail = normalizeEmail(fieldValue("email"));
+    if (!fieldValue("name") || !nextEmail) {
+      setGovernanceUserNotice(governanceSaveUser, "Name and email are required.", "warning");
+      renderGovernanceHub("users");
+      return;
+    }
+    const duplicate = governanceMembers().find((item) => item.id !== governanceSaveUser && normalizeEmail(item.email) === nextEmail);
+    if (duplicate) {
+      setGovernanceUserNotice(governanceSaveUser, "Another user already uses this email address.", "warning");
+      renderGovernanceHub("users");
+      return;
+    }
+    const changes = {
+      name: fieldValue("name"),
+      email: nextEmail,
+      position: fieldValue("position"),
+      department: fieldValue("department"),
+      inviteStatus: fieldValue("inviteStatus") || "Active",
+      status: fieldValue("inviteStatus") || "Active",
+    };
+    const roleSelect = panel.querySelector('[data-governance-edit-field="access"]:not(:disabled)');
+    if (roleSelect) {
+      changes.access = normalizeRole(roleSelect.value);
+      changes.role = normalizeRole(roleSelect.value);
+    }
+    if (changes.inviteStatus === "Disabled" && !isDeactivatedGovernanceMember(member)) {
+      changes.deactivatedAt = new Date().toISOString();
+      changes.deactivatedBy = currentUserName();
+    }
+    if (changes.inviteStatus === "Active" && isDeactivatedGovernanceMember(member)) {
+      changes.reactivatedAt = new Date().toISOString();
+      changes.reactivatedBy = currentUserName();
+      changes.archivedAt = "";
+      changes.archivedBy = "";
+      changes.deactivatedAt = "";
+      changes.deactivatedBy = "";
+    }
+    if (isSuperAdmin()) {
+      const nextPermissions = new Set(Array.isArray(member.permissions) ? member.permissions : Array.from(memberPermissions(member)));
+      panel.querySelectorAll("[data-governance-edit-hub]").forEach((checkbox) => {
+        const permissionKey = permissionDefinitions.find((permission) => permission.hubSlug === checkbox.dataset.governanceEditHub)?.key || checkbox.dataset.governanceEditHub.replace(/-/g, "_");
+        if (checkbox.checked) nextPermissions.add(permissionKey);
+        else nextPermissions.delete(permissionKey);
+        setGovernanceHubAccess(governanceSaveUser, checkbox.dataset.governanceEditHub, checkbox.checked, { render: false });
+      });
+      changes.permissions = Array.from(nextPermissions);
+      changes.permissionsExplicit = true;
+    }
+    governanceEditingUserId = "";
+    await updateGovernanceMember(governanceSaveUser, changes, { tab: "users", notice: "User changes saved." });
     return;
   }
   const governanceDeactivateUser = event.target.closest("[data-governance-deactivate-user]")?.dataset.governanceDeactivateUser;
   if (governanceDeactivateUser) {
-    updateGovernanceMember(governanceDeactivateUser, { inviteStatus: "Disabled", status: "Disabled", deactivatedAt: new Date().toISOString(), deactivatedBy: currentUserName() });
+    await updateGovernanceMember(governanceDeactivateUser, { inviteStatus: "Disabled", status: "Disabled", deactivatedAt: new Date().toISOString(), deactivatedBy: currentUserName() }, { tab: "users", notice: "User deactivated. They can no longer sign in." });
+    return;
+  }
+  const governanceReactivateUser = event.target.closest("[data-governance-reactivate-user]")?.dataset.governanceReactivateUser;
+  if (governanceReactivateUser) {
+    await updateGovernanceMember(governanceReactivateUser, { inviteStatus: "Active", status: "Active", reactivatedAt: new Date().toISOString(), reactivatedBy: currentUserName(), deactivatedAt: "", deactivatedBy: "", archivedAt: "", archivedBy: "" }, { tab: "users", notice: "User reactivated." });
     return;
   }
   const governanceArchiveUser = event.target.closest("[data-governance-archive-user]")?.dataset.governanceArchiveUser;
@@ -10516,25 +10742,23 @@ portalHubGrid.addEventListener("click", (event) => {
       alert("Only Super Admin users may archive users.");
       return;
     }
-    updateGovernanceMember(governanceArchiveUser, { inviteStatus: "Archived", status: "Archived", archivedAt: new Date().toISOString(), archivedBy: currentUserName() });
+    await updateGovernanceMember(governanceArchiveUser, { inviteStatus: "Archived", status: "Archived", archivedAt: new Date().toISOString(), archivedBy: currentUserName() }, { tab: "users", notice: "User archived. They can no longer sign in." });
     return;
   }
   const governanceForcePassword = event.target.closest("[data-governance-force-password]")?.dataset.governanceForcePassword;
   if (governanceForcePassword) {
-    updateGovernanceMember(governanceForcePassword, { forcePasswordChange: true });
+    await updateGovernanceMember(governanceForcePassword, { forcePasswordChange: true }, { tab: "users", notice: "Password change will be required at next sign-in." });
     return;
   }
   const governanceResetPassword = event.target.closest("[data-governance-reset-password]")?.dataset.governanceResetPassword;
   if (governanceResetPassword) {
-    const tempPassword = generatePassword();
-    updateGovernanceMember(governanceResetPassword, { temporaryPasswordSetAt: new Date().toISOString(), forcePasswordChange: true, passwordResetRequested: false, inviteStatus: "Pending" });
-    alert(`Temporary password generated for admin handover:\n${tempPassword}\n\nFor production this must be emailed securely and stored only as a hash.`);
-    writeAudit("Reset password", governanceResetPassword, "Administration & Governance", governanceResetPassword, "Temporary password generated; production must hash and email securely");
+    await updateGovernanceMember(governanceResetPassword, { temporaryPasswordSetAt: new Date().toISOString(), forcePasswordChange: true, passwordResetRequested: true, inviteStatus: "Pending", status: "Pending" }, { tab: "users", notice: "Password reset requested. Send the user a secure reset link/invite." });
+    writeAudit("Reset password", governanceResetPassword, "Administration & Governance", governanceResetPassword, "Password reset requested; no plain text password displayed");
     return;
   }
   const governanceUnlockUser = event.target.closest("[data-governance-unlock-user]")?.dataset.governanceUnlockUser;
   if (governanceUnlockUser) {
-    updateGovernanceMember(governanceUnlockUser, { lockedUntil: "", failedLoginAttempts: 0 });
+    await updateGovernanceMember(governanceUnlockUser, { lockedUntil: "", failedLoginAttempts: 0 });
     return;
   }
   const governanceForceLogout = event.target.closest("[data-governance-force-logout]")?.dataset.governanceForceLogout;

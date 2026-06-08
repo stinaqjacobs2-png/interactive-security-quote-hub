@@ -381,7 +381,8 @@ function getSession(req) {
   const member = db.members.find(
     (m) => m.id === session.userId || normalizeEmail(m.email) === normalizeEmail(session.email)
   );
-  if (!member || ["Disabled", "Archived"].includes(member.inviteStatus || member.status || "")) {
+  const accountStatus = String(member?.inviteStatus || member?.status || "").toLowerCase();
+  if (!member || ["disabled", "archived", "deactivated"].includes(accountStatus)) {
     db.sessions.splice(sessionIndex, 1);
     writeAudit(db, "Session revoked", session, "Authentication", session.email, "Member missing, disabled, or archived");
     writeDb(db);
@@ -786,7 +787,8 @@ async function handleApi(req, res) {
       console.log(`[login] FAIL – no member found for email: ${email}`);
       return json(res, 401, { error: "The email address or password is incorrect." });
     }
-    if (member.inviteStatus === "Disabled") {
+    const accountStatus = String(member.inviteStatus || member.status || "").toLowerCase();
+    if (["disabled", "archived", "deactivated"].includes(accountStatus)) {
       console.log(`[login] FAIL – account disabled: ${email}`);
       return json(res, 401, { error: "The email address or password is incorrect." });
     }
@@ -1063,7 +1065,8 @@ async function handleApi(req, res) {
       access: role,
       permissions,
       permissionsExplicit: true,
-      inviteStatus: body.inviteStatus || previous.inviteStatus || "Invite Sent",
+      inviteStatus: body.inviteStatus || body.status || previous.inviteStatus || previous.status || "Invite Sent",
+      status: body.status || body.inviteStatus || previous.status || previous.inviteStatus || "Invite Sent",
       mustChangePassword: password_hash ? true : Boolean(previous.mustChangePassword),
       // Only update password_hash if a new one was provided; preserve existing otherwise
       password_hash: password_hash || previous.password_hash || "",
