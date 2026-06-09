@@ -3338,6 +3338,10 @@ let governanceEditingUserId = "";
 let governanceUserNotice = null;
 let setupEditingMemberId = "";
 let setupMemberNotice = null;
+let governancePasswordResetRequests = [];
+let governanceEmailDiagnostics = null;
+let governancePasswordResetRequestsLoaded = false;
+let governancePasswordResetRequestsLoading = false;
 
 const financeStorageKeys = {
   opening: `${financeStoragePrefix}:openingBalances`,
@@ -4785,10 +4789,74 @@ function renderGovernanceReports() {
   return `<section class="finance-card"><h2>Audit Reports</h2><p class="finance-note">Reports respect the current Audit Search Centre filters. Full system exports are restricted to Super Admin users.</p><div class="governance-report-grid">${reports.map((report) => `<article><strong>${escapeHtml(report)}</strong><div class="row-actions"><button class="secondary-btn" data-governance-export="pdf" data-report="${escapeHtml(report)}">PDF</button><button class="secondary-btn" data-governance-export="csv" data-report="${escapeHtml(report)}">CSV</button><button class="secondary-btn" data-governance-export="excel" data-report="${escapeHtml(report)}">Excel</button></div></article>`).join("")}</div></section>`;
 }
 
+async function loadGovernancePasswordResetRequests() {
+  if (!isSignedIn()) return;
+  governancePasswordResetRequestsLoading = true;
+  try {
+    const response = await fetch("/api/auth/password-reset-requests", { credentials: "include" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "Password reset requests could not be loaded.");
+    governancePasswordResetRequests = data.requests || [];
+    governanceEmailDiagnostics = data.emailDiagnostics || null;
+    governancePasswordResetRequestsLoaded = true;
+  } catch (error) {
+    governancePasswordResetRequests = [];
+    governanceEmailDiagnostics = { provider: "Load failed", error: error.message };
+    governancePasswordResetRequestsLoaded = true;
+  } finally {
+    governancePasswordResetRequestsLoading = false;
+  }
+}
+
+async function runGovernancePasswordResetAction(requestId, action) {
+  const response = await fetch("/api/auth/password-reset-requests/action", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ requestId, action }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Password reset request could not be updated.");
+  if (data.resetLink) console.log("Development password reset link:", data.resetLink);
+  await loadGovernancePasswordResetRequests();
+  renderGovernanceHub("security");
+}
+
+function renderGovernancePasswordResetRequests() {
+  const diagnostics = governanceEmailDiagnostics || {};
+  return `
+    <section class="finance-card">
+      <div class="panel-heading"><div><p class="eyebrow">Password recovery</p><h2>Password Reset Requests</h2></div><button class="secondary-btn" type="button" data-governance-refresh-resets>Refresh</button></div>
+      <p class="finance-note">Email service: ${escapeHtml(diagnostics.provider || "Unknown")} | Admin recipient: ${escapeHtml(diagnostics.adminEmail || "Not configured")} | Sender: ${escapeHtml(diagnostics.sender || "Not configured")}${diagnostics.error ? ` | Error: ${escapeHtml(diagnostics.error)}` : ""}</p>
+      <div class="finance-table">
+        <div class="finance-table-row finance-table-head" style="grid-template-columns: repeat(7, minmax(160px,1fr));">
+          ${["User", "Email", "Request date", "Status", "Approved by", "Completed date", "Actions"].map((h) => `<span>${h}</span>`).join("")}
+        </div>
+        ${governancePasswordResetRequests.map((request) => `
+          <div class="finance-table-row" style="grid-template-columns: repeat(7, minmax(160px,1fr));">
+            <span>${escapeHtml(request.user_name || "-")}</span>
+            <span>${escapeHtml(request.user_email || "-")}<small>${escapeHtml(request.id || "")}</small></span>
+            <span>${escapeHtml(request.requested_at ? new Date(request.requested_at).toLocaleString("en-ZA") : "-")}</span>
+            <span>${escapeHtml(request.status || "Pending")}${request.admin_email_status ? `<small>Admin email: ${escapeHtml(request.admin_email_status)}${request.admin_email_error ? ` - ${escapeHtml(request.admin_email_error)}` : ""}</small>` : ""}${request.user_email_status ? `<small>User email: ${escapeHtml(request.user_email_status)}${request.user_email_error ? ` - ${escapeHtml(request.user_email_error)}` : ""}</small>` : ""}</span>
+            <span>${escapeHtml(request.approved_by || "-")}</span>
+            <span>${escapeHtml(request.completed_at ? new Date(request.completed_at).toLocaleString("en-ZA") : "-")}</span>
+            <span class="row-actions">
+              <button class="secondary-btn" type="button" data-governance-reset-action="approve" data-request-id="${escapeHtml(request.id)}">Approve reset</button>
+              <button class="secondary-btn" type="button" data-governance-reset-action="send_link" data-request-id="${escapeHtml(request.id)}">Send reset link</button>
+              <button class="secondary-btn" type="button" data-governance-reset-action="force_change" data-request-id="${escapeHtml(request.id)}">Force password change</button>
+              <button class="danger-btn" type="button" data-governance-reset-action="reject" data-request-id="${escapeHtml(request.id)}">Reject</button>
+            </span>
+          </div>
+        `).join("") || `<p class="empty-state">No password reset requests found.</p>`}
+      </div>
+    </section>
+  `;
+}
+
 function renderGovernanceSecurity() {
   const members = governanceMembers();
   const session = currentSession();
-  return `<section class="finance-card"><h2>Login & Security Monitoring</h2><div class="governance-summary-grid">${renderSummaryCard("Current online users", session?.email ? 1 : 0)}${renderSummaryCard("Locked accounts", members.filter((m) => m.lockedUntil && new Date(m.lockedUntil) > new Date()).length)}${renderSummaryCard("Password reset requests", members.filter((m) => m.passwordResetRequested).length)}${renderSummaryCard("Active sessions", session?.email ? 1 : 0)}</div><div class="finance-table"><div class="finance-table-row finance-table-head" style="grid-template-columns: repeat(7, minmax(150px,1fr));">${["User", "Last login", "Failed attempts", "Locked until", "Reset requested", "Session", "Actions"].map((h) => `<span>${h}</span>`).join("")}</div>${members.map((member) => `<div class="finance-table-row" style="grid-template-columns: repeat(7, minmax(150px,1fr));"><span>${escapeHtml(member.name)}</span><span>${escapeHtml(formatDate(String(member.lastLoginAt || "").slice(0,10)))}</span><span>${escapeHtml(String(member.failedLoginAttempts || 0))}</span><span>${escapeHtml(member.lockedUntil ? new Date(member.lockedUntil).toLocaleString("en-ZA") : "-")}</span><span>${member.passwordResetRequested ? "Yes" : "No"}</span><span>${normalizeEmail(session?.email || "") === normalizeEmail(member.email) ? "Active" : "-"}</span><span class="row-actions"><button class="secondary-btn" data-governance-unlock-user="${escapeHtml(member.id)}">Unlock</button><button class="secondary-btn" data-governance-reset-password="${escapeHtml(member.id)}">Reset password</button><button class="secondary-btn" data-governance-force-logout="${escapeHtml(member.id)}">Force logout</button></span></div>`).join("")}</div></section>`;
+  return `<section class="finance-card"><h2>Login & Security Monitoring</h2><div class="governance-summary-grid">${renderSummaryCard("Current online users", session?.email ? 1 : 0)}${renderSummaryCard("Locked accounts", members.filter((m) => m.lockedUntil && new Date(m.lockedUntil) > new Date()).length)}${renderSummaryCard("Password reset requests", governancePasswordResetRequests.filter((request) => ["Pending", "Approved", "Reset Link Sent", "Force Change Required"].includes(request.status || "Pending")).length)}${renderSummaryCard("Active sessions", session?.email ? 1 : 0)}</div><div class="finance-table"><div class="finance-table-row finance-table-head" style="grid-template-columns: repeat(7, minmax(150px,1fr));">${["User", "Last login", "Failed attempts", "Locked until", "Reset requested", "Session", "Actions"].map((h) => `<span>${h}</span>`).join("")}</div>${members.map((member) => `<div class="finance-table-row" style="grid-template-columns: repeat(7, minmax(150px,1fr));"><span>${escapeHtml(member.name)}</span><span>${escapeHtml(formatDate(String(member.lastLoginAt || "").slice(0,10)))}</span><span>${escapeHtml(String(member.failedLoginAttempts || 0))}</span><span>${escapeHtml(member.lockedUntil ? new Date(member.lockedUntil).toLocaleString("en-ZA") : "-")}</span><span>${member.passwordResetRequested ? "Yes" : "-"}</span><span>${normalizeEmail(session?.email || "") === normalizeEmail(member.email) ? "Active" : "-"}</span><span class="row-actions"><button class="secondary-btn" data-governance-unlock-user="${escapeHtml(member.id)}">Unlock</button><button class="secondary-btn" data-governance-reset-password="${escapeHtml(member.id)}">Reset password</button><button class="secondary-btn" data-governance-force-logout="${escapeHtml(member.id)}">Force logout</button></span></div>`).join("")}</div></section>${renderGovernancePasswordResetRequests()}`;
 }
 
 function renderGovernanceHistory() {
@@ -4803,6 +4871,9 @@ function governanceTabFromHash() {
 
 function renderGovernanceHub(tab = activeGovernanceTab) {
   activeGovernanceTab = tab;
+  if (tab === "security" && !governancePasswordResetRequestsLoaded && !governancePasswordResetRequestsLoading) {
+    loadGovernancePasswordResetRequests().then(() => renderGovernanceHub("security"));
+  }
   const hub = companyHubBySlug("administration-governance");
   const content = {
     dashboard: renderGovernanceDashboard(),
@@ -10639,28 +10710,38 @@ forgotPassword?.addEventListener("click", async () => {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || "Password reset could not be requested.");
-    if (data.resetToken) {
-      const newPassword = prompt(`Development reset token was created. Enter a new password for this account. ${passwordPolicyMessage}`);
-      if (!newPassword || !isStrongPassword(newPassword.trim())) {
-        alert(strongPasswordMessage(newPassword || ""));
-        return;
-      }
-      const resetResponse = await fetch("/api/auth/reset-password", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ token: data.resetToken, newPassword: newPassword.trim() }),
-      });
-      const resetData = await resetResponse.json().catch(() => ({}));
-      if (!resetResponse.ok) throw new Error(resetData.error || "Password reset failed.");
-      alert("Password reset complete. Please sign in with your new password.");
-      return;
-    }
-    alert(data.message || "If the account exists, a password reset link will be sent.");
+    alert(data.message || "Your password reset request has been submitted to an administrator.");
   } catch (error) {
     alert(error.message || "Password reset could not be requested.");
   }
 });
+
+async function handlePasswordResetTokenFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get("resetToken");
+  if (!token) return false;
+  loginScreen.hidden = false;
+  const newPassword = prompt(`Please enter your new password. ${passwordPolicyMessage}`);
+  if (!newPassword || !isStrongPassword(newPassword.trim())) {
+    alert(strongPasswordMessage(newPassword || ""));
+    return true;
+  }
+  try {
+    const resetResponse = await fetch("/api/auth/reset-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ token, newPassword: newPassword.trim() }),
+    });
+    const resetData = await resetResponse.json().catch(() => ({}));
+    if (!resetResponse.ok) throw new Error(resetData.error || "Password reset failed.");
+    window.history.replaceState({}, "", window.location.pathname || "/");
+    alert("Password reset complete. Please sign in with your new password.");
+  } catch (error) {
+    alert(error.message || "Password reset failed.");
+  }
+  return true;
+}
 
 Object.values(fields).forEach((field) => {
   field.addEventListener("input", () => {
@@ -10839,7 +10920,22 @@ portalHubGrid.addEventListener("click", async (event) => {
   const governanceTab = event.target.closest("[data-governance-tab]");
   if (governanceTab) {
     window.location.hash = governanceTab.dataset.governanceTab;
+    if (governanceTab.dataset.governanceTab === "security") await loadGovernancePasswordResetRequests();
     renderGovernanceHub(governanceTab.dataset.governanceTab);
+    return;
+  }
+  if (event.target.closest("[data-governance-refresh-resets]")) {
+    await loadGovernancePasswordResetRequests();
+    renderGovernanceHub("security");
+    return;
+  }
+  const governanceResetAction = event.target.closest("[data-governance-reset-action]");
+  if (governanceResetAction) {
+    try {
+      await runGovernancePasswordResetAction(governanceResetAction.dataset.requestId, governanceResetAction.dataset.governanceResetAction);
+    } catch (error) {
+      alert(error.message || "Password reset action failed.");
+    }
     return;
   }
   if (event.target.closest("[data-governance-add-user]")) {
@@ -11258,7 +11354,10 @@ const routeSection = window.location.hash.slice(1) === "approval" ? "approvals" 
 const initialSection = ["portal", "projections", "dashboard", "builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "approvals", "library", "projectTimeline", "settings", "audit"].includes(routeSection)
   ? routeSection
   : "portal";
-consumeHubSsoTokenIfPresent().then((handledSso) => {
+handlePasswordResetTokenFromUrl().then((handledReset) => {
+  if (handledReset) return true;
+  return consumeHubSsoTokenIfPresent();
+}).then((handledSso) => {
   if (handledSso) return;
   if (isQuotationHubRouteOnLoad && isSignedIn()) {
     loginScreen.hidden = true;

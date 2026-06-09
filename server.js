@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const os = require("os");
+const https = require("https");
 const { spawnSync } = require("child_process");
 const bcrypt = require("./vendor/bcrypt");
 
@@ -97,6 +98,7 @@ function ensureDb() {
       email_logs: [],
       audit_trail: [],
       password_reset_tokens: [],
+      password_reset_requests: [],
       security_settings: {
         maxFailedLogins: MAX_FAILED_LOGINS,
         lockoutMinutes: LOCKOUT_MINUTES,
@@ -111,7 +113,7 @@ function ensureDb() {
   const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
   let changed = false;
   ["sessions", "sso_tokens", "members", "user_permissions", "sales_quotation_requests",
-   "sales_quotation_request_files", "email_logs", "audit_trail", "password_reset_tokens"].forEach((table) => {
+   "sales_quotation_request_files", "email_logs", "audit_trail", "password_reset_tokens", "password_reset_requests"].forEach((table) => {
     if (!Array.isArray(db[table])) { db[table] = []; changed = true; }
   });
   if (!db.security_settings) {
@@ -282,6 +284,103 @@ function writeAudit(db, action, user, module = "Authentication", reference = use
     timestamp: new Date().toISOString(),
   });
   db.audit_trail = db.audit_trail.slice(0, 5000);
+}
+
+function emailProviderDiagnostics() {
+  const adminEmail = process.env.PASSWORD_RESET_ADMIN_EMAIL || process.env.ADMIN_EMAIL || "";
+  const sender = process.env.EMAIL_FROM || process.env.RESEND_FROM || process.env.SENDGRID_FROM || process.env.SMTP_FROM || "";
+  return {
+    provider: process.env.RESEND_API_KEY ? "Resend" : process.env.SENDGRID_API_KEY ? "SendGrid" : process.env.SMTP_HOST ? "SMTP configured but unsupported without SMTP library" : "Not configured",
+    adminEmail,
+    sender,
+    hasResend: Boolean(process.env.RESEND_API_KEY),
+    hasSendGrid: Boolean(process.env.SENDGRID_API_KEY),
+    hasSmtpHost: Boolean(process.env.SMTP_HOST),
+    hasSmtpUser: Boolean(process.env.SMTP_USER),
+    hasSmtpPassword: Boolean(process.env.SMTP_PASSWORD),
+  };
+}
+
+function httpsJsonRequest(options, payload) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      let body = "";
+      res.on("data", (chunk) => { body += chunk; });
+      res.on("end", () => {
+        const parsed = body ? (() => { try { return JSON.parse(body); } catch { return { raw: body }; } })() : {};
+        if (res.statusCode >= 200 && res.statusCode < 300) resolve(parsed);
+        else reject(new Error(`${res.statusCode}: ${body || res.statusMessage}`));
+      });
+    });
+    req.on("error", reject);
+    req.write(JSON.stringify(payload));
+    req.end();
+  });
+}
+
+async function sendPlatformEmail(db, { to, subject, text, type = "system", reference = "" }) {
+  const diagnostics = emailProviderDiagnostics();
+  const log = {
+    id: crypto.randomUUID(),
+    type,
+    to,
+    from: diagnostics.sender,
+    subject,
+    provider: diagnostics.provider,
+    status: "Failed",
+    reference,
+    error: "",
+    created_at: new Date().toISOString(),
+  };
+  try {
+    if (!to) throw new Error("Missing recipient email. Set PASSWORD_RESET_ADMIN_EMAIL or ADMIN_EMAIL on Render.");
+    if (!diagnostics.sender) throw new Error("Missing sender email. Set EMAIL_FROM, RESEND_FROM, SENDGRID_FROM, or SMTP_FROM on Render.");
+    if (process.env.RESEND_API_KEY) {
+      const result = await httpsJsonRequest({
+        hostname: "api.resend.com",
+        path: "/emails",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+        },
+      }, { from: diagnostics.sender, to: [to], subject, text });
+      log.status = "Sent";
+      log.provider_message_id = result.id || "";
+      db.email_logs.push(log);
+      console.log(`[email] Sent via Resend to ${to}: ${subject}`);
+      return { ok: true, provider: "Resend", log };
+    }
+    if (process.env.SENDGRID_API_KEY) {
+      const result = await httpsJsonRequest({
+        hostname: "api.sendgrid.com",
+        path: "/v3/mail/send",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.SENDGRID_API_KEY}`,
+        },
+      }, {
+        personalizations: [{ to: [{ email: to }] }],
+        from: { email: diagnostics.sender },
+        subject,
+        content: [{ type: "text/plain", value: text }],
+      });
+      log.status = "Sent";
+      log.provider_message_id = result.id || "";
+      db.email_logs.push(log);
+      console.log(`[email] Sent via SendGrid to ${to}: ${subject}`);
+      return { ok: true, provider: "SendGrid", log };
+    }
+    throw new Error(diagnostics.hasSmtpHost
+      ? "SMTP variables are present, but SMTP delivery needs an SMTP library. Configure RESEND_API_KEY or SENDGRID_API_KEY for this deployment."
+      : "No email provider configured. Set RESEND_API_KEY or SENDGRID_API_KEY plus sender/admin email variables on Render.");
+  } catch (error) {
+    log.error = error.message;
+    db.email_logs.push(log);
+    console.error(`[email] Failed to send to ${to || "(missing recipient)"}: ${error.message}`);
+    return { ok: false, provider: diagnostics.provider, error: error.message, log };
+  }
 }
 
 function json(res, status, payload) {
@@ -930,36 +1029,62 @@ async function handleApi(req, res) {
     const body = await readBody(req);
     const email = normalizeEmail(body.email);
     const db = readDb();
-    const settings = securitySettings(db);
     const member = db.members.find((m) => normalizeEmail(m.email) === email);
-    let resetToken = "";
-    if (member && member.inviteStatus !== "Disabled") {
-      resetToken = crypto.randomBytes(32).toString("base64url");
-      db.password_reset_tokens.push({
+    const accountStatus = String(member?.inviteStatus || member?.status || "").toLowerCase();
+    if (member && !["disabled", "archived", "deactivated"].includes(accountStatus)) {
+      const diagnostics = emailProviderDiagnostics();
+      const permissions = persistentPermissionsForMember(member).permissions;
+      const hubs = [
+        permissions.includes("quotation_hub") ? "Quotation Hub" : "",
+        permissions.includes("finance_age_analysis") ? "Finance Balances and Age Analysis" : "",
+        permissions.includes("administration_governance") ? "Administration & Governance" : "",
+      ].filter(Boolean);
+      const requestRecord = {
         id: crypto.randomUUID(),
-        token_hash: tokenHash(resetToken),
         user_id: member.id,
-        email: member.email,
-        expires_at: new Date(Date.now() + settings.passwordResetMinutes * 60 * 1000).toISOString(),
-        used_at: null,
-        created_at: new Date().toISOString(),
+        user_name: member.name || member.email,
+        user_email: member.email,
+        requested_at: new Date().toISOString(),
+        status: "Pending",
+        approved_by: "",
+        approved_at: "",
+        rejected_by: "",
+        rejected_at: "",
+        completed_at: "",
+        reset_token_id: "",
+        hubs,
+      };
+      db.password_reset_requests.unshift(requestRecord);
+      writeAudit(db, "Password reset requested", member, "Authentication", member.email, `Request ID: ${requestRecord.id}`);
+      const adminEmail = diagnostics.adminEmail;
+      const emailResult = await sendPlatformEmail(db, {
+        to: adminEmail,
+        subject: `Password Reset Request - ${requestRecord.user_name}`,
+        type: "password_reset_admin_notification",
+        reference: requestRecord.id,
+        text: [
+          "Password reset request received.",
+          "",
+          `User name: ${requestRecord.user_name}`,
+          `User email: ${requestRecord.user_email}`,
+          `Date and time: ${new Date(requestRecord.requested_at).toLocaleString("en-ZA")}`,
+          `Hub access: ${hubs.join(", ") || "No hub access assigned"}`,
+          `Password reset request ID: ${requestRecord.id}`,
+          "",
+          "Please open Administration & Governance > Login & Security Monitoring to approve or reject this request.",
+        ].join("\n"),
       });
-      db.email_logs.push({
-        id: crypto.randomUUID(),
-        type: "password_reset",
-        to: member.email,
-        subject: "Interactive Security password reset",
-        status: process.env.NODE_ENV === "production" ? "Pending email provider" : "Development token generated",
-        created_at: new Date().toISOString(),
-      });
-      writeAudit(db, "Password reset requested", member, "Authentication", member.email, "Reset token generated");
+      requestRecord.admin_email_status = emailResult.ok ? "Sent" : "Failed";
+      requestRecord.admin_email_error = emailResult.error || "";
+      writeAudit(db, emailResult.ok ? "Password reset admin email sent" : "Password reset admin email failed", member, "Authentication", requestRecord.id, emailResult.ok ? `Sent to ${adminEmail}` : emailResult.error);
+      writeDb(db);
+    } else {
+      writeAudit(db, "Password reset requested", { email, name: email || "Unknown user" }, "Authentication", email || "unknown", "No active matching user found; generic confirmation returned");
       writeDb(db);
     }
     return json(res, 200, {
       ok: true,
-      message: "If the account exists, a password reset link will be sent.",
-      // Only expose the raw token in development to allow testing
-      resetToken: process.env.NODE_ENV === "production" ? undefined : resetToken,
+      message: "Your password reset request has been submitted to an administrator.",
     });
   }
 
@@ -994,6 +1119,11 @@ async function handleApi(req, res) {
     member.passwordChangedAt = new Date().toISOString();
     member.inviteStatus = "Active";
     member.updated_at = new Date().toISOString();
+    const linkedRequest = (db.password_reset_requests || []).find((request) => request.id === record.request_id);
+    if (linkedRequest) {
+      linkedRequest.status = "Completed";
+      linkedRequest.completed_at = new Date().toISOString();
+    }
 
     writeAudit(db, "Password reset completed", member, "Authentication", member.email, "Reset token consumed");
     writeDb(db);
@@ -1002,6 +1132,102 @@ async function handleApi(req, res) {
   }
 
   // ── Session check ─────────────────────────────────────────────────────────
+  if (req.method === "GET" && url.pathname === "/api/auth/password-reset-requests") {
+    const session = getSession(req);
+    if (!hasPermission(session, "administration_governance")) return json(res, 403, { error: "Access denied" });
+    const db = readDb();
+    return json(res, 200, {
+      requests: (db.password_reset_requests || []).map((request) => ({ ...request, reset_link: undefined })),
+      emailDiagnostics: emailProviderDiagnostics(),
+    });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/password-reset-requests/action") {
+    const session = getSession(req);
+    if (!hasPermission(session, "administration_governance")) return json(res, 403, { error: "Access denied" });
+    const body = await readBody(req);
+    const requestId = String(body.requestId || "");
+    const action = String(body.action || "");
+    const db = readDb();
+    const settings = securitySettings(db);
+    const requestRecord = (db.password_reset_requests || []).find((request) => request.id === requestId);
+    if (!requestRecord) return json(res, 404, { error: "Password reset request not found." });
+    const member = db.members.find((m) => m.id === requestRecord.user_id || normalizeEmail(m.email) === normalizeEmail(requestRecord.user_email));
+    if (!member) return json(res, 404, { error: "Member not found." });
+    if (action === "reject") {
+      requestRecord.status = "Rejected";
+      requestRecord.rejected_by = session.name || session.email;
+      requestRecord.rejected_at = new Date().toISOString();
+      writeAudit(db, "Password reset rejected", session, "Administration & Governance", requestRecord.user_email, `Request ID: ${requestId}`);
+      writeDb(db);
+      return json(res, 200, { ok: true, request: requestRecord });
+    }
+    if (action === "force_change") {
+      member.mustChangePassword = true;
+      member.passwordResetRequested = true;
+      member.updated_at = new Date().toISOString();
+      requestRecord.status = "Force Change Required";
+      requestRecord.approved_by = session.name || session.email;
+      requestRecord.approved_at = requestRecord.approved_at || new Date().toISOString();
+      writeAudit(db, "Forced password change", session, "Administration & Governance", requestRecord.user_email, `Request ID: ${requestId}`);
+      writeDb(db);
+      return json(res, 200, { ok: true, request: requestRecord });
+    }
+    if (action === "approve") {
+      requestRecord.status = "Approved";
+      requestRecord.approved_by = session.name || session.email;
+      requestRecord.approved_at = new Date().toISOString();
+      writeAudit(db, "Password reset approved", session, "Administration & Governance", requestRecord.user_email, `Request ID: ${requestId}`);
+      writeDb(db);
+      return json(res, 200, { ok: true, request: requestRecord });
+    }
+    if (action === "send_link") {
+      const resetToken = crypto.randomBytes(32).toString("base64url");
+      const tokenRecord = {
+        id: crypto.randomUUID(),
+        token_hash: tokenHash(resetToken),
+        user_id: member.id,
+        email: member.email,
+        request_id: requestRecord.id,
+        expires_at: new Date(Date.now() + settings.passwordResetMinutes * 60 * 1000).toISOString(),
+        used_at: null,
+        created_at: new Date().toISOString(),
+        created_by: session.email,
+      };
+      db.password_reset_tokens.push(tokenRecord);
+      requestRecord.status = "Reset Link Sent";
+      requestRecord.approved_by = requestRecord.approved_by || session.name || session.email;
+      requestRecord.approved_at = requestRecord.approved_at || new Date().toISOString();
+      requestRecord.reset_token_id = tokenRecord.id;
+      const resetUrl = `${process.env.PUBLIC_BASE_URL || `http://localhost:${port}`}/?resetToken=${encodeURIComponent(resetToken)}`;
+      const emailResult = await sendPlatformEmail(db, {
+        to: member.email,
+        subject: "Interactive Security password reset link",
+        type: "password_reset_user_link",
+        reference: requestRecord.id,
+        text: [
+          `Hello ${member.name || member.email},`,
+          "",
+          "Your password reset request has been approved.",
+          `Reset link: ${resetUrl}`,
+          `This link expires at: ${new Date(tokenRecord.expires_at).toLocaleString("en-ZA")}`,
+          "",
+          "If you did not request this reset, please contact an administrator immediately.",
+        ].join("\n"),
+      });
+      requestRecord.user_email_status = emailResult.ok ? "Sent" : "Failed";
+      requestRecord.user_email_error = emailResult.error || "";
+      writeAudit(db, emailResult.ok ? "Password reset link sent" : "Password reset link email failed", session, "Administration & Governance", requestRecord.user_email, emailResult.ok ? "User reset link sent" : emailResult.error);
+      writeDb(db);
+      return json(res, 200, {
+        ok: true,
+        request: requestRecord,
+        resetLink: process.env.NODE_ENV === "production" ? undefined : resetUrl,
+      });
+    }
+    return json(res, 400, { error: "Unknown password reset action." });
+  }
+
   if (req.method === "GET" && url.pathname === "/api/auth/session") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
