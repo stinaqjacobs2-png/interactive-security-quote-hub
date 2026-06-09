@@ -4477,6 +4477,57 @@ async function syncGovernanceMemberToBackend(member) {
   if (!response.ok) throw new Error(data.error || "User changes could not be saved to the server.");
 }
 
+function mergeGovernanceMemberFromServer(member) {
+  if (!member?.id) return;
+  const members = storageList(membersStorageKey);
+  const index = members.findIndex((item) => item.id === member.id || normalizeEmail(item.email) === normalizeEmail(member.email));
+  const normalized = {
+    ...(index >= 0 ? members[index] : {}),
+    ...member,
+    id: member.id || member.userId,
+    access: normalizeRole(member.access || member.role || "Read Only"),
+    role: normalizeRole(member.role || member.access || "Read Only"),
+    inviteStatus: member.inviteStatus || member.status || "Active",
+    status: member.status || member.inviteStatus || "Active",
+    updatedAt: member.updated_at || member.updatedAt || new Date().toISOString(),
+  };
+  if (index >= 0) members[index] = normalized;
+  else members.push(normalized);
+  saveStorageList(membersStorageKey, members);
+}
+
+function showOneTimePasswordFallback(password, emailStatus, emailError) {
+  if (!password) return;
+  alert(`Email delivery ${emailStatus || "Failed"}.\n\nGive this temporary one-time password to the user now:\n${password}\n\nThis password will not be shown again. The user must change it after first login.${emailError ? `\n\nEmail error: ${emailError}` : ""}`);
+}
+
+async function removeGovernanceMemberOnServer(memberId) {
+  const response = await fetch("/api/members/remove", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ memberId }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Member could not be removed.");
+  mergeGovernanceMemberFromServer(data.member);
+  return data;
+}
+
+async function readdGovernanceMemberOnServer(payload) {
+  const response = await fetch("/api/members/readd", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Member could not be created.");
+  mergeGovernanceMemberFromServer(data.member);
+  showOneTimePasswordFallback(data.temporaryPassword, data.emailStatus, data.emailError);
+  return data;
+}
+
 async function updateGovernanceMember(memberId, changes = {}, options = {}) {
   const members = storageList(membersStorageKey);
   const index = members.findIndex((member) => member.id === memberId);
@@ -4522,33 +4573,44 @@ async function updateGovernanceMember(memberId, changes = {}, options = {}) {
   if (options.render !== false) renderGovernanceHub(options.tab || "users");
 }
 
-function addGovernanceUser() {
+async function addGovernanceUser(existingMember = null) {
   if (!isGovernanceAdmin()) return;
-  const name = prompt("User name:");
-  const email = prompt("Email address:");
+  const name = prompt("User name:", existingMember?.name || "");
+  const email = prompt("Email address:", existingMember?.email || "");
   if (!name || !email) return;
-  if (memberByEmail(email)) {
+  const duplicate = memberByEmail(email);
+  if (!existingMember && duplicate && !isDeactivatedGovernanceMember(duplicate)) {
     alert("A user with this email already exists.");
     return;
   }
-  const department = prompt("Department:", "");
-  const position = prompt("Position:", "");
-  const access = isSuperAdmin() ? (prompt("Role: Super Admin, Admin, Quotation Builder, Sales Representative, Read Only", "Read Only") || "Read Only") : "Read Only";
-  const member = {
-    id: `member-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    name,
-    email: normalizeEmail(email),
-    department,
-    position,
-    access: normalizeRole(access),
-    role: normalizeRole(access),
-    inviteStatus: "Pending",
-    forcePasswordChange: true,
-    createdAt: new Date().toISOString(),
-  };
-  saveMemberRecord(member);
-  writeAudit("Created user", member.email, "Administration & Governance", member.email, `Created by ${currentUserName()}`);
-  renderGovernanceHub("users");
+  const department = prompt("Department:", existingMember?.department || "");
+  const position = prompt("Position:", existingMember?.position || "");
+  const access = isSuperAdmin() ? (prompt("Role: Super Admin, Admin, Quotation Builder, Sales Representative, Read Only", existingMember?.access || existingMember?.role || "Read Only") || "Read Only") : "Read Only";
+  const role = normalizeRole(access);
+  const currentPermissions = new Set(Array.isArray(existingMember?.permissions) && existingMember.permissions.length ? existingMember.permissions : (roleDefaultPermissions[role] || []));
+  const selected = prompt(
+    "Permission keys to assign, comma-separated. Leave as-is to use the suggested permissions.",
+    Array.from(currentPermissions).join(", ")
+  );
+  const permissions = selected === null
+    ? Array.from(currentPermissions)
+    : selected.split(",").map((value) => value.trim()).filter((value) => permissionDefinitions.some((permission) => permission.key === value));
+  try {
+    const data = await readdGovernanceMemberOnServer({
+      id: existingMember?.id,
+      name,
+      email: normalizeEmail(email),
+      position,
+      department,
+      access: role,
+      role,
+      permissions,
+    });
+    writeAudit(existingMember ? "Member re-added" : "Created user", normalizeEmail(email), "Administration & Governance", normalizeEmail(email), `Created by ${currentUserName()}; email ${data.emailStatus || "Unknown"}`);
+    renderGovernanceHub("users");
+  } catch (error) {
+    alert(error.message || "Member could not be created.");
+  }
 }
 
 function governanceAuditRows() {
@@ -4717,7 +4779,7 @@ function renderGovernanceUserRows(members, mode = "active") {
           <span>${escapeHtml(member.access || member.role || "-")}</span>
           <span class="row-actions">
             <button class="secondary-btn" type="button" data-governance-edit-user="${escapeHtml(member.id)}">Edit</button>
-            ${mode === "active" ? `<button class="secondary-btn" type="button" data-governance-deactivate-user="${escapeHtml(member.id)}">Deactivate</button>` : `<button class="primary-btn" type="button" data-governance-reactivate-user="${escapeHtml(member.id)}">Reactivate</button>`}
+            ${mode === "active" ? `<button class="danger-btn" type="button" data-governance-remove-user="${escapeHtml(member.id)}">Remove Member</button>` : `<button class="primary-btn" type="button" data-governance-readd-user="${escapeHtml(member.id)}">Re-add Member</button>`}
             ${isSuperAdmin() && mode === "active" ? `<button class="danger-btn" type="button" data-governance-archive-user="${escapeHtml(member.id)}">Archive</button>` : ""}
           </span>
         </div>
@@ -11023,7 +11085,7 @@ portalHubGrid.addEventListener("click", async (event) => {
     return;
   }
   if (event.target.closest("[data-governance-add-user]")) {
-    addGovernanceUser();
+    await addGovernanceUser();
     return;
   }
   const governanceEditUser = event.target.closest("[data-governance-edit-user]")?.dataset.governanceEditUser;
@@ -11093,6 +11155,26 @@ portalHubGrid.addEventListener("click", async (event) => {
     }
     governanceEditingUserId = "";
     await updateGovernanceMember(governanceSaveUser, changes, { tab: "users", notice: "User changes saved." });
+    return;
+  }
+  const governanceRemoveUser = event.target.closest("[data-governance-remove-user]")?.dataset.governanceRemoveUser;
+  if (governanceRemoveUser) {
+    const member = governanceMembers().find((item) => item.id === governanceRemoveUser);
+    if (!member) return;
+    if (!confirm(`Remove ${member.name || member.email} from active access? They will not be able to log in, but their audit history will remain.`)) return;
+    try {
+      await removeGovernanceMemberOnServer(governanceRemoveUser);
+      writeAudit("Member removed", member.email, "Administration & Governance", member.email, `Removed by ${currentUserName()}`);
+      renderGovernanceHub("users");
+    } catch (error) {
+      alert(error.message || "Member could not be removed.");
+    }
+    return;
+  }
+  const governanceReaddUser = event.target.closest("[data-governance-readd-user]")?.dataset.governanceReaddUser;
+  if (governanceReaddUser) {
+    const member = governanceMembers().find((item) => item.id === governanceReaddUser);
+    await addGovernanceUser(member || null);
     return;
   }
   const governanceDeactivateUser = event.target.closest("[data-governance-deactivate-user]")?.dataset.governanceDeactivateUser;

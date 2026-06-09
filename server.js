@@ -206,6 +206,24 @@ function publicUser(member) {
   };
 }
 
+function publicMemberRecord(member) {
+  const {
+    password_hash,
+    passwordHash,
+    legacyPasswordHash,
+    otp_hash,
+    temporaryPassword,
+    ...safe
+  } = member || {};
+  return {
+    ...safe,
+    userId: member?.id,
+    role: normalizeRole(member?.role || member?.access || "Read Only"),
+    access: normalizeRole(member?.access || member?.role || "Read Only"),
+    permissions: persistentPermissionsForMember(member || {}).permissions,
+  };
+}
+
 function persistentPermissionsForMember(member) {
   const role = normalizeRole(member.role || member.access || "Read Only");
   const explicit = Boolean(member.permissionsExplicit);
@@ -278,6 +296,22 @@ function verifyOtp(otp, otpHash) {
 
 function generateSixDigitOtp() {
   return String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+}
+
+function generateTemporaryPassword() {
+  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const lower = "abcdefghijkmnopqrstuvwxyz";
+  const digits = "23456789";
+  const special = "!@#$%^&*";
+  const all = upper + lower + digits + special;
+  const pick = (chars) => chars[crypto.randomInt(0, chars.length)];
+  const chars = [pick(upper), pick(lower), pick(digits), pick(special)];
+  while (chars.length < 10) chars.push(pick(all));
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = crypto.randomInt(0, i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
 }
 
 function requestMeta(req) {
@@ -533,6 +567,7 @@ function getSession(req) {
     role,
     permissions,
     permissionsExplicit,
+    mustChangePassword: Boolean(member.mustChangePassword),
     lastActivityAt: now.toISOString(),
   };
   writeDb(db);
@@ -566,6 +601,7 @@ function saveSession(user) {
     permissionsExplicit: persisted.permissionsExplicit,
     mfaEnabled: Boolean(member?.mfaEnabled ?? user.mfaEnabled),
     mfaRequired: Boolean(member?.mfaRequired ?? user.mfaRequired),
+    mustChangePassword: Boolean(member?.mustChangePassword ?? user.mustChangePassword),
     createdAt: now.toISOString(),
     lastActivityAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + settings.sessionAbsoluteHours * 60 * 60 * 1000).toISOString(),
@@ -634,6 +670,7 @@ function saveSession(user) {
 
 function canAccessHub(session, hubSlug) {
   if (!session) return false;
+  if (session.mustChangePassword) return false;
   const hubPermissionMap = {
     "quotation-hub": "quotation_hub",
     "finance-age-analysis": "finance_age_analysis",
@@ -645,6 +682,7 @@ function canAccessHub(session, hubSlug) {
 
 function hasPermission(session, permissionKey) {
   if (!session) return false;
+  if (session.mustChangePassword) return false;
   const role = normalizeRole(session.role || session.access);
   if (["Super Admin", "Admin"].includes(role)) return true;
   const permissions = sanitizePermissions(session.permissions);
@@ -1044,9 +1082,12 @@ async function handleApi(req, res) {
     }
 
     // Write ONLY the password fields – do not touch any other member data
+    const hadTemporaryPassword = Boolean(member.temporaryPasswordCreatedAt) && !member.temporaryPasswordUsed;
     member.password_hash = newHash;
     member.passwordAlgorithm = "bcrypt";
     member.mustChangePassword = false;
+    member.temporaryPasswordUsed = hadTemporaryPassword ? true : Boolean(member.temporaryPasswordUsed);
+    member.temporaryPasswordUsedAt = hadTemporaryPassword ? new Date().toISOString() : (member.temporaryPasswordUsedAt || "");
     member.inviteStatus = "Active";
     member.status = "Active";
     member.passwordChangedAt = new Date().toISOString();
@@ -1054,7 +1095,15 @@ async function handleApi(req, res) {
     member.lockedUntil = null;
     member.updated_at = new Date().toISOString();
 
+    if (hadTemporaryPassword) {
+      writeAudit(db, "Temporary password used", member, "Authentication", member.email, "User signed in with temporary password and changed it");
+    }
     writeAudit(db, "Changed password", member, "Authentication", member.email, "Password changed successfully");
+    db.sessions = (db.sessions || []).map((existingSession) => (
+      existingSession.userId === member.id || normalizeEmail(existingSession.email) === normalizeEmail(member.email)
+        ? { ...existingSession, mustChangePassword: false }
+        : existingSession
+    ));
     writeDb(db);
     console.log(`[change-password] OK: ${member.email}`);
     return json(res, 200, { ok: true });
@@ -1556,6 +1605,125 @@ async function handleApi(req, res) {
   }
 
   // ── SSO create token ──────────────────────────────────────────────────────
+  if (req.method === "POST" && url.pathname === "/api/members/remove") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
+    const body = await readBody(req);
+    const memberId = String(body.memberId || "");
+    const db = readDb();
+    const member = db.members.find((m) => m.id === memberId || normalizeEmail(m.email) === normalizeEmail(body.email || ""));
+    if (!member) return json(res, 404, { error: "Member not found." });
+    if (normalizeRole(member.role || member.access) === "Super Admin" && normalizeRole(session.role) !== "Super Admin") {
+      return json(res, 403, { error: "Only Super Admin users may remove Super Admin accounts." });
+    }
+    const oldStatus = member.inviteStatus || member.status || "Active";
+    const now = new Date().toISOString();
+    member.inviteStatus = "Archived";
+    member.status = "Archived";
+    member.archivedAt = now;
+    member.archivedBy = session.name || session.email;
+    member.deactivatedAt = member.deactivatedAt || now;
+    member.deactivatedBy = member.deactivatedBy || session.name || session.email;
+    member.removedAt = now;
+    member.removedBy = session.name || session.email;
+    member.loginRevokedAt = now;
+    member.updated_at = now;
+    db.sessions = (db.sessions || []).filter((s) => s.userId !== member.id && normalizeEmail(s.email) !== normalizeEmail(member.email));
+    writeAudit(db, "Member removed", session, "Administration & Governance", member.email, `${oldStatus} -> Archived`);
+    writeDb(db);
+    return json(res, 200, { ok: true, member: publicMemberRecord(member) });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/members/readd") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
+    const body = await readBody(req);
+    const email = normalizeEmail(body.email);
+    const name = String(body.name || "").trim();
+    if (!email || !name) return json(res, 400, { error: "Member name and email are required." });
+    const db = readDb();
+    const now = new Date().toISOString();
+    const role = normalizeRole(body.role || body.access || "Read Only");
+    const permissions = sanitizePermissions(Array.isArray(body.permissions) ? body.permissions : defaultPermissionsForRole(role));
+    const index = db.members.findIndex((m) => normalizeEmail(m.email) === email || m.id === body.id);
+    const previous = index >= 0 ? db.members[index] : {};
+    const tempPassword = generateTemporaryPassword();
+    let password_hash;
+    try { password_hash = hashPassword(tempPassword); }
+    catch (error) { return json(res, 500, { error: "Temporary password could not be generated." }); }
+    const id = previous.id || body.id || email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const oldStatus = previous.inviteStatus || previous.status || "New";
+    const member = {
+      ...previous,
+      id,
+      name,
+      email,
+      position: body.position !== undefined ? String(body.position || "") : (previous.position || ""),
+      department: body.department !== undefined ? String(body.department || "") : (previous.department || ""),
+      phone: body.phone !== undefined ? String(body.phone || "") : (previous.phone || ""),
+      branch: body.branch !== undefined ? String(body.branch || "") : (previous.branch || ""),
+      role,
+      access: role,
+      permissions,
+      permissionsExplicit: true,
+      inviteStatus: "Active",
+      status: "Active",
+      password_hash,
+      passwordAlgorithm: "bcrypt",
+      mustChangePassword: true,
+      temporaryPasswordCreatedAt: now,
+      temporaryPasswordCreatedBy: session.name || session.email,
+      temporaryPasswordUsed: false,
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+      readdedAt: now,
+      readdedBy: session.name || session.email,
+      removedAt: "",
+      removedBy: "",
+      archivedAt: "",
+      archivedBy: "",
+      deactivatedAt: "",
+      deactivatedBy: "",
+      created_at: previous.created_at || now,
+      updated_at: now,
+    };
+    if (index >= 0) db.members[index] = member;
+    else db.members.push(member);
+    writeAudit(db, index >= 0 ? "Member re-added" : "Member added", session, "Administration & Governance", email, `${oldStatus} -> Active`);
+    writeAudit(db, "Temporary password generated", session, "Administration & Governance", email, "One-time password generated and hashed");
+    writeAudit(db, "Hub permissions assigned", session, "Administration & Governance", email, permissions.join(", ") || "No permissions selected");
+    const loginUrl = process.env.PUBLIC_BASE_URL || `http://localhost:${port}`;
+    const emailResult = await sendPlatformEmail(db, {
+      to: email,
+      subject: "Your Interactive Security Hub temporary password",
+      type: "member_temporary_password",
+      reference: email,
+      text: [
+        `Hello ${name},`,
+        "",
+        "Your Interactive Security Hub account has been created.",
+        `Login URL: ${loginUrl}`,
+        `Temporary one-time password: ${tempPassword}`,
+        "",
+        "You must change this password immediately after login.",
+        "This temporary password can only be used for the first login and will not be shown again.",
+      ].join("\n"),
+    });
+    member.temporaryPasswordEmailStatus = emailResult.ok ? "Sent" : "Failed";
+    member.temporaryPasswordEmailError = emailResult.error || "";
+    writeAudit(db, emailResult.ok ? "Temporary password email sent" : "Temporary password email failed", session, "Administration & Governance", email, emailResult.ok ? "Temporary password sent to user email" : emailResult.error);
+    writeDb(db);
+    return json(res, 200, {
+      ok: true,
+      member: publicMemberRecord(member),
+      emailStatus: member.temporaryPasswordEmailStatus,
+      emailError: member.temporaryPasswordEmailError,
+      temporaryPassword: emailResult.ok ? undefined : tempPassword,
+    });
+  }
+
   if (req.method === "POST" && url.pathname === "/api/sso/create-token") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
@@ -1622,6 +1790,7 @@ async function handleApi(req, res) {
   if (req.method === "GET" && url.pathname === "/api/permissions") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
+    if (session.mustChangePassword) return json(res, 403, { error: "Password change required before accessing platform permissions.", code: "PASSWORD_CHANGE_REQUIRED" });
     return json(res, 200, {
       userId: session.userId,
       role: session.role,
