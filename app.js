@@ -4857,7 +4857,7 @@ function renderGovernancePasswordResetRequests() {
             <span>${escapeHtml(request.user_name || "-")}</span>
             <span>${escapeHtml(request.user_email || "-")}</span>
             <span>${escapeHtml(request.requested_at ? new Date(request.requested_at).toLocaleString("en-ZA") : "-")}</span>
-            <span>${escapeHtml(request.status || "Pending")}${request.otp_expires_at ? `<small>OTP expires: ${escapeHtml(new Date(request.otp_expires_at).toLocaleString("en-ZA"))}</small>` : ""}${request.otp_attempts ? `<small>OTP attempts: ${escapeHtml(String(request.otp_attempts))}</small>` : ""}${request.admin_email_status ? `<small>Optional email: ${escapeHtml(request.admin_email_status)}${request.admin_email_error ? ` - ${escapeHtml(request.admin_email_error)}` : ""}</small>` : ""}</span>
+            <span>${escapeHtml(request.status === "Completed" && request.otp_status === "Used" ? "Completed / OTP Used" : request.status || "Pending")}${request.otp_expires_at ? `<small>OTP expires: ${escapeHtml(new Date(request.otp_expires_at).toLocaleString("en-ZA"))}</small>` : ""}${request.otp_attempts ? `<small>OTP attempts: ${escapeHtml(String(request.otp_attempts))}</small>` : ""}${request.admin_email_status ? `<small>Optional email: ${escapeHtml(request.admin_email_status)}${request.admin_email_error ? ` - ${escapeHtml(request.admin_email_error)}` : ""}</small>` : ""}</span>
             <span>${escapeHtml(request.approved_by || "-")}</span>
             <span>${escapeHtml(request.requested_ip || "-")}<small>${escapeHtml(request.requested_device || "")}</small></span>
             <span>${escapeHtml(request.completed_at ? new Date(request.completed_at).toLocaleString("en-ZA") : "-")}</span>
