@@ -10710,7 +10710,7 @@ forgotPassword?.addEventListener("click", async () => {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || "Password reset could not be requested.");
-    alert(data.message || "Your password reset request has been submitted to an administrator.");
+    alert(data.message || "Your request has been submitted and is awaiting administrator action.");
   } catch (error) {
     alert(error.message || "Password reset could not be requested.");
   }

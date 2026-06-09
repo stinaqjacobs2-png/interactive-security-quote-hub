@@ -18,6 +18,7 @@ const SESSION_IDLE_MINUTES = Number(process.env.SESSION_IDLE_MINUTES || 30);
 const SESSION_ABSOLUTE_HOURS = Number(process.env.SESSION_ABSOLUTE_HOURS || 8);
 const PASSWORD_RESET_MINUTES = Number(process.env.PASSWORD_RESET_MINUTES || 30);
 const PASSWORD_POLICY_MESSAGE = "Password must be at least 5 characters long and contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special character.";
+const DEFAULT_PASSWORD_RESET_ADMIN_EMAIL = "christien@interactivesecurity.co.za";
 
 const permissionKeys = [
   "dashboard",
@@ -287,7 +288,7 @@ function writeAudit(db, action, user, module = "Authentication", reference = use
 }
 
 function emailProviderDiagnostics() {
-  const adminEmail = process.env.PASSWORD_RESET_ADMIN_EMAIL || process.env.ADMIN_EMAIL || "";
+  const adminEmail = process.env.PASSWORD_RESET_ADMIN_EMAIL || process.env.ADMIN_EMAIL || DEFAULT_PASSWORD_RESET_ADMIN_EMAIL;
   const sender = process.env.EMAIL_FROM || process.env.RESEND_FROM || process.env.SENDGRID_FROM || process.env.SMTP_FROM || "";
   return {
     provider: process.env.RESEND_API_KEY ? "Resend" : process.env.SENDGRID_API_KEY ? "SendGrid" : process.env.SMTP_HOST ? "SMTP configured but unsupported without SMTP library" : "Not configured",
@@ -1057,9 +1058,10 @@ async function handleApi(req, res) {
       db.password_reset_requests.unshift(requestRecord);
       writeAudit(db, "Password reset requested", member, "Authentication", member.email, `Request ID: ${requestRecord.id}`);
       const adminEmail = diagnostics.adminEmail;
+      const governanceQueueUrl = `${process.env.PUBLIC_BASE_URL || `http://localhost:${port}`}/hubs/administration-governance#security`;
       const emailResult = await sendPlatformEmail(db, {
         to: adminEmail,
-        subject: `Password Reset Request - ${requestRecord.user_name}`,
+        subject: `Password Reset Request – ${requestRecord.user_name}`,
         type: "password_reset_admin_notification",
         reference: requestRecord.id,
         text: [
@@ -1070,6 +1072,7 @@ async function handleApi(req, res) {
           `Date and time: ${new Date(requestRecord.requested_at).toLocaleString("en-ZA")}`,
           `Hub access: ${hubs.join(", ") || "No hub access assigned"}`,
           `Password reset request ID: ${requestRecord.id}`,
+          `Administration & Governance queue: ${governanceQueueUrl}`,
           "",
           "Please open Administration & Governance > Login & Security Monitoring to approve or reject this request.",
         ].join("\n"),
@@ -1084,7 +1087,7 @@ async function handleApi(req, res) {
     }
     return json(res, 200, {
       ok: true,
-      message: "Your password reset request has been submitted to an administrator.",
+      message: "Your request has been submitted and is awaiting administrator action.",
     });
   }
 
