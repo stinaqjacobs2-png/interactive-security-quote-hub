@@ -4818,6 +4818,25 @@ async function runGovernancePasswordResetAction(requestId, action) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || "Password reset request could not be updated.");
   if (data.resetLink) console.log("Development password reset link:", data.resetLink);
+  if (data.otp) {
+    alert(`Give this OTP to the user: ${data.otp}\n\nThis OTP expires in 15 minutes and will not be shown again.`);
+  }
+  await loadGovernancePasswordResetRequests();
+  renderGovernanceHub("security");
+}
+
+async function generateGovernanceOtpForUser(userId) {
+  const response = await fetch("/api/auth/password-reset-requests/generate-otp", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ userId }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "OTP could not be generated.");
+  if (data.otp) {
+    alert(`Give this OTP to the user: ${data.otp}\n\nThis OTP expires in 15 minutes and will not be shown again.`);
+  }
   await loadGovernancePasswordResetRequests();
   renderGovernanceHub("security");
 }
@@ -4829,20 +4848,22 @@ function renderGovernancePasswordResetRequests() {
       <div class="panel-heading"><div><p class="eyebrow">Password recovery</p><h2>Password Reset Requests</h2></div><button class="secondary-btn" type="button" data-governance-refresh-resets>Refresh</button></div>
       <p class="finance-note">Email service: ${escapeHtml(diagnostics.provider || "Unknown")} | Admin recipient: ${escapeHtml(diagnostics.adminEmail || "Not configured")} | Sender: ${escapeHtml(diagnostics.sender || "Not configured")}${diagnostics.error ? ` | Error: ${escapeHtml(diagnostics.error)}` : ""}</p>
       <div class="finance-table">
-        <div class="finance-table-row finance-table-head" style="grid-template-columns: repeat(7, minmax(160px,1fr));">
-          ${["User", "Email", "Request date", "Status", "Approved by", "Completed date", "Actions"].map((h) => `<span>${h}</span>`).join("")}
+        <div class="finance-table-row finance-table-head" style="grid-template-columns: repeat(9, minmax(160px,1fr));">
+          ${["Request ID", "User", "Email", "Request date", "Status", "Approved by", "IP / Device", "Completed date", "Actions"].map((h) => `<span>${h}</span>`).join("")}
         </div>
         ${governancePasswordResetRequests.map((request) => `
-          <div class="finance-table-row" style="grid-template-columns: repeat(7, minmax(160px,1fr));">
+          <div class="finance-table-row" style="grid-template-columns: repeat(9, minmax(160px,1fr));">
+            <span>${escapeHtml(request.id || "-")}</span>
             <span>${escapeHtml(request.user_name || "-")}</span>
-            <span>${escapeHtml(request.user_email || "-")}<small>${escapeHtml(request.id || "")}</small></span>
+            <span>${escapeHtml(request.user_email || "-")}</span>
             <span>${escapeHtml(request.requested_at ? new Date(request.requested_at).toLocaleString("en-ZA") : "-")}</span>
-            <span>${escapeHtml(request.status || "Pending")}${request.admin_email_status ? `<small>Admin email: ${escapeHtml(request.admin_email_status)}${request.admin_email_error ? ` - ${escapeHtml(request.admin_email_error)}` : ""}</small>` : ""}${request.user_email_status ? `<small>User email: ${escapeHtml(request.user_email_status)}${request.user_email_error ? ` - ${escapeHtml(request.user_email_error)}` : ""}</small>` : ""}</span>
+            <span>${escapeHtml(request.status || "Pending")}${request.otp_expires_at ? `<small>OTP expires: ${escapeHtml(new Date(request.otp_expires_at).toLocaleString("en-ZA"))}</small>` : ""}${request.otp_attempts ? `<small>OTP attempts: ${escapeHtml(String(request.otp_attempts))}</small>` : ""}${request.admin_email_status ? `<small>Optional email: ${escapeHtml(request.admin_email_status)}${request.admin_email_error ? ` - ${escapeHtml(request.admin_email_error)}` : ""}</small>` : ""}</span>
             <span>${escapeHtml(request.approved_by || "-")}</span>
+            <span>${escapeHtml(request.requested_ip || "-")}<small>${escapeHtml(request.requested_device || "")}</small></span>
             <span>${escapeHtml(request.completed_at ? new Date(request.completed_at).toLocaleString("en-ZA") : "-")}</span>
             <span class="row-actions">
-              <button class="secondary-btn" type="button" data-governance-reset-action="approve" data-request-id="${escapeHtml(request.id)}">Approve reset</button>
-              <button class="secondary-btn" type="button" data-governance-reset-action="send_link" data-request-id="${escapeHtml(request.id)}">Send reset link</button>
+              <button class="secondary-btn" type="button" data-governance-reset-action="generate_otp" data-request-id="${escapeHtml(request.id)}">Generate OTP</button>
+              <button class="secondary-btn" type="button" data-governance-reset-action="mark_completed" data-request-id="${escapeHtml(request.id)}">Mark as Completed</button>
               <button class="secondary-btn" type="button" data-governance-reset-action="force_change" data-request-id="${escapeHtml(request.id)}">Force password change</button>
               <button class="danger-btn" type="button" data-governance-reset-action="reject" data-request-id="${escapeHtml(request.id)}">Reject</button>
             </span>
@@ -4856,7 +4877,7 @@ function renderGovernancePasswordResetRequests() {
 function renderGovernanceSecurity() {
   const members = governanceMembers();
   const session = currentSession();
-  return `<section class="finance-card"><h2>Login & Security Monitoring</h2><div class="governance-summary-grid">${renderSummaryCard("Current online users", session?.email ? 1 : 0)}${renderSummaryCard("Locked accounts", members.filter((m) => m.lockedUntil && new Date(m.lockedUntil) > new Date()).length)}${renderSummaryCard("Password reset requests", governancePasswordResetRequests.filter((request) => ["Pending", "Approved", "Reset Link Sent", "Force Change Required"].includes(request.status || "Pending")).length)}${renderSummaryCard("Active sessions", session?.email ? 1 : 0)}</div><div class="finance-table"><div class="finance-table-row finance-table-head" style="grid-template-columns: repeat(7, minmax(150px,1fr));">${["User", "Last login", "Failed attempts", "Locked until", "Reset requested", "Session", "Actions"].map((h) => `<span>${h}</span>`).join("")}</div>${members.map((member) => `<div class="finance-table-row" style="grid-template-columns: repeat(7, minmax(150px,1fr));"><span>${escapeHtml(member.name)}</span><span>${escapeHtml(formatDate(String(member.lastLoginAt || "").slice(0,10)))}</span><span>${escapeHtml(String(member.failedLoginAttempts || 0))}</span><span>${escapeHtml(member.lockedUntil ? new Date(member.lockedUntil).toLocaleString("en-ZA") : "-")}</span><span>${member.passwordResetRequested ? "Yes" : "-"}</span><span>${normalizeEmail(session?.email || "") === normalizeEmail(member.email) ? "Active" : "-"}</span><span class="row-actions"><button class="secondary-btn" data-governance-unlock-user="${escapeHtml(member.id)}">Unlock</button><button class="secondary-btn" data-governance-reset-password="${escapeHtml(member.id)}">Reset password</button><button class="secondary-btn" data-governance-force-logout="${escapeHtml(member.id)}">Force logout</button></span></div>`).join("")}</div></section>${renderGovernancePasswordResetRequests()}`;
+  return `<section class="finance-card"><h2>Login & Security Monitoring</h2><div class="governance-summary-grid">${renderSummaryCard("Current online users", session?.email ? 1 : 0)}${renderSummaryCard("Locked accounts", members.filter((m) => m.lockedUntil && new Date(m.lockedUntil) > new Date()).length)}${renderSummaryCard("Password reset requests", governancePasswordResetRequests.filter((request) => ["Pending", "OTP Generated", "Force Change Required"].includes(request.status || "Pending")).length)}${renderSummaryCard("Active sessions", session?.email ? 1 : 0)}</div><div class="finance-table"><div class="finance-table-row finance-table-head" style="grid-template-columns: repeat(7, minmax(150px,1fr));">${["User", "Last login", "Failed attempts", "Locked until", "Reset requested", "Session", "Actions"].map((h) => `<span>${h}</span>`).join("")}</div>${members.map((member) => `<div class="finance-table-row" style="grid-template-columns: repeat(7, minmax(150px,1fr));"><span>${escapeHtml(member.name)}</span><span>${escapeHtml(formatDate(String(member.lastLoginAt || "").slice(0,10)))}</span><span>${escapeHtml(String(member.failedLoginAttempts || 0))}</span><span>${escapeHtml(member.lockedUntil ? new Date(member.lockedUntil).toLocaleString("en-ZA") : "-")}</span><span>${member.passwordResetRequested ? "Yes" : "-"}</span><span>${normalizeEmail(session?.email || "") === normalizeEmail(member.email) ? "Active" : "-"}</span><span class="row-actions"><button class="secondary-btn" data-governance-unlock-user="${escapeHtml(member.id)}">Unlock</button><button class="secondary-btn" data-governance-reset-password="${escapeHtml(member.id)}">Generate Password Reset OTP</button><button class="secondary-btn" data-governance-force-logout="${escapeHtml(member.id)}">Force logout</button></span></div>`).join("")}</div></section>${renderGovernancePasswordResetRequests()}`;
 }
 
 function renderGovernanceHistory() {
@@ -10699,7 +10720,7 @@ loginForm.addEventListener("submit", async (event) => {
 });
 
 forgotPassword?.addEventListener("click", async () => {
-  const email = normalizeEmail(prompt("Enter your email address for the password reset link:", loginEmail.value.trim()) || "");
+  const email = normalizeEmail(prompt("Enter your email address to request a password reset OTP:", loginEmail.value.trim()) || "");
   if (!email) return;
   try {
     const response = await fetch("/api/auth/request-password-reset", {
@@ -10710,13 +10731,76 @@ forgotPassword?.addEventListener("click", async () => {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || "Password reset could not be requested.");
-    alert(data.message || "Your request has been submitted and is awaiting administrator action.");
+    alert(data.message || "Your password reset request has been submitted. Please contact your administrator for your OTP.");
+    window.history.pushState({}, "", "/reset-password");
+    renderPasswordResetOtpScreen(email);
   } catch (error) {
     alert(error.message || "Password reset could not be requested.");
   }
 });
 
+function renderPasswordResetOtpScreen(prefilledEmail = "") {
+  document.querySelector(".app-shell")?.setAttribute("hidden", "true");
+  loginScreen.hidden = false;
+  loginScreen.innerHTML = `
+    <form class="login-card" id="otpResetForm">
+      <div class="brand login-brand">
+        <img class="brand-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+        <div>
+          <strong>Interactive Security Portal</strong>
+          <small>Password reset</small>
+        </div>
+      </div>
+      <h1>Reset password</h1>
+      <p>Enter the OTP provided by your administrator. The OTP expires after 15 minutes and can only be used once.</p>
+      <label>Email address<input id="otpResetEmail" type="email" value="${escapeHtml(prefilledEmail)}" required /></label>
+      <label>OTP<input id="otpResetCode" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" placeholder="6-digit OTP" required /></label>
+      <label>New password<input id="otpResetNewPassword" type="password" placeholder="New password" required /></label>
+      <label>Confirm new password<input id="otpResetConfirmPassword" type="password" placeholder="Confirm new password" required /></label>
+      <button class="primary-btn" type="submit">Reset password</button>
+      <button class="link-btn" id="backToLoginFromOtp" type="button">Back to sign in</button>
+      <p class="login-note">${escapeHtml(passwordPolicyMessage)}</p>
+    </form>
+  `;
+  document.querySelector("#backToLoginFromOtp")?.addEventListener("click", () => {
+    window.location.href = "/";
+  });
+  document.querySelector("#otpResetForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const email = normalizeEmail(document.querySelector("#otpResetEmail")?.value || "");
+    const otp = String(document.querySelector("#otpResetCode")?.value || "").trim();
+    const newPassword = String(document.querySelector("#otpResetNewPassword")?.value || "");
+    const confirmPassword = String(document.querySelector("#otpResetConfirmPassword")?.value || "");
+    if (newPassword !== confirmPassword) {
+      alert("The new password and confirmation do not match.");
+      return;
+    }
+    if (!isStrongPassword(newPassword)) {
+      alert(strongPasswordMessage(newPassword));
+      return;
+    }
+    try {
+      const response = await fetch("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email, otp, newPassword }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Password reset failed.");
+      alert("Password reset complete. Please sign in with your new password.");
+      window.location.href = "/";
+    } catch (error) {
+      alert(error.message || "Password reset failed.");
+    }
+  });
+}
+
 async function handlePasswordResetTokenFromUrl() {
+  if (window.location.pathname === "/reset-password") {
+    renderPasswordResetOtpScreen(new URLSearchParams(window.location.search).get("email") || "");
+    return true;
+  }
   const params = new URLSearchParams(window.location.search);
   const token = params.get("resetToken");
   if (!token) return false;
@@ -11037,8 +11121,11 @@ portalHubGrid.addEventListener("click", async (event) => {
   }
   const governanceResetPassword = event.target.closest("[data-governance-reset-password]")?.dataset.governanceResetPassword;
   if (governanceResetPassword) {
-    await updateGovernanceMember(governanceResetPassword, { temporaryPasswordSetAt: new Date().toISOString(), forcePasswordChange: true, passwordResetRequested: true, inviteStatus: "Pending", status: "Pending" }, { tab: "users", notice: "Password reset requested. Send the user a secure reset link/invite." });
-    writeAudit("Reset password", governanceResetPassword, "Administration & Governance", governanceResetPassword, "Password reset requested; no plain text password displayed");
+    try {
+      await generateGovernanceOtpForUser(governanceResetPassword);
+    } catch (error) {
+      alert(error.message || "OTP could not be generated.");
+    }
     return;
   }
   const governanceUnlockUser = event.target.closest("[data-governance-unlock-user]")?.dataset.governanceUnlockUser;

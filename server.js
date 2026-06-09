@@ -19,6 +19,8 @@ const SESSION_ABSOLUTE_HOURS = Number(process.env.SESSION_ABSOLUTE_HOURS || 8);
 const PASSWORD_RESET_MINUTES = Number(process.env.PASSWORD_RESET_MINUTES || 30);
 const PASSWORD_POLICY_MESSAGE = "Password must be at least 5 characters long and contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special character.";
 const DEFAULT_PASSWORD_RESET_ADMIN_EMAIL = "christien@interactivesecurity.co.za";
+const PASSWORD_RESET_OTP_MINUTES = Number(process.env.PASSWORD_RESET_OTP_MINUTES || 15);
+const PASSWORD_RESET_OTP_MAX_ATTEMPTS = Number(process.env.PASSWORD_RESET_OTP_MAX_ATTEMPTS || 5);
 
 const permissionKeys = [
   "dashboard",
@@ -258,6 +260,31 @@ function verifyPassword(password, passwordHash) {
 
 function tokenHash(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function hashOtp(otp) {
+  return bcrypt.hashSync(String(otp), BCRYPT_ROUNDS);
+}
+
+function verifyOtp(otp, otpHash) {
+  if (!otpHash || typeof otpHash !== "string") return false;
+  try {
+    return bcrypt.compareSync(String(otp), otpHash);
+  } catch (err) {
+    console.error("[verifyOtp] bcrypt.compareSync threw:", err.message);
+    return false;
+  }
+}
+
+function generateSixDigitOtp() {
+  return String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+}
+
+function requestMeta(req) {
+  return {
+    ip: String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim(),
+    device: String(req.headers["user-agent"] || ""),
+  };
 }
 
 function securitySettings(db) {
@@ -1032,6 +1059,7 @@ async function handleApi(req, res) {
     const db = readDb();
     const member = db.members.find((m) => normalizeEmail(m.email) === email);
     const accountStatus = String(member?.inviteStatus || member?.status || "").toLowerCase();
+    const meta = requestMeta(req);
     if (member && !["disabled", "archived", "deactivated"].includes(accountStatus)) {
       const diagnostics = emailProviderDiagnostics();
       const permissions = persistentPermissionsForMember(member).permissions;
@@ -1053,6 +1081,13 @@ async function handleApi(req, res) {
         rejected_at: "",
         completed_at: "",
         reset_token_id: "",
+        otp_id: "",
+        otp_generated_at: "",
+        otp_expires_at: "",
+        otp_used_at: "",
+        otp_attempts: 0,
+        requested_ip: meta.ip,
+        requested_device: meta.device,
         hubs,
       };
       db.password_reset_requests.unshift(requestRecord);
@@ -1087,7 +1122,7 @@ async function handleApi(req, res) {
     }
     return json(res, 200, {
       ok: true,
-      message: "Your request has been submitted and is awaiting administrator action.",
+      message: "Your password reset request has been submitted. Please contact your administrator for your OTP.",
     });
   }
 
@@ -1095,8 +1130,76 @@ async function handleApi(req, res) {
   if (req.method === "POST" && url.pathname === "/api/auth/reset-password") {
     const body = await readBody(req);
     const resetToken = String(body.token || "");
+    const email = normalizeEmail(body.email || "");
+    const otp = String(body.otp || "").trim();
     const newPassword = String(body.newPassword || "");
     const db = readDb();
+    if (email || otp) {
+      const member = db.members.find((m) => normalizeEmail(m.email) === email);
+      const meta = requestMeta(req);
+      if (!member) return json(res, 401, { error: "Email or OTP is incorrect." });
+      const accountStatus = String(member.inviteStatus || member.status || "").toLowerCase();
+      if (["disabled", "archived", "deactivated"].includes(accountStatus)) {
+        writeAudit(db, "OTP failed attempt", { email, name: member.name || email }, "Authentication", email, "Deactivated user attempted password reset");
+        writeDb(db);
+        return json(res, 403, { error: "This account cannot reset its password. Please contact an administrator." });
+      }
+      const requests = (db.password_reset_requests || [])
+        .filter((request) => request.user_id === member.id || normalizeEmail(request.user_email) === email)
+        .sort((a, b) => new Date(b.otp_generated_at || b.requested_at || 0) - new Date(a.otp_generated_at || a.requested_at || 0));
+      const requestRecord = requests.find((request) => request.otp_hash && !request.otp_used_at && !["Rejected", "Used", "Completed"].includes(request.status || ""));
+      if (!requestRecord) {
+        writeAudit(db, "OTP failed attempt", member, "Authentication", email, "No active OTP request found");
+        writeDb(db);
+        return json(res, 401, { error: "Email or OTP is incorrect." });
+      }
+      if (new Date(requestRecord.otp_expires_at || 0) <= new Date()) {
+        requestRecord.status = "Expired";
+        writeAudit(db, "OTP expired", member, "Authentication", email, `Request ID: ${requestRecord.id}`);
+        writeDb(db);
+        return json(res, 401, { error: "This OTP has expired. Please ask your administrator for a new OTP." });
+      }
+      if (Number(requestRecord.otp_attempts || 0) >= PASSWORD_RESET_OTP_MAX_ATTEMPTS) {
+        writeAudit(db, "OTP failed attempt", member, "Authentication", email, `Attempt limit reached for request ${requestRecord.id}`);
+        writeDb(db);
+        return json(res, 429, { error: "Too many incorrect OTP attempts. Please contact your administrator." });
+      }
+      if (!verifyOtp(otp, requestRecord.otp_hash)) {
+        requestRecord.otp_attempts = Number(requestRecord.otp_attempts || 0) + 1;
+        requestRecord.last_otp_attempt_at = new Date().toISOString();
+        requestRecord.last_otp_attempt_ip = meta.ip;
+        requestRecord.last_otp_attempt_device = meta.device;
+        writeAudit(db, "OTP failed attempt", member, "Authentication", email, `Request ID: ${requestRecord.id}; attempt ${requestRecord.otp_attempts}/${PASSWORD_RESET_OTP_MAX_ATTEMPTS}`);
+        writeDb(db);
+        return json(res, 401, { error: "Email or OTP is incorrect.", remainingAttempts: Math.max(0, PASSWORD_RESET_OTP_MAX_ATTEMPTS - requestRecord.otp_attempts) });
+      }
+
+      let newHash;
+      try {
+        newHash = hashPassword(newPassword);
+      } catch (error) {
+        return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
+      }
+
+      requestRecord.otp_used_at = new Date().toISOString();
+      requestRecord.status = "Used";
+      requestRecord.completed_at = requestRecord.otp_used_at;
+      requestRecord.completed_ip = meta.ip;
+      requestRecord.completed_device = meta.device;
+      member.password_hash = newHash;
+      member.passwordAlgorithm = "bcrypt";
+      member.mustChangePassword = false;
+      member.failedLoginAttempts = 0;
+      member.lockedUntil = null;
+      member.passwordChangedAt = new Date().toISOString();
+      member.inviteStatus = "Active";
+      member.status = "Active";
+      member.updated_at = new Date().toISOString();
+      writeAudit(db, "OTP used successfully", member, "Authentication", email, `Request ID: ${requestRecord.id}`);
+      writeAudit(db, "Password reset completed", member, "Authentication", email, `OTP request completed from ${meta.ip || "unknown IP"}`);
+      writeDb(db);
+      return json(res, 200, { ok: true });
+    }
     const record = db.password_reset_tokens.find((r) => r.token_hash === tokenHash(resetToken));
     if (!record || record.used_at || new Date(record.expires_at) <= new Date()) {
       return json(res, 401, { error: "Password reset link is invalid or expired." });
@@ -1140,7 +1243,7 @@ async function handleApi(req, res) {
     if (!hasPermission(session, "administration_governance")) return json(res, 403, { error: "Access denied" });
     const db = readDb();
     return json(res, 200, {
-      requests: (db.password_reset_requests || []).map((request) => ({ ...request, reset_link: undefined })),
+      requests: (db.password_reset_requests || []).map((request) => ({ ...request, reset_link: undefined, otp_hash: undefined })),
       emailDiagnostics: emailProviderDiagnostics(),
     });
   }
@@ -1157,11 +1260,51 @@ async function handleApi(req, res) {
     if (!requestRecord) return json(res, 404, { error: "Password reset request not found." });
     const member = db.members.find((m) => m.id === requestRecord.user_id || normalizeEmail(m.email) === normalizeEmail(requestRecord.user_email));
     if (!member) return json(res, 404, { error: "Member not found." });
+    const accountStatus = String(member.inviteStatus || member.status || "").toLowerCase();
+    if (["disabled", "archived", "deactivated"].includes(accountStatus)) {
+      return json(res, 403, { error: "Deactivated users cannot receive password reset OTPs." });
+    }
+    if (action === "generate_otp") {
+      const otp = generateSixDigitOtp();
+      const now = new Date();
+      (db.password_reset_requests || []).forEach((request) => {
+        if ((request.user_id === member.id || normalizeEmail(request.user_email) === normalizeEmail(member.email)) && request.id !== requestRecord.id && request.otp_hash && !request.otp_used_at && !["Rejected", "Used", "Completed", "Expired"].includes(request.status || "")) {
+          request.status = "Expired";
+          request.expired_at = now.toISOString();
+        }
+      });
+      requestRecord.status = "OTP Generated";
+      requestRecord.approved_by = session.name || session.email;
+      requestRecord.approved_at = requestRecord.approved_at || now.toISOString();
+      requestRecord.otp_id = crypto.randomUUID();
+      requestRecord.otp_hash = hashOtp(otp);
+      requestRecord.otp_generated_at = now.toISOString();
+      requestRecord.otp_expires_at = new Date(now.getTime() + PASSWORD_RESET_OTP_MINUTES * 60 * 1000).toISOString();
+      requestRecord.otp_used_at = "";
+      requestRecord.otp_attempts = 0;
+      requestRecord.otp_generated_by = session.name || session.email;
+      writeAudit(db, "OTP generated by admin", session, "Administration & Governance", requestRecord.user_email, `Request ID: ${requestId}; expires ${requestRecord.otp_expires_at}`);
+      writeDb(db);
+      return json(res, 200, {
+        ok: true,
+        request: { ...requestRecord, otp_hash: undefined },
+        otp,
+        expiresAt: requestRecord.otp_expires_at,
+      });
+    }
     if (action === "reject") {
       requestRecord.status = "Rejected";
       requestRecord.rejected_by = session.name || session.email;
       requestRecord.rejected_at = new Date().toISOString();
       writeAudit(db, "Password reset rejected", session, "Administration & Governance", requestRecord.user_email, `Request ID: ${requestId}`);
+      writeDb(db);
+      return json(res, 200, { ok: true, request: requestRecord });
+    }
+    if (action === "mark_completed") {
+      requestRecord.status = "Used";
+      requestRecord.completed_at = requestRecord.completed_at || new Date().toISOString();
+      requestRecord.completed_by = session.name || session.email;
+      writeAudit(db, "Password reset marked completed", session, "Administration & Governance", requestRecord.user_email, `Request ID: ${requestId}`);
       writeDb(db);
       return json(res, 200, { ok: true, request: requestRecord });
     }
@@ -1229,6 +1372,69 @@ async function handleApi(req, res) {
       });
     }
     return json(res, 400, { error: "Unknown password reset action." });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/password-reset-requests/generate-otp") {
+    const session = getSession(req);
+    if (!hasPermission(session, "administration_governance")) return json(res, 403, { error: "Access denied" });
+    const body = await readBody(req);
+    const userId = String(body.userId || "");
+    const db = readDb();
+    const member = db.members.find((m) => m.id === userId || normalizeEmail(m.email) === normalizeEmail(body.email || ""));
+    if (!member) return json(res, 404, { error: "Member not found." });
+    const accountStatus = String(member.inviteStatus || member.status || "").toLowerCase();
+    if (["disabled", "archived", "deactivated"].includes(accountStatus)) {
+      return json(res, 403, { error: "Deactivated users cannot receive password reset OTPs." });
+    }
+    const permissions = persistentPermissionsForMember(member).permissions;
+    const hubs = [
+      permissions.includes("quotation_hub") ? "Quotation Hub" : "",
+      permissions.includes("finance_age_analysis") ? "Finance Balances and Age Analysis" : "",
+      permissions.includes("administration_governance") ? "Administration & Governance" : "",
+    ].filter(Boolean);
+    const otp = generateSixDigitOtp();
+    const now = new Date();
+    (db.password_reset_requests || []).forEach((request) => {
+      if ((request.user_id === member.id || normalizeEmail(request.user_email) === normalizeEmail(member.email)) && request.otp_hash && !request.otp_used_at && !["Rejected", "Used", "Completed", "Expired"].includes(request.status || "")) {
+        request.status = "Expired";
+        request.expired_at = now.toISOString();
+      }
+    });
+    const requestRecord = {
+      id: crypto.randomUUID(),
+      user_id: member.id,
+      user_name: member.name || member.email,
+      user_email: member.email,
+      requested_at: now.toISOString(),
+      status: "OTP Generated",
+      approved_by: session.name || session.email,
+      approved_at: now.toISOString(),
+      rejected_by: "",
+      rejected_at: "",
+      completed_at: "",
+      reset_token_id: "",
+      otp_id: crypto.randomUUID(),
+      otp_hash: hashOtp(otp),
+      otp_generated_at: now.toISOString(),
+      otp_expires_at: new Date(now.getTime() + PASSWORD_RESET_OTP_MINUTES * 60 * 1000).toISOString(),
+      otp_used_at: "",
+      otp_attempts: 0,
+      otp_generated_by: session.name || session.email,
+      requested_ip: "",
+      requested_device: "Admin generated from user profile",
+      hubs,
+    };
+    db.password_reset_requests.unshift(requestRecord);
+    member.passwordResetRequested = true;
+    member.updated_at = now.toISOString();
+    writeAudit(db, "OTP generated by admin", session, "Administration & Governance", member.email, `Direct user profile OTP; request ID: ${requestRecord.id}`);
+    writeDb(db);
+    return json(res, 200, {
+      ok: true,
+      request: { ...requestRecord, otp_hash: undefined },
+      otp,
+      expiresAt: requestRecord.otp_expires_at,
+    });
   }
 
   if (req.method === "GET" && url.pathname === "/api/auth/session") {
@@ -1499,6 +1705,7 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res);
     if (url.pathname.startsWith("/hubs/")) return serveIndex(res);
+    if (url.pathname === "/reset-password") return serveIndex(res);
     if (url.pathname === "/setup") return serveSetup(res);
     return serveStatic(req, res);
   } catch (error) {
