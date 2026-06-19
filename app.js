@@ -66,6 +66,7 @@ const salesRequestsStorageKey = "interactiveSecuritySalesQuotationRequests";
 const projectTimelineStorageKey = "interactiveSecurityProjectTimelines";
 const guardingPriceListStorageKey = "interactiveSecurityGuardingPriceList";
 const financeStoragePrefix = "interactiveSecurityFinanceHub";
+const costStoragePrefix = "interactiveSecurityCostHub";
 const requestSequencePrefix = "interactiveSecuritySalesRequestSequence";
 const supplierQuoteDbName = "quotePilotSupplierQuotations";
 const supplierQuoteStoreName = "files";
@@ -451,7 +452,18 @@ const permissionDefinitions = [
   { key: "supplier_prices", label: "Supplier Prices", section: "settings" },
   { key: "member_access_management", label: "Member Access Management", section: "settings" },
   { key: "quotation_hub", label: "Quotation Hub", hubSlug: "quotation-hub" },
+  { key: "cost_hub", label: "Cost Hub", hubSlug: "cost-hub" },
   { key: "finance_age_analysis", label: "Finance Balances and Age Analysis", hubSlug: "finance-age-analysis" },
+  { key: "fleet_hub", label: "Fleet", hubSlug: "fleet" },
+  { key: "living_resources", label: "Living Resources", hubSlug: "living-resources" },
+  { key: "accounts_sales", label: "Accounts & Sales", hubSlug: "accounts-sales" },
+  { key: "hr_hub", label: "HR", hubSlug: "hr" },
+  { key: "technical_maintenance", label: "Technical & Maintenance", hubSlug: "technical-maintenance" },
+  { key: "payroll_hub", label: "Payroll", hubSlug: "payroll" },
+  { key: "overtime_hub", label: "Overtime", hubSlug: "overtime" },
+  { key: "control_room_it", label: "Control Room & IT", hubSlug: "control-room-it" },
+  { key: "uniforms_stores", label: "Uniforms & Stores", hubSlug: "uniforms-stores" },
+  { key: "employee_files", label: "Employee Files", hubSlug: "employee-files" },
   { key: "administration_governance", label: "Administration & Governance", hubSlug: "administration-governance" },
   { key: "sales_quotation_requests", label: "Sales Quotation Requests", section: "salesRequests" },
 ];
@@ -461,12 +473,20 @@ const passwordPolicyMessage = "Password must be at least 5 characters long and c
 
 function normalizeRole(role = "") {
   const value = String(role || "").trim();
+  const normalized = value.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
   const aliases = {
     "Full Access Member": "Admin",
     "Quotation Builder Only": "Quotation Builder",
     Member: "Sales Representative",
+    "super admin": "Super Admin",
+    administrator: "Admin",
+    admin: "Admin",
+    "quotation builder": "Quotation Builder",
+    "sales representative": "Sales Representative",
+    member: "Sales Representative",
+    "read only": "Read Only",
   };
-  return aliases[value] || (platformRoles.includes(value) ? value : "Read Only");
+  return aliases[value] || aliases[normalized] || (platformRoles.includes(value) ? value : "Read Only");
 }
 
 const roleDefaultPermissions = {
@@ -1421,11 +1441,14 @@ function addDays(dateValue, days) {
 
 function formatDate(dateValue) {
   if (!dateValue) return "Set date";
+  const text = String(dateValue);
+  const date = new Date(text.includes("T") ? text : `${text}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return "Invalid date";
   return new Intl.DateTimeFormat("en-ZA", {
     day: "2-digit",
     month: "short",
     year: "numeric",
-  }).format(new Date(`${dateValue}T00:00:00`));
+  }).format(date);
 }
 
 function formatDateObject(date) {
@@ -1718,7 +1741,9 @@ function saveSharedSessionObject(session) {
     email: normalizedEmail,
     name: session.name || displayNameFromUser(normalizedEmail),
     role,
+    access: role,
     permissions: Array.isArray(session.permissions) ? session.permissions : roleDefaultPermissions[role] || [],
+    permissionsExplicit: Boolean(session.permissionsExplicit),
     signedInAt: session.signedInAt || new Date().toISOString(),
     lastActivityAt: session.lastActivityAt || new Date().toISOString(),
   };
@@ -1880,6 +1905,39 @@ async function backendLogin(email, password) {
   }
 }
 
+async function refreshBackendSession() {
+  if (window.location.protocol === "file:") return false;
+  try {
+    const response = await fetch("/api/auth/session", { credentials: "include" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.user?.email) return false;
+    saveSharedSessionObject(data.user);
+    const member = memberByEmail(data.user.email);
+    saveMemberRecord({
+      ...(member || {}),
+      id: data.user.userId || member?.id || slugify(data.user.email),
+      name: data.user.name || member?.name || displayNameFromUser(data.user.email),
+      email: data.user.email,
+      access: data.user.role,
+      role: data.user.role,
+      permissions: Array.isArray(data.user.permissions) ? data.user.permissions : member?.permissions || [],
+      permissionsExplicit: Boolean(data.user.permissionsExplicit),
+      inviteStatus: member?.inviteStatus || "Active",
+    });
+    console.log("AUTH DEBUG", {
+      context: "refreshBackendSession",
+      email: data.user.email,
+      role: data.user.role,
+      isSuperAdmin: isSuperAdminUser({ ...data.user, access: data.user.role }),
+      allowedHubs: getAllowedHubs({ ...data.user, id: data.user.userId, access: data.user.role }),
+    });
+    return true;
+  } catch (error) {
+    console.warn("Backend session refresh failed", error);
+    return false;
+  }
+}
+
 async function changeBackendPassword(currentPassword, newPassword) {
   const response = await fetch("/api/auth/change-password", {
     method: "POST",
@@ -1974,10 +2032,10 @@ const companyHubs = [
     id: "cost-hub",
     name: "Cost Hub",
     slug: "cost-hub",
-    description: "Central workspace for costing controls, cost checks, and supplier cost visibility.",
+    description: "Manage suppliers, purchase orders, supplier bills, payments, credits, and cost reporting.",
     icon: "cost",
-    status: "placeholder",
-    features: ["Costing", "Margins", "Controls"],
+    status: "active",
+    features: ["Suppliers", "Bills", "Payments"],
   },
   {
     id: "finance-age-analysis",
@@ -2088,6 +2146,60 @@ const companyHubs = [
     features: ["Files", "Documents", "Compliance"],
   },
 ];
+
+const ALL_HUBS = companyHubs.map((hub) => hub.slug);
+
+function hubPermissionKey(hubId = "") {
+  return {
+    "quotation-hub": "quotation_hub",
+    quotation: "quotation_hub",
+    "cost-hub": "cost_hub",
+    cost: "cost_hub",
+    "finance-age-analysis": "finance_age_analysis",
+    "finance-balances": "finance_age_analysis",
+    fleet: "fleet_hub",
+    "living-resources": "living_resources",
+    "accounts-sales": "accounts_sales",
+    hr: "hr_hub",
+    "technical-maintenance": "technical_maintenance",
+    payroll: "payroll_hub",
+    overtime: "overtime_hub",
+    "control-room-it": "control_room_it",
+    "uniforms-stores": "uniforms_stores",
+    "employee-files": "employee_files",
+    "administration-governance": "administration_governance",
+  }[hubId] || "";
+}
+
+function getAllowedHubs(user = currentMember()) {
+  if (isSuperAdminUser(user)) return [...ALL_HUBS];
+  const explicitHubRows = storageList(userHubAccessStorageKey)
+    .filter((access) => (access.userId === user.id || normalizeEmail(access.email) === normalizeEmail(user.email)) && access.status === "active")
+    .map((access) => access.hubSlug);
+  const permissionSet = memberPermissions(user);
+  const permissionHubs = ALL_HUBS.filter((hubId) => permissionSet.has(hubPermissionKey(hubId)));
+  return Array.from(new Set([
+    ...(Array.isArray(user?.allowedHubs) ? user.allowedHubs : []),
+    ...explicitHubRows,
+    ...permissionHubs,
+  ]));
+}
+
+function canAccessCompanyHub(user = currentMember(), hubId = "") {
+  if (isSuperAdminUser(user)) return true;
+  return getAllowedHubs(user).includes(hubId);
+}
+
+function logAuthDebug(context = "hub-access", user = currentMember(), hubs = getAllowedHubs(user)) {
+  console.log("AUTH DEBUG", {
+    context,
+    email: user.email,
+    role: user.role || user.access,
+    isSuperAdmin: isSuperAdminUser(user),
+    allowedHubs: hubs,
+    permissions: Array.from(memberPermissions(user)),
+  });
+}
 
 function seedPortalTables() {
   const existingHubs = storageList(hubsStorageKey);
@@ -2365,8 +2477,15 @@ function currentMember() {
   const member = members.find((item) => normalizeEmail(item.email) === email);
   const session = currentSession();
   if (member) {
-    const role = normalizeRole(member.access || member.role || "Read Only");
-    return { ...member, access: role, role };
+    const sessionRole = normalizeRole(session?.role || session?.access || "");
+    const role = sessionRole !== "Read Only" ? sessionRole : normalizeRole(member.access || member.role || "Read Only");
+    return {
+      ...member,
+      access: role,
+      role,
+      permissions: Array.isArray(session?.permissions) ? session.permissions : member.permissions,
+      permissionsExplicit: typeof session?.permissionsExplicit === "boolean" ? session.permissionsExplicit : Boolean(member.permissionsExplicit),
+    };
   }
   if (isBootstrapSuperAdmin()) {
     return {
@@ -2390,6 +2509,14 @@ function currentMember() {
   };
 }
 
+function isSuperAdminUser(member = currentMember()) {
+  const session = currentSession();
+  const memberEmail = normalizeEmail(member?.email || "");
+  const isCurrentMember = !memberEmail || memberEmail === normalizeEmail(currentUser());
+  return normalizeRole(member?.access || member?.role) === "Super Admin"
+    || (isCurrentMember && normalizeRole(session?.role || session?.access) === "Super Admin");
+}
+
 function permissionKeyForSection(section) {
   return {
     portal: "quotation_hub",
@@ -2410,20 +2537,21 @@ function permissionKeyForSection(section) {
 
 function memberPermissions(member = currentMember()) {
   const role = normalizeRole(member.access || member.role || "Read Only");
+  if (role === "Super Admin" || isSuperAdminUser(member)) return new Set(permissionDefinitions.map((permission) => permission.key));
   const defaults = roleDefaultPermissions[role] || [];
-  const explicit = Array.isArray(member.permissions) ? member.permissions : null;
+  const explicit = member.permissionsExplicit === true && Array.isArray(member.permissions) ? member.permissions : null;
   const stored = storageList(userPermissionsStorageKey)
     .filter((permission) => permission.user_id === member.id || normalizeEmail(permission.user_email) === normalizeEmail(member.email))
     .filter((permission) => permission.can_access)
     .map((permission) => permission.permission_key);
-  return new Set(explicit || (stored.length ? stored : defaults));
+  return new Set(explicit || (member.permissionsExplicit === true && stored.length ? stored : defaults));
 }
 
 function hasPermission(permissionKey, member = currentMember()) {
   if (!isSignedIn()) return false;
   if (isBootstrapSuperAdmin()) return true;
   const role = normalizeRole(member.access || member.role || "Read Only");
-  if (role === "Super Admin") return true;
+  if (role === "Super Admin" || isSuperAdminUser(member)) return true;
   const permissions = memberPermissions(member);
   if (permissionKey === "build_guarding_quotation" && permissions.has("build_quotation")) return true;
   if (permissionKey === "build_armed_response_quotation" && permissions.has("build_quotation")) return true;
@@ -3239,27 +3367,29 @@ function isManagementPortalUser() {
   return ["Admin", "Super Admin"].includes(currentMember().access) || hasPermission("reports");
 }
 
+function permissionKeyForHubSlug(slug = "") {
+  return hubPermissionKey(slug) || permissionDefinitions.find((permission) => permission.hubSlug === slug)?.key || "";
+}
+
+function hasExplicitHubPermission(member, permissionKey) {
+  if (!permissionKey) return false;
+  const stored = storageList(userPermissionsStorageKey).some((permission) => (
+    permission.permission_key === permissionKey
+    && permission.can_access
+    && (permission.user_id === member.id || normalizeEmail(permission.user_email) === normalizeEmail(member.email))
+  ));
+  if (stored) return true;
+  return Boolean(member.permissionsExplicit && Array.isArray(member.permissions) && member.permissions.includes(permissionKey));
+}
+
 function hasHubAccess(hub) {
   if (!isSignedIn()) return false;
   if (!hub || !["active", "placeholder"].includes(hub.status)) return false;
   const member = currentMember();
   if (["disabled", "archived", "deactivated"].includes(String(member.inviteStatus || member.status || "").toLowerCase())) return false;
-
-  const explicitAccess = storageList(userHubAccessStorageKey).find((access) => (
-    access.hubSlug === hub.slug && (access.userId === member.id || normalizeEmail(access.email) === normalizeEmail(member.email))
-  ));
-  if (explicitAccess) return explicitAccess.status === "active";
-
-  if (hub.slug === "quotation-hub") return hasPermission("quotation_hub", member);
-  if (hub.slug === "finance-age-analysis") {
-    return hasPermission("finance_age_analysis", member) || storageList(hubPermissionsStorageKey).some((permission) => (
-      permission.hubSlug === hub.slug && permission.accessLevel === member.access
-    ));
-  }
-  if (hub.slug === "administration-governance") return hasPermission("administration_governance", member);
-  return storageList(hubPermissionsStorageKey).some((permission) => (
-    permission.hubSlug === hub.slug && permission.accessLevel === member.access
-  ));
+  const allowed = canAccessCompanyHub(member, hub.slug);
+  logAuthDebug(`hasHubAccess:${hub.slug}`, member, getAllowedHubs(member));
+  return allowed;
 }
 
 function currentCompanyHubSlug() {
@@ -3268,7 +3398,9 @@ function currentCompanyHubSlug() {
 }
 
 function companyHubBySlug(slug) {
-  return companyHubs.find((hub) => hub.slug === slug) || null;
+  return companyHubs.find((hub) => hub.slug === slug)
+    || storageList(hubsStorageKey).find((hub) => hub.slug === slug)
+    || null;
 }
 
 function isPlaceholderHubRoute() {
@@ -3311,7 +3443,7 @@ function moduleIcon(type) {
 
 const financeTabs = [
   { key: "dashboard", label: "Dashboard" },
-  { key: "opening", label: "Opening Balances" },
+  { key: "opening", label: "Current Balances" },
   { key: "closing", label: "Closing Balances" },
   { key: "monthly", label: "Monthly Balances" },
   { key: "age", label: "Age Analysis" },
@@ -3320,6 +3452,47 @@ const financeTabs = [
   { key: "setup", label: "Setup" },
   { key: "audit", label: "Audit Trail" },
 ];
+
+const costTabs = [
+  { key: "dashboard", label: "Dashboard" },
+  { key: "requests", label: "Purchase Requests" },
+  { key: "approvals", label: "PO Approvals" },
+  { key: "entities", label: "Entities" },
+  { key: "suppliers", label: "Suppliers" },
+  { key: "purchaseOrders", label: "Purchase Orders" },
+  { key: "bills", label: "Supplier Bills" },
+  { key: "payments", label: "Payments" },
+  { key: "credits", label: "Credit Notes" },
+  { key: "documents", label: "Documents" },
+  { key: "reports", label: "Reports" },
+  { key: "setup", label: "Setup" },
+  { key: "audit", label: "Audit Trail" },
+];
+
+const costStorageKeys = {
+  requests: `${costStoragePrefix}:requests`,
+  entities: `${costStoragePrefix}:entities`,
+  suppliers: `${costStoragePrefix}:suppliers`,
+  purchaseOrders: `${costStoragePrefix}:purchaseOrders`,
+  bills: `${costStoragePrefix}:bills`,
+  payments: `${costStoragePrefix}:payments`,
+  credits: `${costStoragePrefix}:credits`,
+  documents: `${costStoragePrefix}:documents`,
+  setup: `${costStoragePrefix}:setup`,
+  sequence: `${costStoragePrefix}:sequence`,
+};
+
+let activeCostTab = "dashboard";
+let costEditingSupplierId = "";
+let costEditingEntityId = "";
+let costEntityBalanceImportNotice = "";
+let costSelectedApprovalId = "";
+let costApprovalSearch = "";
+let costApprovalFilters = { status: "", requester: "", supplier: "", date: "", entity: "" };
+let costRequestFilters = { status: "", requester: "", supplier: "", date: "", entity: "" };
+let costDashboardFilters = { month: todayInputValue().slice(0, 7), supplierId: "", branch: "" };
+let costSelectedEntityOverview = "";
+let costEntityOverviewTab = "paid";
 
 const governanceTabs = [
   { key: "dashboard", label: "System Dashboard" },
@@ -3349,15 +3522,18 @@ const financeStorageKeys = {
   monthly: `${financeStoragePrefix}:monthlyBalances`,
   age: `${financeStoragePrefix}:ageAnalysis`,
   bank: `${financeStoragePrefix}:bankBalances`,
+  debitBudget: `${financeStoragePrefix}:debitOrderBudget`,
   setup: `${financeStoragePrefix}:setup`,
   openingMeta: `${financeStoragePrefix}:openingMeta`,
   openingAccounts: `${financeStoragePrefix}:openingAccounts`,
+  openingHistoricalExpanded: `${financeStoragePrefix}:openingHistoricalExpanded`,
 };
 
 let activeFinanceTab = "dashboard";
-let financeOpeningView = { mode: "current", from: "", to: "" };
+let financeOpeningView = { mode: "compact", from: "", to: "" };
 
 const financeOpeningTemplateRows = [
+  { name: "NEDBANK", type: "heading" },
   { name: "OPERATING COMPANIES", type: "section" },
   { name: "CC", type: "account" },
   { name: "PTY", type: "account" },
@@ -3385,15 +3561,17 @@ const financeOpeningTemplateRows = [
   { name: "N RYKAART", type: "account" },
   { name: "CC CREDIT CARD", type: "account" },
   { name: "SUB TOTAL", type: "total" },
-  { name: "TOTAL AVAILABLE", type: "total" },
-  { name: "DISCOVERY CURRENT", type: "section" },
+  { name: "TOTAL AVAILABLE", type: "available-total" },
+  { name: "DISCOVERY", type: "section" },
+  { name: "DISCOVERY CURRENT", type: "account" },
   { name: "DISCOVERY CREDIT", type: "account" },
-  { name: "TOTAL AVAILABLE", type: "total" },
-  { name: "FNB CURRENT", type: "section" },
+  { name: "TOTAL AVAILABLE", type: "available-total" },
+  { name: "FNB", type: "section" },
+  { name: "FNB CHEQUE", type: "account" },
   { name: "FNB CURRENT", type: "account" },
   { name: "FNB CREDIT", type: "account" },
   { name: "FNB BUSINESS", type: "account" },
-  { name: "TOTAL AVAILABLE", type: "total" },
+  { name: "TOTAL AVAILABLE", type: "available-total" },
   { name: "ABSA BUSINESS", type: "section" },
   { name: "ABSA 1", type: "account" },
   { name: "ABSA 2", type: "account" },
@@ -3411,11 +3589,12 @@ const financeOpeningTemplateRows = [
   { name: "ABSA CURRENT", type: "account" },
   { name: "ABSA CREDIT", type: "account" },
   { name: "SUB TOTAL", type: "total" },
-  { name: "TOTAL AVAILABLE", type: "total" },
-  { name: "ASCOGYSTIX", type: "section" },
+  { name: "TOTAL AVAILABLE", type: "available-total" },
+  { name: "SALARY COMPANIES", type: "section" },
+  { name: "ASCOGYSTIX", type: "account" },
   { name: "PLATOSOL", type: "account" },
   { name: "ASCOPAX", type: "account" },
-  { name: "TOTAL AVAILABLE", type: "total" },
+  { name: "TOTAL AVAILABLE", type: "available-total" },
   { name: "GRAND TOTAL AVAILABLE", type: "grand-total" },
 ];
 
@@ -3603,6 +3782,94 @@ function financeOpeningGroups() {
   return groups;
 }
 
+function financeOpeningStructuredRows() {
+  const includeArchived = financeOpeningView.mode !== "current";
+  const accounts = financeOpeningAccounts().filter((account) => includeArchived || account.status !== "archived");
+  const accountsByGroup = new Map();
+  accounts.forEach((account) => {
+    const key = String(account.group || "OPERATING COMPANIES").toUpperCase();
+    if (!accountsByGroup.has(key)) accountsByGroup.set(key, []);
+    accountsByGroup.get(key).push(account);
+  });
+  accountsByGroup.forEach((groupAccounts) => groupAccounts.sort((a, b) => Number(a.rowOrder ?? 9999) - Number(b.rowOrder ?? 9999)));
+
+  const rows = [];
+  const rendered = new Set();
+  const templateGroups = new Set(financeOpeningTemplateRows.filter((row) => row.type === "section").map((row) => row.name.toUpperCase()));
+  let currentGroup = "";
+  let sectionAccounts = [];
+  let bankBlockAccounts = [];
+
+  const pushAccount = (account) => {
+    if (!account) return;
+    const key = account.id || `${account.group}|${account.name}|${account.rowOrder}`;
+    if (rendered.has(key)) return;
+    const row = {
+      id: account.id,
+      name: account.name,
+      type: "account",
+      accountCode: account.accountCode || slugify(account.name).toUpperCase(),
+      branch: account.branch || "",
+      rowOrder: Number(account.rowOrder ?? rows.length),
+      status: account.status || "active",
+      group: account.group || currentGroup,
+    };
+    rows.push(row);
+    sectionAccounts.push(row);
+    bankBlockAccounts.push(row);
+    rendered.add(key);
+  };
+
+  const pushRemainingAccounts = (groupName) => {
+    const list = accountsByGroup.get(String(groupName || "").toUpperCase()) || [];
+    list.forEach(pushAccount);
+  };
+
+  financeOpeningTemplateRows.forEach((templateRow, index) => {
+    if (templateRow.type === "heading") {
+      rows.push({ ...templateRow, rowOrder: index });
+      return;
+    }
+    if (templateRow.type === "section") {
+      currentGroup = templateRow.name;
+      sectionAccounts = [];
+      rows.push({ ...templateRow, rowOrder: index });
+      return;
+    }
+    if (templateRow.type === "account") {
+      const list = accountsByGroup.get(String(currentGroup || "").toUpperCase()) || [];
+      const account = list.find((item) => String(item.name || "").toUpperCase() === templateRow.name.toUpperCase());
+      if (account) pushAccount(account);
+      return;
+    }
+    if (templateRow.type === "total") {
+      pushRemainingAccounts(currentGroup);
+      rows.push({ ...templateRow, rowOrder: index, scopeAccounts: [...sectionAccounts] });
+      return;
+    }
+    if (templateRow.type === "available-total") {
+      pushRemainingAccounts(currentGroup);
+      rows.push({ ...templateRow, rowOrder: index, scopeAccounts: [...bankBlockAccounts] });
+      bankBlockAccounts = [];
+      return;
+    }
+    if (templateRow.type === "grand-total") {
+      accountsByGroup.forEach((groupAccounts, groupName) => {
+        if (templateGroups.has(groupName)) return;
+        const customAccounts = groupAccounts.filter((account) => !rendered.has(account.id || `${account.group}|${account.name}|${account.rowOrder}`));
+        if (!customAccounts.length) return;
+        rows.push({ name: customAccounts[0].group || groupName, type: "section", rowOrder: rows.length + 1000 });
+        sectionAccounts = [];
+        customAccounts.forEach(pushAccount);
+        rows.push({ name: "SUB TOTAL", type: "total", rowOrder: rows.length + 1000, scopeAccounts: [...sectionAccounts] });
+      });
+      rows.push({ ...templateRow, rowOrder: index, scopeAccounts: rows.filter((row) => row.type === "account" && row.status !== "archived") });
+    }
+  });
+
+  return rows;
+}
+
 function latestFinanceOpeningDateBefore(dateValue) {
   return financeRows("opening")
     .map((row) => row.openingDate)
@@ -3650,8 +3917,8 @@ function ensureFinanceDailyOpeningBalances() {
   saveFinanceRows("opening", [...rows, ...generated]);
   const meta = JSON.parse(localStorage.getItem(financeStorageKeys.openingMeta) || "{}");
   if (meta.lastDailyDate !== today) {
-    financeAudit("New daily opening balance created", financeOpeningDateLabel(today), previousDate ? `Created from ${financeOpeningDateLabel(previousDate)} closing/available balances` : "Created from BALANSE template layout");
-    if (previousDate) financeAudit("Previous day hidden", financeOpeningDateLabel(previousDate), "Default Opening Balances view now shows current day only");
+    financeAudit("New daily current balance created", financeOpeningDateLabel(today), previousDate ? `Created from ${financeOpeningDateLabel(previousDate)} available balances` : "Created from BALANSE template layout");
+    if (previousDate) financeAudit("Previous day retained", financeOpeningDateLabel(previousDate), "BALANSE view keeps previous days available for comparison");
     localStorage.setItem(financeStorageKeys.openingMeta, JSON.stringify({ ...meta, lastDailyDate: today }));
   }
 }
@@ -3660,17 +3927,16 @@ function financeOpeningVisibleDates() {
   ensureFinanceDailyOpeningBalances();
   const dates = Array.from(new Set(financeRows("opening").map((row) => row.openingDate).filter(Boolean))).sort();
   const today = todayInputValue();
-  if (financeOpeningView.mode === "previous") return dates.slice(-12).reverse();
+  const expanded = localStorage.getItem(financeStorageKeys.openingHistoricalExpanded) === "true";
+  if (financeOpeningView.mode === "historical" || expanded) return dates;
   if (financeOpeningView.mode === "range") {
     const from = financeOpeningView.from || dates[0] || today;
     const to = financeOpeningView.to || today;
     return dates.filter((date) => date >= from && date <= to);
   }
-  return dates.includes(today) ? [today] : [today];
-}
-
-function financeOpeningPreviousDate(dateValue) {
-  return dateInputValue(addDays(dateValue, -1));
+  const currentDate = dates.includes(today) ? today : (dates[dates.length - 1] || today);
+  const previousDate = dates.filter((date) => date < currentDate).pop();
+  return Array.from(new Set([previousDate, currentDate].filter(Boolean)));
 }
 
 function financeOpeningDateGroups() {
@@ -3679,14 +3945,15 @@ function financeOpeningDateGroups() {
     .sort()
     .map((date) => ({
       date,
-      previousDate: financeOpeningPreviousDate(date),
     }));
 }
 
 function financeOpeningRowRecord(base, date, allRows, byDateAndRow) {
+  const baseGroup = String(base.group || "").toLowerCase();
   return byDateAndRow.get(`${date}|${base.accountCode || ""}|${base.name}|${base.rowOrder ?? ""}`)
     || allRows.find((row) => row.openingDate === date && Number(row.rowOrder ?? -1) === Number(base.rowOrder ?? -2) && (!base.accountCode || row.accountCode === base.accountCode))
     || allRows.find((row) => row.openingDate === date && (row.accountName || row.partyName) === base.name && Number(row.rowOrder ?? -1) === Number(base.rowOrder ?? -2))
+    || allRows.find((row) => row.openingDate === date && String(row.group || row.branch || "").toLowerCase() === baseGroup && (row.accountName || row.partyName) === base.name)
     || allRows.find((row) => row.openingDate === date && (row.accountName || row.partyName) === base.name)
     || {};
 }
@@ -3700,6 +3967,17 @@ function financeOpeningMoney(value) {
   const amount = roundCurrency(financeNumber(value));
   const formatted = `R ${Math.abs(amount).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   return amount < 0 ? `-(${formatted})` : formatted;
+}
+
+function financeDebitBudgetRecordsForTable() {
+  return financeRows("debitBudget").slice(0, 250).map((row) => ({
+    "Account / client": row.accountName,
+    Date: financeOpeningDateLabel(row.budgetDate),
+    Balance: financeOpeningMoney(row.balance),
+    Available: financeOpeningMoney(row.available),
+    Source: row.source || "DEBIT ORDER BUDGET",
+    "Imported by": row.importedBy || "-",
+  }));
 }
 
 function financeOpeningColumnTotal(accounts, column, allRows, byDateAndRow) {
@@ -3719,17 +3997,20 @@ function financeOpeningGrandTotals(groups, columns, allRows, byDateAndRow) {
 
 function financeOpeningDisplayColumns(dateGroups) {
   return dateGroups.flatMap((group) => [
-    { date: group.previousDate, field: "availableBalance", label: "AVAILABLE", role: "previous-available" },
-    { date: group.date, field: "openingBalance", label: "BALANCE", role: "today-balance" },
-    { date: group.date, field: "availableBalance", label: "AVAILABLE", role: "today-available" },
+    { date: group.date, field: "openingBalance", label: "BALANCE", role: "balance", isCurrent: group.date === todayInputValue() },
+    { date: group.date, field: "availableBalance", label: "AVAILABLE", role: "available", isCurrent: group.date === todayInputValue() },
   ]);
+}
+
+function financeOpeningColumnClass(column) {
+  return `finance-balanse-${column.role}${column.isCurrent ? " finance-balanse-current-day" : ""}`;
 }
 
 function financeOpeningAccountCell(base, column, allRows, byDateAndRow) {
   const record = financeOpeningRowRecord(base, column.date, allRows, byDateAndRow);
   const value = financeNumber(record[column.field]);
   return `
-    <td class="finance-balanse-value finance-balanse-${escapeHtml(column.role)}">
+    <td class="finance-balanse-value ${escapeHtml(financeOpeningColumnClass(column))}">
       <input class="finance-balance-input" type="number" step="0.01" value="${value}"
         data-finance-opening-edit="${escapeHtml(record.id || "")}"
         data-finance-opening-date="${escapeHtml(column.date)}"
@@ -3748,7 +4029,7 @@ function financeOpeningCalculatedRow(label, accounts, columns, allRows, byDateAn
       <th>${escapeHtml(label)}</th>
       ${columns.map((column) => {
         const total = financeOpeningColumnTotal(accounts, column, allRows, byDateAndRow);
-        return `<td class="finance-balanse-value finance-balanse-${escapeHtml(column.role)}">${escapeHtml(financeOpeningMoney(total))}</td>`;
+        return `<td class="finance-balanse-value ${escapeHtml(financeOpeningColumnClass(column))}">${escapeHtml(financeOpeningMoney(total))}</td>`;
       }).join("")}
     </tr>
   `;
@@ -3760,7 +4041,7 @@ function financeOpeningGrandTotalRow(groups, columns, allRows, byDateAndRow) {
   return `
     <tr class="finance-balanse-grand-total">
       <th>${escapeHtml(grandTotalLabel)}</th>
-      ${totals.map((total, index) => `<td class="finance-balanse-value finance-balanse-${escapeHtml(columns[index].role)}">${escapeHtml(financeOpeningMoney(total))}</td>`).join("")}
+      ${totals.map((total, index) => `<td class="finance-balanse-value ${escapeHtml(financeOpeningColumnClass(columns[index]))}">${escapeHtml(financeOpeningMoney(total))}</td>`).join("")}
     </tr>
   `;
 }
@@ -3771,29 +4052,30 @@ function financeOpeningExportRows() {
   const columns = financeOpeningDisplayColumns(dateGroups);
   const allRows = financeRows("opening");
   const byDateAndRow = new Map(allRows.map((row) => [`${row.openingDate}|${financeOpeningRowKey(row)}`, row]));
-  const groups = financeOpeningGroups();
   const dateHeader = [""];
-  dateGroups.forEach((group) => dateHeader.push(financeOpeningDateLabel(group.previousDate), financeOpeningDateLabel(group.date), financeOpeningDateLabel(group.date)));
+  dateGroups.forEach((group) => dateHeader.push(financeOpeningDateLabel(group.date), financeOpeningDateLabel(group.date)));
   const typeHeader = ["NEDBANK", ...columns.map((column) => column.label)];
   const rows = [dateHeader, typeHeader];
-  groups.forEach((group) => {
-    rows.push([group.name, ...columns.map(() => "")]);
-    group.accounts.forEach((account) => {
+  financeOpeningStructuredRows().forEach((row) => {
+    if (row.type === "heading") return;
+    if (row.type === "section") {
+      rows.push([row.name, ...columns.map(() => "")]);
+      return;
+    }
+    if (row.type === "account") {
       rows.push([
-        account.name,
-        ...columns.map((column) => financeOpeningCellValue(account, column, allRows, byDateAndRow).toFixed(2)),
+        row.name,
+        ...columns.map((column) => financeOpeningCellValue(row, column, allRows, byDateAndRow).toFixed(2)),
       ]);
-    });
-    rows.push([
-      group.totalLabel || "SUB TOTAL",
-      ...financeOpeningGroupSubtotal(group, columns, allRows, byDateAndRow).map((total) => total.toFixed(2)),
-    ]);
+      return;
+    }
+    if (["total", "available-total", "grand-total"].includes(row.type)) {
+      rows.push([
+        row.name,
+        ...columns.map((column) => financeOpeningColumnTotal(row.scopeAccounts || [], column, allRows, byDateAndRow).toFixed(2)),
+      ]);
+    }
   });
-  const { grandTotalLabel } = financeOpeningTemplateTotalLabels();
-  rows.push([
-    grandTotalLabel,
-    ...financeOpeningGrandTotals(groups, columns, allRows, byDateAndRow).map((total) => total.toFixed(2)),
-  ]);
   return rows;
 }
 
@@ -3891,17 +4173,18 @@ function updateFinanceOpeningAccount(id, changes = {}) {
 
 function renderFinanceOpeningBalances() {
   ensureFinanceDailyOpeningBalances();
+  const historicalExpanded = localStorage.getItem(financeStorageKeys.openingHistoricalExpanded) === "true" || financeOpeningView.mode === "historical";
   const dateGroups = financeOpeningDateGroups();
   const columns = financeOpeningDisplayColumns(dateGroups);
   const allRows = financeRows("opening");
   const byDateAndRow = new Map(allRows.map((row) => [`${row.openingDate}|${financeOpeningRowKey(row)}`, row]));
-  const groups = financeOpeningGroups();
+  const structuredRows = financeOpeningStructuredRows();
   return `
     <section class="finance-card finance-balanse-card">
       <div class="panel-heading">
         <div>
           <p class="eyebrow">BALANSE daily balance format</p>
-          <h2>Opening Balances</h2>
+          <h2>Current Balances</h2>
         </div>
         <strong class="finance-active-date">${financeOpeningDateLabel(todayInputValue())}</strong>
       </div>
@@ -3909,47 +4192,60 @@ function renderFinanceOpeningBalances() {
         <button class="secondary-btn" data-finance-import-source="Pastel Cloud" data-finance-type="opening">Import from Pastel Cloud</button>
         <button class="secondary-btn" data-finance-import-source="Listener" data-finance-type="opening">Import from Listener</button>
         <label class="secondary-btn finance-upload">Upload BALANSE Excel/CSV<input data-finance-upload="opening" type="file" accept=".csv,.xlsx,.xls" hidden /></label>
-        <button class="secondary-btn" data-finance-opening-view="current">Show current day only</button>
-        <button class="secondary-btn" data-finance-opening-view="previous">Show previous days</button>
+        <button class="secondary-btn" data-finance-opening-view="compact">Hide Historical Balances</button>
+        <button class="secondary-btn" data-finance-opening-view="historical">${historicalExpanded ? "Historical Balances Shown" : "Show All Historical Balances"}</button>
         <button class="secondary-btn" data-finance-opening-view="range">Select date range</button>
         <button class="secondary-btn" data-finance-export="opening">Export to Excel</button>
         <button class="secondary-btn" data-finance-print="opening">Export to PDF</button>
       </div>
-      <p class="finance-note">Default view shows yesterday's available balance, today's balance, and today's available balance. Previous days remain stored and can be compared with the date filters.</p>
+      <p class="finance-note">Default view shows the previous day and current day only, each with BALANCE and AVAILABLE columns. Historical dates remain stored and can be expanded for comparison.</p>
       ${renderFinanceOpeningAccountManagement()}
-      <div class="finance-balanse-table-wrap">
+      <div class="finance-balanse-table-wrap ${historicalExpanded ? "is-expanded" : "is-compact"}">
         <table class="finance-balanse-table">
           <thead>
             <tr>
               <th></th>
-              ${dateGroups.map((group) => `<th>${escapeHtml(financeOpeningDateLabel(group.previousDate))}</th><th colspan="2">${escapeHtml(financeOpeningDateLabel(group.date))}</th>`).join("")}
+              ${dateGroups.map((group) => `<th colspan="2" class="${group.date === todayInputValue() ? "finance-balanse-current-day" : ""}">${escapeHtml(financeOpeningDateLabel(group.date))}</th>`).join("")}
             </tr>
             <tr>
               <th>NEDBANK</th>
-              ${dateGroups.map(() => `<th>AVAILABLE</th><th>BALANCE</th><th>AVAILABLE</th>`).join("")}
+              ${columns.map((column) => `<th class="${column.isCurrent ? "finance-balanse-current-day" : ""}">${escapeHtml(column.label)}</th>`).join("")}
             </tr>
           </thead>
           <tbody>
-            ${groups.map((group) => `
-              <tr class="finance-balanse-section">
-                <th>${escapeHtml(group.name)}</th>
-                ${columns.map((column) => `<td class="finance-balanse-${escapeHtml(column.role)}"></td>`).join("")}
-              </tr>
-              ${group.accounts.map((account) => `
-                <tr class="finance-balanse-account">
-                  <th>${escapeHtml(account.name)}</th>
-                  ${columns.map((column) => financeOpeningAccountCell(account, column, allRows, byDateAndRow)).join("")}
-                </tr>
-              `).join("")}
-              ${financeOpeningCalculatedRow(group.totalLabel || "SUB TOTAL", group.accounts, columns, allRows, byDateAndRow)}
-            `).join("")}
-            ${financeOpeningGrandTotalRow(groups, columns, allRows, byDateAndRow)}
+            ${structuredRows.map((row) => {
+              if (row.type === "heading") return "";
+              if (row.type === "section") {
+                return `
+                  <tr class="finance-balanse-section">
+                    <th>${escapeHtml(row.name)}</th>
+                    ${columns.map((column) => `<td class="${escapeHtml(financeOpeningColumnClass(column))}"></td>`).join("")}
+                  </tr>
+                `;
+              }
+              if (row.type === "account") {
+                return `
+                  <tr class="finance-balanse-account">
+                    <th>${escapeHtml(row.name)}</th>
+                    ${columns.map((column) => financeOpeningAccountCell(row, column, allRows, byDateAndRow)).join("")}
+                  </tr>
+                `;
+              }
+              if (row.type === "grand-total") return financeOpeningCalculatedRow(row.name, row.scopeAccounts || [], columns, allRows, byDateAndRow, "grand-total");
+              if (row.type === "available-total") return financeOpeningCalculatedRow(row.name, row.scopeAccounts || [], columns, allRows, byDateAndRow, "available-total");
+              if (row.type === "total") return financeOpeningCalculatedRow(row.name, row.scopeAccounts || [], columns, allRows, byDateAndRow, "total");
+              return "";
+            }).join("")}
           </tbody>
         </table>
       </div>
       <details class="finance-import-detail">
         <summary>Stored record details</summary>
         ${financeTable(Object.keys(financeRecordsForTable("opening")[0] || { Empty: "" }), financeRecordsForTable("opening"))}
+      </details>
+      <details class="finance-import-detail">
+        <summary>Debit Order Budget support data</summary>
+        ${financeTable(Object.keys(financeDebitBudgetRecordsForTable()[0] || { Empty: "" }), financeDebitBudgetRecordsForTable())}
       </details>
     </section>
   `;
@@ -4085,8 +4381,8 @@ function financeExport(type) {
   if (type === "opening") {
     const rows = financeOpeningExportRows();
     const csv = rows.map((row) => row.map(csvEscape).join(",")).join("\n");
-    downloadBlobFile(new Blob([csv], { type: "text/csv;charset=utf-8" }), `finance-opening-balances-${todayInputValue()}.csv`);
-    financeAudit("Export generated", "Opening Balances", "Displayed BALANSE period exported to CSV");
+    downloadBlobFile(new Blob([csv], { type: "text/csv;charset=utf-8" }), `finance-current-balances-${todayInputValue()}.csv`);
+    financeAudit("Export generated", "Current Balances", "Displayed BALANSE period exported to CSV");
     return;
   }
   const rows = financeRecordsForTable(type);
@@ -4102,7 +4398,7 @@ function financePrintExport(type) {
     const report = window.open("", "_blank", "noopener");
     if (!report) return;
     report.document.write(`
-      <html><head><title>Finance Opening Balances</title><style>
+      <html><head><title>Finance Current Balances</title><style>
         body{font-family:Arial,Helvetica,sans-serif;margin:18px;color:#111}
         h1{margin:0 0 12px;font-size:18px}
         table{width:100%;border-collapse:collapse;font-size:10.5px}
@@ -4113,7 +4409,7 @@ function financePrintExport(type) {
         .subtotal th,.subtotal td{background:#9dc3e6;font-weight:800}
         .grand th,.grand td{background:#1f4e79;color:#fff;font-weight:900}
       </style></head><body>
-        <h1>Finance Balances and Age Analysis - Opening Balances</h1>
+        <h1>Finance Balances and Age Analysis - Current Balances</h1>
         <table>
           <thead><tr>${rows[0].map((cell) => `<th>${escapeHtml(cell)}</th>`).join("")}</tr><tr>${rows[1].map((cell) => `<th>${escapeHtml(cell)}</th>`).join("")}</tr></thead>
           <tbody>
@@ -4129,7 +4425,7 @@ function financePrintExport(type) {
       </body></html>
     `);
     report.document.close();
-    financeAudit("Export generated", "Opening Balances", "Displayed BALANSE period exported to PDF/print");
+    financeAudit("Export generated", "Current Balances", "Displayed BALANSE period exported to PDF/print");
     return;
   }
   const rows = financeRecordsForTable(type);
@@ -4217,7 +4513,17 @@ async function financeImportOpeningWorkbook(file) {
       importedAt: row.importedAt || new Date().toISOString(),
     }));
     saveFinanceRows("opening", [...imported, ...financeRows("opening")]);
-    financeOpeningView = { mode: "previous", from: "", to: "" };
+    if (Array.isArray(data.debitOrderBudget) && data.debitOrderBudget.length) {
+      const debitBudget = data.debitOrderBudget.map((row, index) => ({
+        ...row,
+        id: row.id || `finance-debit-budget-${Date.now()}-${index}`,
+        importedBy: row.importedBy || currentUserName(),
+        importedAt: row.importedAt || new Date().toISOString(),
+      }));
+      saveFinanceRows("debitBudget", [...debitBudget, ...financeRows("debitBudget")]);
+    }
+    localStorage.setItem(financeStorageKeys.openingHistoricalExpanded, "false");
+    financeOpeningView = { mode: "compact", from: "", to: "" };
     financeAudit("Balance imported", file.name, `${imported.length} BALANSE opening balance records imported`);
     renderFinanceHub("opening");
   } catch (error) {
@@ -4336,12 +4642,709 @@ function renderFinanceHub(tab = activeFinanceTab) {
   financeAudit("User login/access", hub.name, `Opened ${financeTabs.find((item) => item.key === tab)?.label || tab}`);
 }
 
+function costRows(type) {
+  return storageList(costStorageKeys[type], []);
+}
+
+function saveCostRows(type, rows) {
+  saveStorageList(costStorageKeys[type], rows);
+}
+
+function costAudit(action, reference = "-", notes = "") {
+  writeAudit(action, reference, "Cost Hub", reference, notes || `Action by ${currentUserName()}`);
+}
+
+function nextCostNumber(prefix, type) {
+  const sequence = JSON.parse(localStorage.getItem(costStorageKeys.sequence) || "{}");
+  sequence[type] = Number(sequence[type] || 0) + 1;
+  localStorage.setItem(costStorageKeys.sequence, JSON.stringify(sequence));
+  return `${prefix}-${new Date().getFullYear()}-${String(sequence[type]).padStart(4, "0")}`;
+}
+
+function costSupplierName(id) {
+  return costRows("suppliers").find((supplier) => supplier.id === id)?.name || "Unknown supplier";
+}
+
+function costBillPayments(billId) {
+  return costRows("payments").filter((payment) => payment.billId === billId).reduce((sum, payment) => sum + financeNumber(payment.amount), 0);
+}
+
+function costBillStatus(bill) {
+  const paid = costBillPayments(bill.id);
+  if (paid >= financeNumber(bill.total) && financeNumber(bill.total) > 0) return "Paid";
+  if (paid > 0) return "Part paid";
+  if (bill.dueDate && bill.dueDate < todayInputValue()) return "Overdue";
+  return bill.status || "Awaiting payment";
+}
+
+function costStatusClass(status = "") {
+  const value = status.toLowerCase();
+  if (["paid", "approved", "active", "allocated"].includes(value)) return "status-complete";
+  if (["overdue", "rejected", "void", "archived"].includes(value)) return "status-rejected";
+  return "status-warning";
+}
+
+function costTable(headers, rows) {
+  if (!rows.length) return `<p class="empty-state">No records yet.</p>`;
+  return `<div class="cost-table-wrap"><table class="cost-table"><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+}
+
+function renderCostDashboardLegacy() {
+  const suppliers = costRows("suppliers").filter((supplier) => supplier.status !== "Archived");
+  const pendingRequests = costRows("requests").filter((request) => ["Submitted", "Supplier approval required"].includes(request.status));
+  const purchaseOrders = costRows("purchaseOrders");
+  const bills = costRows("bills");
+  const payments = costRows("payments");
+  const outstanding = bills.reduce((sum, bill) => sum + Math.max(0, financeNumber(bill.total) - costBillPayments(bill.id)), 0);
+  const overdue = bills.filter((bill) => costBillStatus(bill) === "Overdue");
+  const month = todayInputValue().slice(0, 7);
+  const monthlySpend = payments.filter((payment) => String(payment.date || "").startsWith(month)).reduce((sum, payment) => sum + financeNumber(payment.amount), 0);
+  const supplierTotals = suppliers.map((supplier) => ({
+    label: supplier.name,
+    value: bills.filter((bill) => bill.supplierId === supplier.id).reduce((sum, bill) => sum + financeNumber(bill.total), 0),
+  })).sort((a, b) => b.value - a.value).slice(0, 8);
+  return `
+    <div class="dashboard-summary-grid">
+      ${renderSummaryCard("Purchase requests to process", pendingRequests.length)}
+      ${renderSummaryCard("Active suppliers", suppliers.length)}
+      ${renderSummaryCard("Open purchase orders", purchaseOrders.filter((po) => !["Completed", "Cancelled"].includes(po.status)).length)}
+      ${renderSummaryCard("Bills outstanding", money.format(outstanding))}
+      ${renderSummaryCard("Overdue bills", overdue.length)}
+      ${renderSummaryCard("Payments this month", money.format(monthlySpend))}
+      ${renderSummaryCard("Supplier bills", bills.length)}
+    </div>
+    <div class="dashboard-chart-grid">
+      ${financeSimpleBar("Supplier cost exposure", supplierTotals)}
+      <section class="finance-card"><h3>Cost workflow</h3><div class="cost-workflow"><span>Purchase order</span><i>→</i><span>Supplier bill</span><i>→</i><span>Payment</span><i>→</i><span>Completed</span></div><p class="finance-note">Capture supplier commitments before payment, then track bill balances and supporting documents.</p></section>
+    </div>
+  `;
+}
+
+function renderCostEntityOverviewDetail(entityName) {
+  const entity = costRows("entities").find((item) => item.name === entityName);
+  const bills = costRows("bills").filter((bill) => (bill.branch || "Unassigned") === entityName);
+  const orders = costRows("purchaseOrders").filter((po) => (po.branch || "Unassigned") === entityName);
+  const payments = costRows("payments").filter((payment) => bills.some((bill) => bill.id === payment.billId));
+  const outstandingBills = bills.filter((bill) => Math.max(0, financeNumber(bill.total) - costBillPayments(bill.id)) > 0);
+  const recurring = outstandingBills.filter((bill) => String(bill.category || "").toLowerCase().includes("recurring"));
+  const adHoc = outstandingBills.filter((bill) => !recurring.includes(bill));
+  const scheduled = orders.filter((po) => ["Approved", "Issued"].includes(po.status));
+  const tabs = [
+    { key: "paid", label: "Paid", count: payments.length },
+    { key: "adhoc", label: "Ad-hoc Outstanding", count: adHoc.length },
+    { key: "recurring", label: "Recurring Outstanding", count: recurring.length },
+    { key: "scheduled", label: "Scheduled", count: scheduled.length },
+  ];
+  const paidRows = payments.map((payment) => { const bill = bills.find((item) => item.id === payment.billId); return `<tr><td>${escapeHtml(formatDate(payment.date))}</td><td>${escapeHtml(bill?.billNumber || "-")}</td><td>${escapeHtml(costSupplierName(bill?.supplierId))}</td><td>${money.format(financeNumber(payment.amount))}</td><td>${escapeHtml(payment.method || "EFT")}</td><td>${escapeHtml(payment.reference || "-")}</td></tr>`; });
+  const billRows = (rows) => rows.map((bill) => `<tr><td><strong>${escapeHtml(bill.billNumber)}</strong><small>${escapeHtml(bill.category || "")}</small></td><td>${escapeHtml(costSupplierName(bill.supplierId))}</td><td>${escapeHtml(formatDate(bill.date))}</td><td>${escapeHtml(formatDate(bill.dueDate))}</td><td>${money.format(financeNumber(bill.total))}</td><td>${money.format(Math.max(0, financeNumber(bill.total) - costBillPayments(bill.id)))}</td><td><span class="status-badge ${costStatusClass(costBillStatus(bill))}">${escapeHtml(costBillStatus(bill))}</span></td></tr>`);
+  const scheduledRows = scheduled.map((po) => `<tr><td><strong>${escapeHtml(po.number)}</strong></td><td>${escapeHtml(costSupplierName(po.supplierId))}</td><td>${escapeHtml(formatDate(po.date))}</td><td>${escapeHtml(formatDate(po.dueDate))}</td><td>${escapeHtml(po.description || "-")}</td><td>${money.format(financeNumber(po.total))}</td><td><span class="status-badge ${costStatusClass(po.status)}">${escapeHtml(po.status)}</span></td></tr>`);
+  const content = {
+    paid: costTable(["Payment date", "Supplier bill", "Supplier", "Amount paid", "Method", "Reference"], paidRows),
+    adhoc: costTable(["Bill", "Supplier", "Invoice date", "Due date", "Total", "Outstanding", "Status"], billRows(adHoc)),
+    recurring: costTable(["Bill", "Supplier", "Invoice date", "Due date", "Total", "Outstanding", "Status"], billRows(recurring)),
+    scheduled: costTable(["PO", "Supplier", "Order date", "Expected date", "Description", "Total", "Status"], scheduledRows),
+  }[costEntityOverviewTab];
+  const paidTotal = payments.reduce((sum, payment) => sum + financeNumber(payment.amount), 0);
+  const outstandingTotal = outstandingBills.reduce((sum, bill) => sum + Math.max(0, financeNumber(bill.total) - costBillPayments(bill.id)), 0);
+  const scheduledTotal = scheduled.reduce((sum, po) => sum + financeNumber(po.total), 0);
+  return `<div class="cost-entity-detail-page"><div class="panel-heading"><div><p class="eyebrow">Entity cost overview</p><h1>${escapeHtml(entityName)}</h1><p>All costs and payments linked to this entity.</p></div><button class="secondary-btn" type="button" data-cost-entity-overview-back>Back to dashboard</button></div><div class="dashboard-summary-grid">${renderSummaryCard("Current balance", entity ? money.format(financeNumber(entity.currentBalance)) : "Not set")}${renderSummaryCard("Total paid", money.format(paidTotal))}${renderSummaryCard("Total outstanding", money.format(outstandingTotal))}${renderSummaryCard("Total scheduled", money.format(scheduledTotal))}</div><nav class="cost-entity-detail-tabs">${tabs.map((tab) => `<button type="button" class="${tab.key === costEntityOverviewTab ? "active" : ""}" data-cost-entity-detail-tab="${tab.key}">${escapeHtml(tab.label)} <span>${tab.count}</span></button>`).join("")}</nav><section class="finance-card"><div class="panel-heading"><div><h2>${escapeHtml(tabs.find((tab) => tab.key === costEntityOverviewTab)?.label || "Entity costs")}</h2></div></div>${content}</section></div>`;
+}
+
+function renderCostDashboard() {
+  if (costSelectedEntityOverview) return renderCostEntityOverviewDetail(costSelectedEntityOverview);
+  const month = costDashboardFilters.month || todayInputValue().slice(0, 7);
+  const suppliers = costRows("suppliers").filter((supplier) => supplier.status !== "Archived");
+  const allOrders = costRows("purchaseOrders");
+  const allBills = costRows("bills");
+  const allPayments = costRows("payments");
+  const matchesFilters = (row) => (!costDashboardFilters.supplierId || row.supplierId === costDashboardFilters.supplierId) && (!costDashboardFilters.branch || (row.branch || "Unassigned") === costDashboardFilters.branch);
+  const bills = allBills.filter(matchesFilters);
+  const orders = allOrders.filter(matchesFilters);
+  const monthBills = bills.filter((bill) => String(bill.date || bill.dueDate || "").startsWith(month));
+  const monthOrders = orders.filter((po) => String(po.dueDate || po.date || "").startsWith(month));
+  const outstanding = monthBills.reduce((sum, bill) => sum + Math.max(0, financeNumber(bill.total) - costBillPayments(bill.id)), 0);
+  const scheduled = monthOrders.filter((po) => ["Approved", "Issued"].includes(po.status)).reduce((sum, po) => sum + financeNumber(po.total), 0);
+  const overdue = monthBills.filter((bill) => costBillStatus(bill) === "Overdue");
+  const entities = costRows("entities").filter((entity) => entity.status !== "Archived");
+  const branchNames = Array.from(new Set([...entities.map((entity) => entity.name), ...allBills.map((row) => row.branch || "Unassigned"), ...allOrders.map((row) => row.branch || "Unassigned")])).sort();
+  const supplierOptions = `<option value="">All suppliers</option>${suppliers.map((supplier) => `<option value="${escapeHtml(supplier.id)}" ${costDashboardFilters.supplierId === supplier.id ? "selected" : ""}>${escapeHtml(supplier.name)}</option>`).join("")}`;
+  const branchOptions = `<option value="">All entities / branches</option>${branchNames.map((branch) => `<option value="${escapeHtml(branch)}" ${costDashboardFilters.branch === branch ? "selected" : ""}>${escapeHtml(branch)}</option>`).join("")}`;
+  const [year, monthNumber] = month.split("-").map(Number);
+  const monthLabel = new Date(year, monthNumber - 1, 1).toLocaleDateString("en-ZA", { month: "long", year: "numeric" });
+  const trend = Array.from({ length: 12 }, (_, index) => {
+    const date = new Date(year, monthNumber - 12 + index, 1);
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    const value = bills.filter((bill) => String(bill.date || "").startsWith(key)).reduce((sum, bill) => sum + financeNumber(bill.total), 0);
+    return { label: date.toLocaleDateString("en-ZA", { month: "short" }), value };
+  });
+  const trendMax = Math.max(...trend.map((item) => item.value), 1);
+  const entityCards = (costDashboardFilters.branch ? [costDashboardFilters.branch] : branchNames).map((branch) => {
+    const entity = entities.find((item) => item.name === branch);
+    const entityBills = monthBills.filter((bill) => (bill.branch || "Unassigned") === branch);
+    const entityOrders = monthOrders.filter((po) => (po.branch || "Unassigned") === branch);
+    const recurringBills = entityBills.filter((bill) => String(bill.category || "").toLowerCase().includes("recurring"));
+    const recurringOutstanding = recurringBills.reduce((sum, bill) => sum + Math.max(0, financeNumber(bill.total) - costBillPayments(bill.id)), 0);
+    const adHocOutstanding = entityBills.filter((bill) => !recurringBills.includes(bill)).reduce((sum, bill) => sum + Math.max(0, financeNumber(bill.total) - costBillPayments(bill.id)), 0);
+    const entityOutstanding = adHocOutstanding + recurringOutstanding;
+    const entityScheduled = entityOrders.filter((po) => ["Approved", "Issued"].includes(po.status)).reduce((sum, po) => sum + financeNumber(po.total), 0);
+    const entityPaid = allPayments.filter((payment) => String(payment.date || "").startsWith(month) && entityBills.some((bill) => bill.id === payment.billId)).reduce((sum, payment) => sum + financeNumber(payment.amount), 0);
+    const safetyBuffer = financeNumber(entity?.safetyBuffer);
+    const availableFunds = financeNumber(entity?.currentBalance) - entityScheduled - safetyBuffer;
+    const overBudget = Boolean(entity) && availableFunds < 0;
+    return `<article class="cost-entity-card ${overBudget ? "over-budget" : "within-budget"}"><div class="cost-entity-card-head"><h3>${escapeHtml(branch)}</h3><span class="cost-budget-pill ${overBudget ? "over" : "within"}">${overBudget ? "ⓘ Over Budget" : "✓ Within Budget"}</span></div><div class="cost-entity-metrics"><div><span>Current Balance</span><strong>${entity ? money.format(financeNumber(entity.currentBalance)) : "Not set"}</strong>${entity ? `<button type="button" data-cost-dashboard-edit-entity="${escapeHtml(entity.id)}" aria-label="Edit entity balance">✎</button>` : ""}</div><div><span>◉&nbsp; Paid This Month</span><strong class="metric-paid">${money.format(entityPaid)}</strong></div><div><span>ϟ&nbsp; Ad-hoc Outstanding</span><strong>${money.format(adHocOutstanding)}</strong></div><div><span>▣&nbsp; Recurring Outstanding</span><strong>${money.format(recurringOutstanding)}</strong></div><div><span>⌁&nbsp; Scheduled</span><strong>${money.format(entityScheduled)}</strong></div></div><div class="cost-entity-buffer"><span>Safety Buffer</span><strong>${money.format(safetyBuffer)}</strong></div><div class="cost-entity-available"><span>▣&nbsp; Available</span><strong class="${overBudget ? "negative" : "positive"}">${entity ? money.format(availableFunds) : "Not set"}</strong></div></article>`;
+  }).join("");
+  return `<div class="cost-dashboard-reference"><div class="cost-dashboard-original-summary">${renderCostDashboardLegacy()}</div><div><h1>Dashboard</h1><p>Cost tracking and financial overview</p></div>
+    <section class="cost-dashboard-filters"><button class="secondary-btn" type="button" data-cost-dashboard-month="prev" aria-label="Previous month">‹</button><label>Month<input type="month" data-cost-dashboard-filter="month" value="${escapeHtml(month)}" /></label><button class="secondary-btn" type="button" data-cost-dashboard-month="next" aria-label="Next month">›</button><label>Entity<select data-cost-dashboard-filter="branch">${branchOptions}</select></label><label>Supplier<select data-cost-dashboard-filter="supplierId">${supplierOptions}</select></label></section>
+    <div class="cost-dashboard-stat-grid"><button type="button" class="cost-dashboard-stat stat-outstanding" data-cost-tab="bills"><span>◷</span><small>Total Outstanding</small><strong>${money.format(outstanding)}</strong><em>Click to view all</em></button><button type="button" class="cost-dashboard-stat stat-scheduled" data-cost-tab="purchaseOrders"><span>▣</span><small>Total Scheduled</small><strong>${money.format(scheduled)}</strong><em>Click to view all</em></button><button type="button" class="cost-dashboard-stat stat-overdue" data-cost-tab="bills"><span>!</span><small>Overdue Items</small><strong>${overdue.length}</strong><em>${overdue.length ? "Requires attention" : "No overdue items"}</em></button></div>
+    <section class="finance-card cost-trend-card"><div class="panel-heading"><div><p class="eyebrow">12 month view</p><h2>Cost Trends - ${escapeHtml(monthLabel)}</h2></div></div><div class="cost-trend-chart">${trend.map((item) => `<div class="cost-trend-column" title="${escapeHtml(item.label)}: ${money.format(item.value)}"><strong>${item.value ? money.format(item.value).replace("R", "") : ""}</strong><i style="height:${Math.max(3, item.value / trendMax * 100)}%"></i><span>${escapeHtml(item.label)}</span></div>`).join("")}</div></section>
+    <section><div class="panel-heading"><div><h2>Entity Overview</h2><p>Monthly commitments and payments by branch.</p></div></div><div class="cost-entity-grid">${entityCards || '<div class="finance-card empty-state">No entity or branch activity found for this month.</div>'}</div></section></div>`;
+}
+
+const costPaymentTerms = [
+  "Due on receipt",
+  "Prepaid",
+  "Cash on delivery (COD)",
+  "7 days",
+  "14 days",
+  "15 days",
+  "21 days",
+  "30 days",
+  "45 days",
+  "60 days",
+  "90 days",
+  "120 days",
+  "End of current month",
+  "7 days after month end",
+  "15 days after month end",
+  "30 days after month end",
+  "60 days after month end",
+];
+
+function costPaymentTermOptions(selected = "30 days") {
+  return costPaymentTerms.map((term) => `<option value="${escapeHtml(term)}" ${term === selected ? "selected" : ""}>${escapeHtml(term)}</option>`).join("");
+}
+
+function costRequestSupplierFields(request = {}) {
+  return [
+    ["Registration", request.registrationNumber], ["VAT", request.vatNumber], ["Email", request.email],
+    ["Phone", request.phone], ["Category", request.category], ["Address", request.address], ["Bank", request.bankName],
+    ["Account", request.accountNumber], ["Branch", request.branchCode], ["Terms", request.paymentTerms],
+  ].filter(([, value]) => value).map(([label, value]) => `<small><strong>${label}:</strong> ${escapeHtml(value)}</small>`).join("");
+}
+
+function costRequestItems(request = {}) {
+  if (Array.isArray(request.items) && request.items.length) return request.items;
+  return [{ description: request.description || "", quantity: financeNumber(request.quantity || 1), unitCost: financeNumber(request.unitCost) }];
+}
+
+function costRequestItemRow(item = {}, removable = true) {
+  return `<div class="cost-request-line" data-cost-request-line>
+    <label>Item / service description<input name="lineDescription" value="${escapeHtml(item.description || "")}" required /></label>
+    <label>Quantity<input name="lineQuantity" type="number" min="0.01" step="0.01" value="${escapeHtml(String(item.quantity || 1))}" required /></label>
+    <label>Unit cost excl. VAT<input name="lineUnitCost" type="number" min="0" step="0.01" value="${escapeHtml(String(item.unitCost || ""))}" required /></label>
+    <strong data-cost-line-total>${money.format(financeNumber(item.quantity || 1) * financeNumber(item.unitCost))}</strong>
+    <button class="danger-btn small-btn" type="button" data-cost-remove-request-line ${removable ? "" : "hidden"}>Remove</button>
+  </div>`;
+}
+
+function updateCostRequestTotals(form) {
+  let total = 0;
+  form.querySelectorAll("[data-cost-request-line]").forEach((row) => {
+    const lineTotal = financeNumber(row.querySelector('[name="lineQuantity"]')?.value) * financeNumber(row.querySelector('[name="lineUnitCost"]')?.value);
+    total += lineTotal;
+    const output = row.querySelector("[data-cost-line-total]");
+    if (output) output.textContent = money.format(lineTotal);
+  });
+  const totalOutput = form.querySelector("[data-cost-request-total]");
+  if (totalOutput) totalOutput.textContent = money.format(total);
+  const rows = form.querySelectorAll("[data-cost-request-line]");
+  rows.forEach((row) => { const button = row.querySelector("[data-cost-remove-request-line]"); if (button) button.hidden = rows.length === 1; });
+}
+
+function renderCostRequestsLegacy() {
+  const requests = costRows("requests");
+  const suppliers = costRows("suppliers").filter((supplier) => supplier.status !== "Archived");
+  const rows = requests.map((request) => {
+    const supplier = suppliers.find((item) => item.id === request.supplierId);
+    const files = (request.documents || []).map((file) => `<button class="secondary-btn small-btn" type="button" data-cost-request-document="${escapeHtml(request.id)}" data-file-id="${escapeHtml(file.id)}">${escapeHtml(file.file_name)}</button>`).join(" ");
+    const actions = isGovernanceAdmin() && (request.status === "Submitted" || request.status === "Supplier approval required")
+      ? `<button class="primary-btn small-btn" type="button" data-cost-request-po="${escapeHtml(request.id)}">${supplier ? "Process PO" : "Approve supplier + process PO"}</button>`
+      : "";
+    const items = costRequestItems(request);
+    const itemTotal = items.reduce((sum, item) => sum + financeNumber(item.quantity) * financeNumber(item.unitCost), 0);
+    const itemSummary = items.map((item) => `<div><strong>${escapeHtml(item.description)}</strong><small>${escapeHtml(String(item.quantity))} × ${money.format(financeNumber(item.unitCost))}</small></div>`).join("");
+    return `<tr><td><strong>${escapeHtml(request.number)}</strong><small>${escapeHtml(new Date(request.createdAt).toLocaleString("en-ZA"))}</small></td><td><strong>${escapeHtml(supplier?.name || request.supplierName)}</strong>${costRequestSupplierFields(request)}</td><td>${itemSummary}<small>${escapeHtml(request.project || "")}</small></td><td><strong>${money.format(itemTotal)}</strong><small>${items.length} line item${items.length === 1 ? "" : "s"}</small></td><td>${files || "-"}</td><td><span class="status-badge ${costStatusClass(request.status)}">${escapeHtml(request.status)}</span></td><td>${actions}</td></tr>`;
+  });
+  const supplierData = suppliers.map((supplier) => `<option value="${escapeHtml(supplier.name)}"></option>`).join("");
+  return `<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Staff purchasing inbox</p><h2>Purchase Requests</h2><p>Submit a request and supporting documents. Existing supplier details fill automatically; new suppliers are sent for approval.</p></div></div>
+    <form class="cost-form-grid" data-cost-form="request">
+      <label>Supplier name<input name="supplierName" list="costSupplierNames" data-cost-request-supplier required autocomplete="off" /></label><datalist id="costSupplierNames">${supplierData}</datalist>
+      <input type="hidden" name="supplierId" />
+      <label>Registration number<input name="registrationNumber" data-cost-supplier-detail /></label><label>VAT number<input name="vatNumber" data-cost-supplier-detail /></label>
+      <label>Email<input name="email" type="email" data-cost-supplier-detail /></label><label>Phone<input name="phone" data-cost-supplier-detail /></label><label>Category<input name="category" data-cost-supplier-detail placeholder="Stock, services, subcontractor" /></label><label>Address<input name="address" data-cost-supplier-detail /></label>
+      <label>Bank name<input name="bankName" data-cost-supplier-detail /></label><label>Account number<input name="accountNumber" data-cost-supplier-detail /></label><label>Branch code<input name="branchCode" data-cost-supplier-detail /></label>
+      <label>Payment terms<select name="paymentTerms" data-cost-supplier-detail>${costPaymentTermOptions("30 days")}</select></label>
+      <label>Project / job<input name="project" /></label><label>Entity / branch<input name="branch" list="costEntityNames" required /></label><label>Required by<input name="requiredBy" type="date" /></label>
+      <div class="cost-form-wide cost-request-lines"><div class="panel-heading"><div><h3>Supplier quotation line items</h3><p>Add each quoted item separately.</p></div><button class="secondary-btn" type="button" data-cost-add-request-line>Add line item</button></div><div data-cost-request-lines>${costRequestItemRow({}, false)}</div><div class="cost-request-grand-total"><span>Estimated total excl. VAT</span><strong data-cost-request-total>${money.format(0)}</strong></div></div>
+      <label class="cost-form-wide">Request documents<input name="files" type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg" /></label>
+      <label class="cost-form-wide">Notes<textarea name="notes" rows="2"></textarea></label><button class="primary-btn" type="submit">Submit purchase request</button>
+    </form>${costTable(["Request", "Supplier details", "Requirement", "Estimate", "Documents", "Status", "Action"], rows)}</section>`;
+}
+
+function costRequestRowMatchesFilters(request, supplierName) {
+  const submittedDate = String(request.createdAt || "").slice(0, 10);
+  return (!costRequestFilters.status || request.status === costRequestFilters.status)
+    && (!costRequestFilters.requester || String(request.createdBy || "").toLowerCase().includes(costRequestFilters.requester.toLowerCase()))
+    && (!costRequestFilters.supplier || supplierName.toLowerCase().includes(costRequestFilters.supplier.toLowerCase()))
+    && (!costRequestFilters.date || submittedDate === costRequestFilters.date)
+    && (!costRequestFilters.entity || String(request.branch || "").toLowerCase().includes(costRequestFilters.entity.toLowerCase()));
+}
+
+function applyCostRequestFilters() {
+  portalHubGrid.querySelectorAll("[data-cost-request-register-row]").forEach((row) => {
+    const matches = (!costRequestFilters.status || row.dataset.status === costRequestFilters.status)
+      && (!costRequestFilters.requester || String(row.dataset.requester || "").includes(costRequestFilters.requester.toLowerCase()))
+      && (!costRequestFilters.supplier || String(row.dataset.supplier || "").includes(costRequestFilters.supplier.toLowerCase()))
+      && (!costRequestFilters.date || row.dataset.date === costRequestFilters.date)
+      && (!costRequestFilters.entity || String(row.dataset.entity || "").includes(costRequestFilters.entity.toLowerCase()));
+    row.hidden = !matches;
+  });
+}
+
+function renderCostRequests() {
+  const requests = costRows("requests");
+  const suppliers = costRows("suppliers").filter((supplier) => supplier.status !== "Archived");
+  const supplierData = suppliers.map((supplier) => `<option value="${escapeHtml(supplier.name)}"></option>`).join("");
+  const statuses = Array.from(new Set(requests.map((request) => request.status).filter(Boolean))).sort();
+  const rows = requests.map((request) => {
+    const supplier = suppliers.find((item) => item.id === request.supplierId);
+    const supplierName = supplier?.name || request.supplierName || "Unknown supplier";
+    const files = request.documents || [];
+    const items = costRequestItems(request);
+    const itemTotal = items.reduce((sum, item) => sum + financeNumber(item.quantity) * financeNumber(item.unitCost), 0);
+    const itemSummary = items.map((item) => `<div><strong>${escapeHtml(item.description)}</strong><small>${escapeHtml(String(item.quantity))} × ${money.format(financeNumber(item.unitCost))}</small></div>`).join("");
+    const actions = isGovernanceAdmin() && ["Submitted", "Supplier approval required"].includes(request.status) ? `<button class="primary-btn small-btn" type="button" data-cost-request-po="${escapeHtml(request.id)}">${supplier ? "Process PO" : "Approve supplier + process PO"}</button>` : "-";
+    const visible = costRequestRowMatchesFilters(request, supplierName);
+    return `<tr data-cost-request-register-row data-status="${escapeHtml(request.status || "")}" data-requester="${escapeHtml(String(request.createdBy || "").toLowerCase())}" data-supplier="${escapeHtml(supplierName.toLowerCase())}" data-date="${escapeHtml(String(request.createdAt || "").slice(0, 10))}" data-entity="${escapeHtml(String(request.branch || "").toLowerCase())}" ${visible ? "" : "hidden"}><td><strong>${escapeHtml(request.number)}</strong></td><td>${escapeHtml(formatDate(request.createdAt))}</td><td><strong>${escapeHtml(request.createdBy || "-")}</strong><small>${escapeHtml(request.createdByEmail || "")}</small></td><td><strong>${escapeHtml(supplierName)}</strong><small>${escapeHtml(request.email || supplier?.email || "")}</small></td><td>${escapeHtml(request.branch || "-")}<small>${escapeHtml(request.project || "")}</small></td><td>${itemSummary}</td><td><strong>${money.format(itemTotal)}</strong><small>${items.length} line item${items.length === 1 ? "" : "s"}</small></td><td><span class="status-badge ${costStatusClass(request.status)}">${escapeHtml(request.status)}</span></td><td><button class="secondary-btn small-btn" type="button" ${files.length ? `data-cost-request-document="${escapeHtml(request.id)}" data-file-id="${escapeHtml(files[0].id)}"` : "disabled"}>Docs (${files.length})</button></td><td>${actions}</td></tr>`;
+  });
+  return `<div class="cost-request-page"><div class="cost-request-page-heading"><h2>Purchase Order Requests</h2><p>Submit supplier quotations and supporting information for purchase order processing.</p></div><section class="finance-card cost-request-new-panel"><div class="panel-heading"><div><h3>New request</h3></div></div><form class="cost-form-grid cost-request-entry-form" data-cost-form="request">
+    <label>Supplier name<input name="supplierName" list="costSupplierNames" data-cost-request-supplier required autocomplete="off" /></label><datalist id="costSupplierNames">${supplierData}</datalist><input type="hidden" name="supplierId" />
+    <label>Registration number<input name="registrationNumber" data-cost-supplier-detail /></label><label>VAT number<input name="vatNumber" data-cost-supplier-detail /></label><label>Email<input name="email" type="email" data-cost-supplier-detail /></label><label>Phone<input name="phone" data-cost-supplier-detail /></label><label>Category<input name="category" data-cost-supplier-detail placeholder="Stock, services, subcontractor" /></label><label>Address<input name="address" data-cost-supplier-detail /></label><label>Bank name<input name="bankName" data-cost-supplier-detail /></label><label>Account number<input name="accountNumber" data-cost-supplier-detail /></label><label>Branch code<input name="branchCode" data-cost-supplier-detail /></label><label>Payment terms<select name="paymentTerms" data-cost-supplier-detail>${costPaymentTermOptions("30 days")}</select></label><label>Project / job<input name="project" /></label><label>Entity / branch<input name="branch" list="costEntityNames" required /></label><label>Required by<input name="requiredBy" type="date" /></label>
+    <div class="cost-form-wide cost-request-lines"><div class="panel-heading"><div><h3>Supplier quotation line items</h3><p>Add every quoted item separately.</p></div><button class="secondary-btn" type="button" data-cost-add-request-line>Add line item</button></div><div data-cost-request-lines>${costRequestItemRow({}, false)}</div><div class="cost-request-grand-total"><span>Estimated total excl. VAT</span><strong data-cost-request-total>${money.format(0)}</strong></div></div>
+    <label class="cost-form-wide">Request documents<input name="files" type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg" /></label><label class="cost-form-wide">Notes<textarea name="notes" rows="3"></textarea></label><button class="primary-btn cost-request-submit" type="submit">Submit purchase request</button></form></section>
+    <section class="finance-card cost-request-register"><div class="panel-heading"><div><h3>Requests</h3></div></div><div class="cost-request-filter-bar"><label>Status<select data-cost-request-filter="status"><option value="">All statuses</option>${statuses.map((status) => `<option value="${escapeHtml(status)}" ${costRequestFilters.status === status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}</select></label><label>Requester<input data-cost-request-filter="requester" value="${escapeHtml(costRequestFilters.requester)}" placeholder="Search requester" /></label><label>Supplier<input data-cost-request-filter="supplier" value="${escapeHtml(costRequestFilters.supplier)}" placeholder="Search supplier" /></label><label>Date submitted<input type="date" data-cost-request-filter="date" value="${escapeHtml(costRequestFilters.date)}" /></label><label>Entity / branch<input data-cost-request-filter="entity" value="${escapeHtml(costRequestFilters.entity)}" placeholder="Search entity" /></label><button class="secondary-btn" type="button" data-cost-clear-request-filters>Clear filters</button></div>${costTable(["Request number", "Date submitted", "Requested by", "Supplier", "Entity / project", "Line items", "Estimate", "Status", "Documents", "Action"], rows)}</section></div>`;
+}
+
+function renderCostEntities() {
+  const entities = costRows("entities");
+  const editing = entities.find((entity) => entity.id === costEditingEntityId);
+  const value = (name, fallback = "") => escapeHtml(String(editing?.[name] ?? fallback));
+  const rows = entities.map((entity) => `<tr><td><strong>${escapeHtml(entity.name)}</strong><small>${escapeHtml(entity.physicalAddress || "")}</small></td><td>${escapeHtml(entity.vatNumber || "-")}</td><td>${money.format(financeNumber(entity.currentBalance))}</td><td>${money.format(financeNumber(entity.safetyBuffer))}</td><td>${escapeHtml(entity.bankAccount || "-")}<small>${entity.branchCode ? `Branch: ${escapeHtml(entity.branchCode)}` : ""}</small></td><td><span class="status-badge ${costStatusClass(entity.status || "Active")}">${escapeHtml(entity.status || "Active")}</span></td><td class="row-actions"><button class="secondary-btn small-btn" type="button" data-cost-edit-entity="${escapeHtml(entity.id)}">Edit</button><button class="secondary-btn small-btn" type="button" data-cost-archive-entity="${escapeHtml(entity.id)}">${entity.status === "Archived" ? "Restore" : "Archive"}</button></td></tr>`);
+  return `<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Entity master data</p><h2>${editing ? `Edit ${escapeHtml(editing.name)}` : "Entities"}</h2><p>Manage the companies, divisions, or branches used in Cost Hub reporting.</p></div><div class="row-actions"><button class="secondary-btn" type="button" data-cost-download-entity-template>Download balance template</button><label class="primary-btn finance-upload">Upload balances<input type="file" data-cost-entity-balance-upload accept=".xlsx,.csv" hidden /></label></div></div>${costEntityBalanceImportNotice ? `<div class="import-summary">${escapeHtml(costEntityBalanceImportNotice)}</div>` : ""}<p class="finance-note">Upload an Excel or CSV file with columns named <strong>Entity</strong> and <strong>Current Balance</strong>. Matching entities update automatically.</p>
+    <form class="cost-form-grid" data-cost-form="entity"><label>Entity name<input name="name" value="${value("name")}" required /></label><label>VAT number<input name="vatNumber" value="${value("vatNumber")}" /></label><label>Bank account number<input name="bankAccount" value="${value("bankAccount")}" /></label><label>Bank branch code<input name="branchCode" value="${value("branchCode")}" /></label><label>Current balance<input name="currentBalance" type="number" step="0.01" value="${value("currentBalance", 0)}" /></label><label>Safety buffer<input name="safetyBuffer" type="number" min="0" step="0.01" value="${value("safetyBuffer", 0)}" /></label><label class="cost-form-wide">Physical address<textarea name="physicalAddress" rows="2">${value("physicalAddress")}</textarea></label><button class="primary-btn" type="submit">${editing ? "Save entity changes" : "Add entity"}</button>${editing ? '<button class="secondary-btn" type="button" data-cost-cancel-entity-edit>Cancel edit</button>' : ""}</form>
+    ${costTable(["Entity", "VAT number", "Current balance", "Safety buffer", "Banking details", "Status", "Actions"], rows)}</section>`;
+}
+
+function applyCostEntityBalanceRows(rows, fileName) {
+  const entities = costRows("entities");
+  let updatedCount = 0;
+  const unmatched = [];
+  const now = new Date().toISOString();
+  const updates = new Map();
+  rows.forEach((row) => {
+    const name = String(row.entityName || "").trim();
+    if (!name) return;
+    const entity = entities.find((item) => item.name.trim().toLowerCase() === name.toLowerCase());
+    if (!entity) { unmatched.push(name); return; }
+    updates.set(entity.id, financeNumber(row.balance));
+  });
+  const nextEntities = entities.map((entity) => {
+    if (!updates.has(entity.id)) return entity;
+    updatedCount += 1;
+    return { ...entity, currentBalance: updates.get(entity.id), balanceImportedAt: now, balanceImportedBy: currentUserName(), balanceImportFile: fileName };
+  });
+  saveCostRows("entities", nextEntities);
+  costEntityBalanceImportNotice = `${updatedCount} ${updatedCount === 1 ? "entity balance" : "entity balances"} updated${unmatched.length ? `; ${unmatched.length} unmatched: ${unmatched.slice(0, 4).join(", ")}${unmatched.length > 4 ? "…" : ""}` : ""}.`;
+  costAudit("Imported entity balances", fileName, costEntityBalanceImportNotice);
+  renderCostHub("entities");
+}
+
+async function importCostEntityBalances(file) {
+  if (!file) return;
+  try {
+    let rows = [];
+    if (file.name.toLowerCase().endsWith(".csv")) {
+      const parsed = parseCsv(await file.text());
+      const headers = (parsed[0] || []).map((header) => String(header || "").trim().toLowerCase());
+      const entityIndex = headers.findIndex((header) => ["entity", "entity name", "company", "branch", "name"].some((label) => header === label || header.includes(label)));
+      const balanceIndex = headers.findIndex((header) => ["current balance", "available balance", "balance", "available"].some((label) => header === label || header.includes(label)));
+      if (entityIndex < 0 || balanceIndex < 0) throw new Error("The file needs Entity and Current Balance columns.");
+      rows = parsed.slice(1).map((row) => ({ entityName: row[entityIndex], balance: row[balanceIndex] }));
+    } else {
+      const response = await fetch(`/api/cost/import-entity-balances?fileName=${encodeURIComponent(file.name)}`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/octet-stream" }, body: await file.arrayBuffer() });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "The Excel file could not be imported.");
+      rows = data.rows || [];
+    }
+    applyCostEntityBalanceRows(rows, file.name);
+  } catch (error) {
+    costEntityBalanceImportNotice = error.message || "The balance file could not be imported.";
+    renderCostHub("entities");
+  }
+}
+
+function renderCostSuppliers() {
+  const suppliers = costRows("suppliers");
+  const editing = suppliers.find((supplier) => supplier.id === costEditingSupplierId);
+  const value = (name, fallback = "") => escapeHtml(editing?.[name] || fallback);
+  const rows = suppliers.map((supplier) => `<tr><td><strong>${escapeHtml(supplier.name)}</strong><small>${escapeHtml(supplier.registrationNumber || "")}</small></td><td>${escapeHtml(supplier.email || "-")}<br>${escapeHtml(supplier.phone || "-")}</td><td>${escapeHtml(supplier.bankName || "-")}<small>${escapeHtml(supplier.accountNumber || "")} ${supplier.branchCode ? `· ${escapeHtml(supplier.branchCode)}` : ""}</small></td><td>${escapeHtml(supplier.category || "General")}</td><td>${escapeHtml(supplier.paymentTerms || "30 days")}</td><td><span class="status-badge ${costStatusClass(supplier.status || "Active")}">${escapeHtml(supplier.status || "Active")}</span></td><td class="row-actions"><button class="secondary-btn small-btn" type="button" data-cost-edit-supplier="${escapeHtml(supplier.id)}">Edit</button><button class="secondary-btn small-btn" type="button" data-cost-archive-supplier="${escapeHtml(supplier.id)}">${supplier.status === "Archived" ? "Restore" : "Archive"}</button></td></tr>`);
+  return `<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Supplier master data</p><h2>${editing ? `Edit ${escapeHtml(editing.name)}` : "Suppliers"}</h2></div></div>
+    <form class="cost-form-grid" data-cost-form="supplier">
+      <label>Supplier name<input name="name" value="${value("name")}" required /></label><label>Registration number<input name="registrationNumber" value="${value("registrationNumber")}" /></label><label>VAT number<input name="vatNumber" value="${value("vatNumber")}" /></label>
+      <label>Email<input name="email" type="email" value="${value("email")}" /></label><label>Phone<input name="phone" value="${value("phone")}" /></label><label>Category<input name="category" value="${value("category")}" placeholder="Stock, services, subcontractor" /></label>
+      <label>Payment terms<select name="paymentTerms">${costPaymentTermOptions(editing?.paymentTerms || "30 days")}</select></label><label>Bank name<input name="bankName" value="${value("bankName")}" /></label><label>Account number<input name="accountNumber" value="${value("accountNumber")}" /></label><label>Branch code<input name="branchCode" value="${value("branchCode")}" /></label><label>Address<input name="address" value="${value("address")}" /></label>
+      <label class="cost-form-wide">Notes<textarea name="notes" rows="2">${value("notes")}</textarea></label><button class="primary-btn" type="submit">${editing ? "Save supplier changes" : "Add supplier"}</button>${editing ? '<button class="secondary-btn" type="button" data-cost-cancel-supplier-edit>Cancel edit</button>' : ""}
+    </form>
+    ${costTable(["Supplier", "Contact", "Banking", "Category", "Terms", "Status", "Actions"], rows)}
+  </section>`;
+}
+
+function costSupplierOptions(selected = "") {
+  return `<option value="">Select supplier</option>${costRows("suppliers").filter((supplier) => supplier.status !== "Archived").map((supplier) => `<option value="${escapeHtml(supplier.id)}" ${selected === supplier.id ? "selected" : ""}>${escapeHtml(supplier.name)}</option>`).join("")}`;
+}
+
+function costEntityDatalist() {
+  return costRows("entities").filter((entity) => entity.status !== "Archived").map((entity) => `<option value="${escapeHtml(entity.name)}"></option>`).join("");
+}
+
+function renderCostPurchaseOrders() {
+  const rows = costRows("purchaseOrders").map((po) => { const awaitingDecision = ["Pending approval", "Draft", "Rejected"].includes(po.status); return `<tr><td><strong>${escapeHtml(po.number)}</strong></td><td>${escapeHtml(costSupplierName(po.supplierId))}</td><td>${escapeHtml(formatDate(po.date))}</td><td>${escapeHtml(po.project || "-")}</td><td>${money.format(financeNumber(po.total))}</td><td><span class="status-badge ${costStatusClass(po.status)}">${escapeHtml(po.status === "Draft" ? "Pending approval" : po.status)}</span></td><td><button class="secondary-btn small-btn" ${awaitingDecision ? `data-cost-open-approval="${escapeHtml(po.id)}"` : `data-cost-po-status="${escapeHtml(po.id)}"`}>${awaitingDecision ? "View approval" : "Update status"}</button></td></tr>`; });
+  return `<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Purchasing</p><h2>Purchase Orders</h2></div></div>
+    <form class="cost-form-grid" data-cost-form="purchaseOrder"><label>Supplier<select name="supplierId" required>${costSupplierOptions()}</select></label><label>Order date<input type="date" name="date" value="${todayInputValue()}" required /></label><label>Expected date<input type="date" name="dueDate" /></label><label>Project / job<input name="project" /></label><label>Branch<input name="branch" /></label><label>Item description<input name="description" required /></label><label>Quantity<input type="number" min="0.01" step="0.01" name="quantity" value="1" required /></label><label>Unit cost excl. VAT<input type="number" min="0" step="0.01" name="unitCost" required /></label><label>VAT %<input type="number" min="0" step="0.01" name="taxRate" value="15" /></label><label class="cost-form-wide">Notes<textarea name="notes" rows="2"></textarea></label><button class="primary-btn" type="submit">Create purchase order</button></form>
+    ${costTable(["PO number", "Supplier", "Date", "Project", "Total incl. VAT", "Status", "Actions"], rows)}
+  </section>`;
+}
+
+function costPoRequesterIsCurrentUser(po) {
+  return normalizeEmail(po.requestedByEmail || "") === normalizeEmail(currentUser()) || po.requestedBy === currentUserName() || po.createdBy === currentUserName();
+}
+
+function costPoApprovalLabel(status = "") {
+  if (status === "Approved") return "Accepted";
+  if (status === "Draft" || status === "Pending approval") return "Pending acceptance";
+  return status || "Pending acceptance";
+}
+
+function renderCostPoApprovalDetail(po) {
+  if (!po) return "";
+  const items = costRequestItems(po);
+  const itemRows = items.map((item) => `<tr><td>${escapeHtml(item.description)}</td><td>${escapeHtml(String(item.quantity))}</td><td>${money.format(financeNumber(item.unitCost))}</td><td>${money.format(financeNumber(item.quantity) * financeNumber(item.unitCost))}</td></tr>`);
+  const canDecide = isGovernanceAdmin() && ["Pending approval", "Draft"].includes(po.status);
+  const canEditRejected = po.status === "Rejected" && costPoRequesterIsCurrentUser(po);
+  return `<section class="finance-card cost-approval-detail"><div class="panel-heading"><div><p class="eyebrow">Purchase order review</p><h2>${escapeHtml(po.number)}</h2><p>${escapeHtml(costSupplierName(po.supplierId))} · Requested by ${escapeHtml(po.requestedBy || po.createdBy || "-")}</p></div><button class="secondary-btn" type="button" data-cost-close-approval>Close</button></div>
+    <div class="dashboard-summary-grid"><section class="summary-card"><span>Status</span><strong><mark class="status-badge ${costStatusClass(po.status)}">${escapeHtml(costPoApprovalLabel(po.status))}</mark></strong></section>${renderSummaryCard("Project", po.project || "-")}${renderSummaryCard("Total incl. VAT", money.format(financeNumber(po.total)))}</div>
+    ${po.rejectionReason ? `<div class="approval-rejection-reason"><strong>Rejection reason</strong><p>${escapeHtml(po.rejectionReason)}</p></div>` : ""}
+    ${costTable(["Description", "Quantity", "Unit cost excl. VAT", "Line total"], itemRows)}
+    <p><strong>Required / expected date:</strong> ${escapeHtml(formatDate(po.dueDate) || "-")}<br><strong>Notes:</strong> ${escapeHtml(po.notes || "-")}</p>
+    ${canDecide ? `<div class="row-actions"><button class="primary-btn" type="button" data-cost-approve-po="${escapeHtml(po.id)}">Accept PO</button><button class="danger-btn" type="button" data-cost-reject-po="${escapeHtml(po.id)}">Reject PO</button></div>` : ""}
+    ${canEditRejected ? `<form class="cost-form-grid" data-cost-form="rejectedPo" data-po-id="${escapeHtml(po.id)}"><h3 class="cost-form-wide">Edit and resubmit rejected PO</h3><label>Supplier<select name="supplierId" required>${costSupplierOptions(po.supplierId)}</select></label><label>Expected date<input type="date" name="dueDate" value="${escapeHtml(po.dueDate || "")}" /></label><label>Project / job<input name="project" value="${escapeHtml(po.project || "")}" /></label><div class="cost-form-wide cost-request-lines"><div class="panel-heading"><div><h3>Line items</h3></div><button class="secondary-btn" type="button" data-cost-add-request-line>Add line item</button></div><div data-cost-request-lines>${items.map((item) => costRequestItemRow(item, items.length > 1)).join("")}</div><div class="cost-request-grand-total"><span>Total excl. VAT</span><strong data-cost-request-total>${money.format(financeNumber(po.subtotal))}</strong></div></div><label class="cost-form-wide">Notes<textarea name="notes" rows="2">${escapeHtml(po.notes || "")}</textarea></label><button class="primary-btn" type="submit">Resubmit for approval</button></form>` : ""}
+  </section>`;
+}
+
+function renderCostPoApprovals() {
+  const orders = costRows("purchaseOrders").filter((po) => ["Pending approval", "Draft", "Approved", "Rejected"].includes(po.status));
+  const selected = orders.find((po) => po.id === costSelectedApprovalId);
+  const rows = orders.map((po) => { const supplierName = costSupplierName(po.supplierId); const requester = po.requestedBy || po.createdBy || ""; const normalizedStatus = ["Draft", "Pending approval"].includes(po.status) ? "Pending approval" : po.status; const submittedDate = String(po.createdAt || po.date || "").slice(0, 10); const entity = po.branch || ""; const visible = (!costApprovalFilters.status || normalizedStatus === costApprovalFilters.status) && (!costApprovalFilters.requester || requester.toLowerCase().includes(costApprovalFilters.requester.toLowerCase())) && (!costApprovalFilters.supplier || supplierName.toLowerCase().includes(costApprovalFilters.supplier.toLowerCase())) && (!costApprovalFilters.date || submittedDate === costApprovalFilters.date) && (!costApprovalFilters.entity || entity.toLowerCase().includes(costApprovalFilters.entity.toLowerCase())); const rowClass = po.status === "Approved" ? "approval-row-accepted" : po.status === "Rejected" ? "approval-row-rejected" : "approval-row-pending"; return `<tr class="${rowClass}" data-cost-approval-row data-status="${escapeHtml(normalizedStatus)}" data-requester="${escapeHtml(requester.toLowerCase())}" data-supplier="${escapeHtml(supplierName.toLowerCase())}" data-date="${escapeHtml(submittedDate)}" data-entity="${escapeHtml(entity.toLowerCase())}" ${visible ? "" : "hidden"}><td><strong>${escapeHtml(po.number)}</strong><small>${escapeHtml(formatDate(po.date))}</small></td><td>${escapeHtml(supplierName)}</td><td>${escapeHtml(requester || "-")}</td><td>${escapeHtml(entity || "-")}<small>${escapeHtml(po.project || "")}</small></td><td>${money.format(financeNumber(po.total))}</td><td><span class="status-badge ${costStatusClass(po.status)}">${escapeHtml(costPoApprovalLabel(po.status))}</span>${po.rejectionReason ? `<small>${escapeHtml(po.rejectionReason)}</small>` : ""}</td><td><button class="secondary-btn small-btn" type="button" data-cost-open-approval="${escapeHtml(po.id)}">Open & view</button></td></tr>`; });
+  return `${renderCostPoApprovalDetail(selected)}<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Approval queue</p><h2>Purchase Order Approvals</h2><p>Open a purchase order to review every line before accepting or rejecting it.</p></div></div><div class="cost-request-filter-bar cost-approval-filter-bar"><label>Status<select data-cost-approval-filter="status"><option value="">All statuses</option><option value="Pending approval" ${costApprovalFilters.status === "Pending approval" ? "selected" : ""}>Pending acceptance</option><option value="Approved" ${costApprovalFilters.status === "Approved" ? "selected" : ""}>Accepted</option><option value="Rejected" ${costApprovalFilters.status === "Rejected" ? "selected" : ""}>Rejected</option></select></label><label>Requester<input data-cost-approval-filter="requester" value="${escapeHtml(costApprovalFilters.requester)}" placeholder="Search requester" /></label><label>Supplier<input data-cost-approval-filter="supplier" value="${escapeHtml(costApprovalFilters.supplier)}" placeholder="Search supplier" /></label><label>Date submitted<input type="date" data-cost-approval-filter="date" value="${escapeHtml(costApprovalFilters.date)}" /></label><label>Entity / branch<input data-cost-approval-filter="entity" value="${escapeHtml(costApprovalFilters.entity)}" placeholder="Search entity" /></label><button class="secondary-btn" type="button" data-cost-clear-approval-filters>Clear filters</button></div>${costTable(["PO", "Supplier", "Requested by", "Entity / project", "Total", "Status", "Review"], rows)}</section>`;
+}
+
+function applyCostApprovalFilters() {
+  portalHubGrid.querySelectorAll("[data-cost-approval-row]").forEach((row) => {
+    const visible = (!costApprovalFilters.status || row.dataset.status === costApprovalFilters.status)
+      && (!costApprovalFilters.requester || String(row.dataset.requester || "").includes(costApprovalFilters.requester.toLowerCase()))
+      && (!costApprovalFilters.supplier || String(row.dataset.supplier || "").includes(costApprovalFilters.supplier.toLowerCase()))
+      && (!costApprovalFilters.date || row.dataset.date === costApprovalFilters.date)
+      && (!costApprovalFilters.entity || String(row.dataset.entity || "").includes(costApprovalFilters.entity.toLowerCase()));
+    row.hidden = !visible;
+  });
+}
+
+function renderCostBills() {
+  const rows = costRows("bills").map((bill) => { const paid = costBillPayments(bill.id); const balance = Math.max(0, financeNumber(bill.total) - paid); const status = costBillStatus(bill); return `<tr><td><strong>${escapeHtml(bill.billNumber)}</strong><small>${escapeHtml(bill.reference || "")}</small></td><td>${escapeHtml(costSupplierName(bill.supplierId))}</td><td>${escapeHtml(formatDate(bill.date))}</td><td>${escapeHtml(formatDate(bill.dueDate))}</td><td>${money.format(financeNumber(bill.total))}</td><td>${money.format(paid)}</td><td>${money.format(balance)}</td><td><span class="status-badge ${costStatusClass(status)}">${escapeHtml(status)}</span></td></tr>`; });
+  return `<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Accounts payable</p><h2>Supplier Bills</h2></div></div>
+    <form class="cost-form-grid" data-cost-form="bill"><label>Supplier<select name="supplierId" required>${costSupplierOptions()}</select></label><label>Supplier invoice number<input name="billNumber" required /></label><label>Invoice date<input type="date" name="date" value="${todayInputValue()}" required /></label><label>Due date<input type="date" name="dueDate" required /></label><label>PO reference<input name="poNumber" /></label><label>Category<input name="category" /></label><label>Amount excl. VAT<input type="number" min="0" step="0.01" name="subtotal" required /></label><label>VAT %<input type="number" min="0" step="0.01" name="taxRate" value="15" /></label><label>Project / job<input name="project" /></label><label>Branch<input name="branch" /></label><label class="cost-form-wide">Notes<textarea name="notes" rows="2"></textarea></label><button class="primary-btn" type="submit">Capture supplier bill</button></form>
+    ${costTable(["Bill", "Supplier", "Invoice date", "Due date", "Total", "Paid", "Balance", "Status"], rows)}
+  </section>`;
+}
+
+function renderCostPayments() {
+  const openBills = costRows("bills").filter((bill) => costBillPayments(bill.id) < financeNumber(bill.total));
+  const billOptions = `<option value="">Select supplier bill</option>${openBills.map((bill) => `<option value="${escapeHtml(bill.id)}">${escapeHtml(bill.billNumber)} · ${escapeHtml(costSupplierName(bill.supplierId))} · ${money.format(financeNumber(bill.total) - costBillPayments(bill.id))}</option>`).join("")}`;
+  const rows = costRows("payments").map((payment) => { const bill = costRows("bills").find((item) => item.id === payment.billId); return `<tr><td>${escapeHtml(formatDate(payment.date))}</td><td>${escapeHtml(bill?.billNumber || "-")}</td><td>${escapeHtml(costSupplierName(bill?.supplierId))}</td><td>${money.format(financeNumber(payment.amount))}</td><td>${escapeHtml(payment.method || "EFT")}</td><td>${escapeHtml(payment.reference || "-")}</td></tr>`; });
+  return `<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Supplier payments</p><h2>Payments</h2></div></div><form class="cost-form-grid" data-cost-form="payment"><label>Supplier bill<select name="billId" required>${billOptions}</select></label><label>Payment date<input type="date" name="date" value="${todayInputValue()}" required /></label><label>Amount<input type="number" min="0.01" step="0.01" name="amount" required /></label><label>Method<select name="method"><option>EFT</option><option>Cash</option><option>Card</option><option>Debit order</option></select></label><label>Reference<input name="reference" required /></label><label class="cost-form-wide">Notes<textarea name="notes" rows="2"></textarea></label><button class="primary-btn" type="submit">Record payment</button></form>${costTable(["Date", "Bill", "Supplier", "Amount", "Method", "Reference"], rows)}</section>`;
+}
+
+function renderCostCredits() {
+  const rows = costRows("credits").map((credit) => `<tr><td>${escapeHtml(credit.number)}</td><td>${escapeHtml(costSupplierName(credit.supplierId))}</td><td>${escapeHtml(formatDate(credit.date))}</td><td>${money.format(financeNumber(credit.amount))}</td><td>${escapeHtml(credit.reference || "-")}</td><td><span class="status-badge ${costStatusClass(credit.status)}">${escapeHtml(credit.status)}</span></td></tr>`);
+  return `<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Supplier credits</p><h2>Credit Notes</h2></div></div><form class="cost-form-grid" data-cost-form="credit"><label>Supplier<select name="supplierId" required>${costSupplierOptions()}</select></label><label>Date<input type="date" name="date" value="${todayInputValue()}" required /></label><label>Amount<input type="number" min="0.01" step="0.01" name="amount" required /></label><label>Supplier reference<input name="reference" required /></label><label class="cost-form-wide">Reason / notes<textarea name="notes" rows="2"></textarea></label><button class="primary-btn" type="submit">Add credit note</button></form>${costTable(["Credit note", "Supplier", "Date", "Amount", "Reference", "Status"], rows)}</section>`;
+}
+
+function renderCostDocuments() {
+  const rows = costRows("documents").map((document) => `<tr><td><strong>${escapeHtml(document.file_name)}</strong><small>${escapeHtml(formatFileSize(document.file_size))}</small></td><td>${escapeHtml(document.documentType)}</td><td>${escapeHtml(document.supplierId ? costSupplierName(document.supplierId) : "General")}</td><td>${escapeHtml(new Date(document.uploaded_at).toLocaleString("en-ZA"))}</td><td class="row-actions"><button class="secondary-btn small-btn" data-cost-view-document="${escapeHtml(document.id)}">View</button><button class="secondary-btn small-btn" data-cost-download-document="${escapeHtml(document.id)}">Download</button><button class="danger-btn small-btn" data-cost-remove-document="${escapeHtml(document.id)}">Remove</button></td></tr>`);
+  return `<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Supporting records</p><h2>Documents</h2></div></div><form class="cost-form-grid" data-cost-form="documents"><label>Supplier<select name="supplierId">${costSupplierOptions()}</select></label><label>Document type<select name="documentType"><option>Supplier quotation</option><option>Supplier invoice</option><option>Proof of payment</option><option>Statement</option><option>Contract</option><option>Other</option></select></label><label class="cost-form-wide">Files<input type="file" name="files" multiple required /></label><button class="primary-btn" type="submit">Upload documents</button></form>${costTable(["File", "Type", "Supplier", "Uploaded", "Actions"], rows)}</section>`;
+}
+
+function renderCostReports() {
+  const bills = costRows("bills");
+  const supplierRows = costRows("suppliers").map((supplier) => { const supplierBills = bills.filter((bill) => bill.supplierId === supplier.id); const total = supplierBills.reduce((sum, bill) => sum + financeNumber(bill.total), 0); const paid = supplierBills.reduce((sum, bill) => sum + costBillPayments(bill.id), 0); return `<tr><td>${escapeHtml(supplier.name)}</td><td>${supplierBills.length}</td><td>${money.format(total)}</td><td>${money.format(paid)}</td><td>${money.format(Math.max(0, total - paid))}</td></tr>`; });
+  return `<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Cost reporting</p><h2>Supplier Cost Report</h2></div><button class="secondary-btn" data-cost-export-report>Export CSV</button></div>${costTable(["Supplier", "Bills", "Total billed", "Paid", "Outstanding"], supplierRows)}</section>`;
+}
+
+function renderCostSetup() {
+  const setup = JSON.parse(localStorage.getItem(costStorageKeys.setup) || "{}");
+  return `<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Cost Hub configuration</p><h2>Setup</h2></div></div><form class="cost-form-grid" data-cost-form="setup"><label>Default VAT %<input type="number" min="0" step="0.01" name="vatRate" value="${escapeHtml(String(setup.vatRate ?? 15))}" /></label><label>Default payment terms<select name="paymentTerms">${costPaymentTermOptions(setup.paymentTerms || "30 days")}</select></label><label>Cost categories<input name="categories" value="${escapeHtml(setup.categories || "Stock, Services, Subcontractors, Labour, Consumables")}" /></label><label>Branches<input name="branches" value="${escapeHtml(setup.branches || "")}" /></label><label class="cost-form-wide">Approval notes<textarea name="approvalNotes" rows="3">${escapeHtml(setup.approvalNotes || "")}</textarea></label><button class="primary-btn" type="submit">Save Cost Hub setup</button></form></section>`;
+}
+
+function renderCostAudit() {
+  const rows = loadAudit().filter((entry) => entry.module === "Cost Hub");
+  return `<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Activity history</p><h2>Cost Hub Audit Trail</h2></div></div>${renderGovernanceAuditTable(rows)}</section>`;
+}
+
+function renderCostHub(tab = activeCostTab) {
+  activeCostTab = costTabs.some((item) => item.key === tab) ? tab : "dashboard";
+  const hub = companyHubBySlug("cost-hub");
+  const renderers = {
+    dashboard: renderCostDashboard, requests: renderCostRequests, approvals: renderCostPoApprovals, entities: renderCostEntities, suppliers: renderCostSuppliers, purchaseOrders: renderCostPurchaseOrders, bills: renderCostBills, payments: renderCostPayments, credits: renderCostCredits, documents: renderCostDocuments, reports: renderCostReports, setup: renderCostSetup, audit: renderCostAudit,
+  };
+  const content = (renderers[activeCostTab] || renderCostDashboard)();
+  document.body.classList.add("finance-hub-active");
+  const requestCount = costRows("requests").filter((request) => ["Submitted", "Supplier approval required"].includes(request.status)).length;
+  const approvalCount = costRows("purchaseOrders").filter((po) => ["Pending approval", "Draft"].includes(po.status)).length;
+  portalHubGrid.innerHTML = `<section class="finance-hub-shell cost-hub-shell"><aside class="finance-sidebar"><div class="brand"><img class="brand-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" /><div><strong>${escapeHtml(hub.name)}</strong><small>Supplier costs</small></div></div><nav>${costTabs.map((item) => `<button class="nav-item ${item.key === activeCostTab ? "active" : ""}" type="button" data-cost-tab="${item.key}">${escapeHtml(item.label)}${item.key === "requests" && requestCount ? ` <span class="status-badge status-info">${requestCount}</span>` : ""}${item.key === "approvals" && approvalCount ? ` <span class="status-badge status-warning">${approvalCount}</span>` : ""}</button>`).join("")}</nav><div class="finance-user-panel"><small>Signed in as</small><strong>${escapeHtml(currentUserName())}</strong><span>${escapeHtml(currentMember().access || "Member")}</span><button class="secondary-btn" type="button" data-finance-logout>Logout</button></div></aside><main class="finance-main"><div class="topbar"><div><p class="eyebrow">Interactive Security</p><h1>${escapeHtml(costTabs.find((item) => item.key === activeCostTab)?.label || "Cost Hub")}</h1></div><button class="secondary-btn" type="button" onclick="window.location.href='/'">Back to portal</button></div>${content}</main></section>`;
+  portalHubGrid.insertAdjacentHTML("beforeend", `<datalist id="costEntityNames">${costEntityDatalist()}</datalist>`);
+  portalHubGrid.querySelectorAll('[name="branch"]').forEach((input) => input.setAttribute("list", "costEntityNames"));
+  costAudit("Opened Cost Hub tab", activeCostTab);
+}
+
+function costFormValues(form) {
+  return Object.fromEntries(new FormData(form).entries());
+}
+
+async function handleCostFormSubmit(form) {
+  const type = form.dataset.costForm;
+  const values = costFormValues(form);
+  const now = new Date().toISOString();
+  if (type === "request") {
+    delete values.files;
+    delete values.lineDescription;
+    delete values.lineQuantity;
+    delete values.lineUnitCost;
+    const items = Array.from(form.querySelectorAll("[data-cost-request-line]")).map((row) => ({
+      description: row.querySelector('[name="lineDescription"]')?.value.trim() || "",
+      quantity: financeNumber(row.querySelector('[name="lineQuantity"]')?.value),
+      unitCost: financeNumber(row.querySelector('[name="lineUnitCost"]')?.value),
+    })).filter((item) => item.description && item.quantity > 0);
+    if (!items.length) { alert("Please add at least one supplier quotation line item."); return; }
+    const files = Array.from(form.querySelector('[name="files"]')?.files || []);
+    const documents = [];
+    for (const file of files) {
+      if (!isSupportedRequestDocument(file)) { alert(`${file.name} is not a supported document type.`); continue; }
+      documents.push({ ...(await requestFileMetadata(file)), id: `cost-request-file-${Date.now()}-${Math.random().toString(36).slice(2)}` });
+    }
+    const supplier = costRows("suppliers").find((item) => item.id === values.supplierId);
+    const request = { id: `cost-request-${Date.now()}`, number: nextCostNumber("REQ", "request"), ...values, items, documents, status: supplier ? "Submitted" : "Supplier approval required", createdAt: now, createdBy: currentUserName(), createdByEmail: currentUser() };
+    saveCostRows("requests", [request, ...costRows("requests")]);
+    costAudit("Submitted purchase request", request.number, `${request.supplierName} · ${request.status}`);
+    alert(`Purchase request ${request.number} was submitted${supplier ? "." : " and the new supplier is awaiting approval."}`);
+    renderCostHub("requests");
+    return;
+  }
+  if (type === "rejectedPo") {
+    const orders = costRows("purchaseOrders");
+    const existing = orders.find((po) => po.id === form.dataset.poId);
+    if (!existing || existing.status !== "Rejected" || !costPoRequesterIsCurrentUser(existing)) return alert("Only the original requester can edit this rejected purchase order.");
+    const items = Array.from(form.querySelectorAll("[data-cost-request-line]")).map((row) => ({ description: row.querySelector('[name="lineDescription"]')?.value.trim() || "", quantity: financeNumber(row.querySelector('[name="lineQuantity"]')?.value), unitCost: financeNumber(row.querySelector('[name="lineUnitCost"]')?.value) })).filter((item) => item.description && item.quantity > 0);
+    if (!items.length) return alert("Please add at least one line item.");
+    const subtotal = roundCurrency(items.reduce((sum, item) => sum + item.quantity * item.unitCost, 0));
+    const taxRate = financeNumber(existing.taxRate || 15);
+    const updated = { ...existing, supplierId: values.supplierId, dueDate: values.dueDate, project: values.project, notes: values.notes, items, description: items.map((item) => item.description).join("; "), quantity: items.reduce((sum, item) => sum + item.quantity, 0), unitCost: items.length === 1 ? items[0].unitCost : 0, subtotal, vat: roundCurrency(subtotal * taxRate / 100), total: roundCurrency(subtotal * (1 + taxRate / 100)), status: "Pending approval", rejectionReason: "", resubmittedAt: now, resubmittedBy: currentUserName() };
+    saveCostRows("purchaseOrders", orders.map((po) => po.id === updated.id ? updated : po));
+    if (updated.requestId) saveCostRows("requests", costRows("requests").map((request) => request.id === updated.requestId ? { ...request, items, status: "PO resubmitted", updatedAt: now, updatedBy: currentUserName() } : request));
+    costAudit("Resubmitted rejected purchase order", updated.number, `Resubmitted by ${currentUserName()}`);
+    costSelectedApprovalId = updated.id;
+    renderCostHub("approvals");
+    return;
+  }
+  if (type === "entity") {
+    const entities = costRows("entities");
+    const existing = entities.find((item) => item.id === costEditingEntityId);
+    const entity = existing
+      ? { ...existing, ...values, currentBalance: financeNumber(values.currentBalance), safetyBuffer: financeNumber(values.safetyBuffer), updatedAt: now, updatedBy: currentUserName() }
+      : { id: `cost-entity-${Date.now()}-${Math.random().toString(36).slice(2)}`, ...values, currentBalance: financeNumber(values.currentBalance), safetyBuffer: financeNumber(values.safetyBuffer), status: "Active", createdAt: now, createdBy: currentUserName() };
+    saveCostRows("entities", existing ? entities.map((item) => item.id === entity.id ? entity : item) : [entity, ...entities]);
+    costAudit(existing ? "Updated entity" : "Added entity", entity.name, `${existing ? "Updated" : "Created"} by ${currentUserName()}`);
+    costEditingEntityId = "";
+    renderCostHub("entities");
+    return;
+  }
+  if (type === "supplier") {
+    const suppliers = costRows("suppliers");
+    const existing = suppliers.find((item) => item.id === costEditingSupplierId);
+    const supplier = existing
+      ? { ...existing, ...values, updatedAt: now, updatedBy: currentUserName() }
+      : { id: `cost-supplier-${Date.now()}-${Math.random().toString(36).slice(2)}`, ...values, status: "Active", createdAt: now, createdBy: currentUserName() };
+    saveCostRows("suppliers", existing ? suppliers.map((item) => item.id === existing.id ? supplier : item) : [supplier, ...suppliers]);
+    costAudit(existing ? "Updated supplier" : "Added supplier", supplier.name, `${existing ? "Updated" : "Created"} by ${currentUserName()}`);
+    costEditingSupplierId = "";
+    renderCostHub("suppliers");
+    return;
+  }
+  if (type === "purchaseOrder") {
+    const quantity = financeNumber(values.quantity);
+    const unitCost = financeNumber(values.unitCost);
+    const taxRate = financeNumber(values.taxRate);
+    const subtotal = roundCurrency(quantity * unitCost);
+    const vat = roundCurrency(subtotal * taxRate / 100);
+    const po = { id: `cost-po-${Date.now()}`, number: nextCostNumber("PO", "po"), ...values, quantity, unitCost, taxRate, subtotal, vat, total: roundCurrency(subtotal + vat), status: "Pending approval", requestedBy: currentUserName(), requestedByEmail: currentUser(), createdAt: now, createdBy: currentUserName() };
+    saveCostRows("purchaseOrders", [po, ...costRows("purchaseOrders")]);
+    costAudit("Created purchase order", po.number, `${costSupplierName(po.supplierId)} · ${money.format(po.total)}`);
+    renderCostHub("purchaseOrders");
+    return;
+  }
+  if (type === "bill") {
+    const subtotal = financeNumber(values.subtotal);
+    const taxRate = financeNumber(values.taxRate);
+    const vat = roundCurrency(subtotal * taxRate / 100);
+    const bill = { id: `cost-bill-${Date.now()}`, ...values, subtotal, taxRate, vat, total: roundCurrency(subtotal + vat), status: "Awaiting payment", createdAt: now, createdBy: currentUserName() };
+    saveCostRows("bills", [bill, ...costRows("bills")]);
+    costAudit("Captured supplier bill", bill.billNumber, `${costSupplierName(bill.supplierId)} · ${money.format(bill.total)}`);
+    renderCostHub("bills");
+    return;
+  }
+  if (type === "payment") {
+    const bill = costRows("bills").find((item) => item.id === values.billId);
+    if (!bill) return;
+    const amount = financeNumber(values.amount);
+    const remaining = Math.max(0, financeNumber(bill.total) - costBillPayments(bill.id));
+    if (amount <= 0 || amount > remaining + 0.01) {
+      alert(`Payment cannot exceed the outstanding balance of ${money.format(remaining)}.`);
+      return;
+    }
+    const payment = { id: `cost-payment-${Date.now()}`, ...values, amount, createdAt: now, createdBy: currentUserName() };
+    saveCostRows("payments", [payment, ...costRows("payments")]);
+    costAudit("Recorded supplier payment", bill.billNumber, `${money.format(amount)} · ${values.reference}`);
+    renderCostHub("payments");
+    return;
+  }
+  if (type === "credit") {
+    const credit = { id: `cost-credit-${Date.now()}`, number: nextCostNumber("CN", "credit"), ...values, amount: financeNumber(values.amount), status: "Unallocated", createdAt: now, createdBy: currentUserName() };
+    saveCostRows("credits", [credit, ...costRows("credits")]);
+    costAudit("Added supplier credit note", credit.number, `${costSupplierName(credit.supplierId)} · ${money.format(credit.amount)}`);
+    renderCostHub("credits");
+    return;
+  }
+  if (type === "documents") {
+    const files = Array.from(form.querySelector('[name="files"]')?.files || []);
+    if (!files.length) return;
+    const uploaded = [];
+    for (const file of files) {
+      if (!isSupportedRequestDocument(file)) {
+        alert(`${file.name} is not a supported document type.`);
+        continue;
+      }
+      const metadata = await requestFileMetadata(file);
+      uploaded.push({ ...metadata, id: `cost-document-${Date.now()}-${Math.random().toString(36).slice(2)}`, supplierId: values.supplierId || "", documentType: values.documentType || "Other" });
+    }
+    saveCostRows("documents", [...uploaded, ...costRows("documents")]);
+    costAudit("Uploaded cost documents", `${uploaded.length} file(s)`, values.documentType || "Other");
+    renderCostHub("documents");
+    return;
+  }
+  if (type === "setup") {
+    localStorage.setItem(costStorageKeys.setup, JSON.stringify(values));
+    costAudit("Updated Cost Hub setup", "Setup", `Updated by ${currentUserName()}`);
+    renderCostHub("setup");
+  }
+}
+
+function openCostDocument(id, mode = "view") {
+  const documentRecord = costRows("documents").find((document) => document.id === id);
+  if (!documentRecord?.file_data_base64) return alert("The original file data is not available.");
+  const binary = atob(documentRecord.file_data_base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  const url = URL.createObjectURL(new Blob([bytes], { type: documentRecord.mime_type || "application/octet-stream" }));
+  if (mode === "download") {
+    const anchor = document.createElement("a"); anchor.href = url; anchor.download = documentRecord.file_name; anchor.click();
+  } else window.open(url, "_blank", "noopener,noreferrer");
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+function openCostRequestDocument(requestId, fileId) {
+  const file = costRows("requests").find((request) => request.id === requestId)?.documents?.find((item) => item.id === fileId);
+  if (!file?.file_data_base64) return alert("The original request document is not available.");
+  const binary = atob(file.file_data_base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  const url = URL.createObjectURL(new Blob([bytes], { type: file.mime_type || "application/octet-stream" }));
+  window.open(url, "_blank", "noopener,noreferrer");
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+function processCostRequest(requestId) {
+  if (!isGovernanceAdmin()) return alert("Only an administrator can approve suppliers and process purchase requests.");
+  const requests = costRows("requests");
+  const request = requests.find((item) => item.id === requestId);
+  if (!request) return;
+  let supplier = costRows("suppliers").find((item) => item.id === request.supplierId);
+  if (!supplier) {
+    supplier = {
+      id: `cost-supplier-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      name: request.supplierName, registrationNumber: request.registrationNumber, vatNumber: request.vatNumber,
+      email: request.email, phone: request.phone, address: request.address, bankName: request.bankName,
+      accountNumber: request.accountNumber, branchCode: request.branchCode, paymentTerms: request.paymentTerms,
+      category: request.category || "General", status: "Active", notes: `Created from ${request.number}`,
+      createdAt: new Date().toISOString(), createdBy: currentUserName(),
+    };
+    saveCostRows("suppliers", [supplier, ...costRows("suppliers")]);
+    costAudit("Approved and added supplier", supplier.name, `From purchase request ${request.number}`);
+  }
+  const items = costRequestItems(request);
+  const quantity = items.reduce((sum, item) => sum + financeNumber(item.quantity), 0);
+  const unitCost = items.length === 1 ? financeNumber(items[0].unitCost) : 0;
+  const taxRate = 15;
+  const subtotal = roundCurrency(items.reduce((sum, item) => sum + financeNumber(item.quantity) * financeNumber(item.unitCost), 0));
+  const po = { id: `cost-po-${Date.now()}`, number: nextCostNumber("PO", "po"), supplierId: supplier.id, date: todayInputValue(), dueDate: request.requiredBy || "", project: request.project || "", branch: request.branch || "", description: items.map((item) => item.description).join("; "), items, quantity, unitCost, taxRate, subtotal, vat: roundCurrency(subtotal * taxRate / 100), total: roundCurrency(subtotal * (1 + taxRate / 100)), notes: request.notes || "", requestId: request.id, status: "Pending approval", requestedBy: request.createdBy || currentUserName(), requestedByEmail: request.createdByEmail || "", createdAt: new Date().toISOString(), createdBy: currentUserName() };
+  saveCostRows("purchaseOrders", [po, ...costRows("purchaseOrders")]);
+  saveCostRows("requests", requests.map((item) => item.id === request.id ? { ...item, supplierId: supplier.id, status: "PO created", poId: po.id, processedAt: new Date().toISOString(), processedBy: currentUserName() } : item));
+  costAudit("Processed purchase request", request.number, `${po.number} · ${supplier.name}`);
+  alert(`${po.number} was created from ${request.number}.`);
+  renderCostHub("purchaseOrders");
+}
+
+function exportCostReport() {
+  const rows = [["Supplier", "Bill count", "Total billed", "Paid", "Outstanding"]];
+  costRows("suppliers").forEach((supplier) => {
+    const bills = costRows("bills").filter((bill) => bill.supplierId === supplier.id);
+    const total = bills.reduce((sum, bill) => sum + financeNumber(bill.total), 0);
+    const paid = bills.reduce((sum, bill) => sum + costBillPayments(bill.id), 0);
+    rows.push([supplier.name, bills.length, total.toFixed(2), paid.toFixed(2), Math.max(0, total - paid).toFixed(2)]);
+  });
+  downloadBlobFile(new Blob([rows.map((row) => row.map(csvEscape).join(",")).join("\n")], { type: "text/csv;charset=utf-8" }), `cost-hub-supplier-report-${todayInputValue()}.csv`);
+  costAudit("Exported Cost Hub report", "Supplier cost report", `${rows.length - 1} suppliers`);
+}
+
 function isSuperAdmin() {
-  return currentMember().access === "Super Admin";
+  return isSuperAdminUser();
 }
 
 function isGovernanceAdmin() {
   return ["Admin", "Super Admin"].includes(currentMember().access);
+}
+
+function currentUserCanEditPermissions() {
+  const role = normalizeRole(currentMember().access || currentMember().role || "Read Only");
+  return role === "Super Admin" || role === "Admin" || hasPermission("member_access_management");
 }
 
 function governanceMembers() {
@@ -4375,13 +5378,21 @@ function renderGovernanceUserNotice(memberId) {
   return `<div class="governance-inline-notice ${escapeHtml(governanceUserNotice.tone)}">${escapeHtml(governanceUserNotice.message)}</div>`;
 }
 
+function governanceHubList() {
+  const hubBySlug = new Map(companyHubs.map((hub, index) => [hub.slug, { ...hub, sortOrder: index + 1 }]));
+  storageList(hubsStorageKey).forEach((hub) => {
+    hubBySlug.set(hub.slug, { ...hubBySlug.get(hub.slug), ...hub });
+  });
+  return Array.from(hubBySlug.values())
+    .filter((hub) => ["active", "placeholder"].includes(hub.status || "active"))
+    .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
+}
+
 function governanceHubAccessFor(member, hub) {
   const explicit = storageList(userHubAccessStorageKey).find((access) => access.hubSlug === hub.slug && (access.userId === member.id || normalizeEmail(access.email) === normalizeEmail(member.email)));
   if (explicit) return explicit.status === "active";
-  if (["Admin", "Super Admin"].includes(member.access || member.role || "")) return true;
-  if (hub.slug === "quotation-hub") return memberPermissions(member).has("quotation_hub");
-  if (hub.slug === "finance-age-analysis") return memberPermissions(member).has("finance_age_analysis");
-  return storageList(hubPermissionsStorageKey).some((permission) => permission.hubSlug === hub.slug && permission.accessLevel === (member.access || member.role));
+  if (isSuperAdminUser(member)) return true;
+  return hasExplicitHubPermission(member, permissionKeyForHubSlug(hub.slug));
 }
 
 function recordPermissionHistory(member, hub, previousValue, nextValue) {
@@ -4420,8 +5431,8 @@ function recordPermissionHistory(member, hub, previousValue, nextValue) {
 }
 
 function setGovernanceHubAccess(memberId, hubSlug, canAccessHub, options = {}) {
-  if (!isSuperAdmin()) {
-    alert("Only Super Admin users may change hub access permissions.");
+  if (!currentUserCanEditPermissions()) {
+    alert("You do not have permission to change hub access permissions.");
     return;
   }
   const member = governanceMembers().find((item) => item.id === memberId);
@@ -4718,10 +5729,11 @@ function renderGovernanceDashboard() {
 }
 
 function renderGovernanceHubPermissionChecks(member) {
-  const hubs = storageList(hubsStorageKey).filter((hub) => companyHubBySlug(hub.slug)).sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
+  const hubs = governanceHubList();
+  const canEditPermissions = currentUserCanEditPermissions();
   return hubs.map((hub) => `
     <label>
-      <input type="checkbox" ${governanceHubAccessFor(member, hub) ? "checked" : ""} ${isSuperAdmin() ? "" : "disabled"} data-governance-edit-hub="${escapeHtml(hub.slug)}" />
+      <input type="checkbox" ${governanceHubAccessFor(member, hub) ? "checked" : ""} ${canEditPermissions ? "" : "disabled"} data-governance-edit-hub="${escapeHtml(hub.slug)}" />
       ${escapeHtml(hub.name)}
     </label>
   `).join("");
@@ -4730,7 +5742,8 @@ function renderGovernanceHubPermissionChecks(member) {
 function renderGovernanceEditPanel(member) {
   const roleOptions = ["Super Admin", "Admin", "Quotation Builder", "Sales Representative", "Read Only"];
   const currentStatus = String(member.inviteStatus || member.status || "Active");
-  const statusOptions = isSuperAdmin() ? ["Active", "Pending", "Disabled", "Archived"] : ["Active", "Pending", "Disabled"];
+  const canEditPermissions = currentUserCanEditPermissions();
+  const statusOptions = canEditPermissions ? ["Active", "Pending", "Disabled", "Archived"] : ["Active", "Pending", "Disabled"];
   if (!statusOptions.includes(currentStatus)) statusOptions.push(currentStatus);
   return `
     <div class="governance-edit-panel" data-governance-edit-panel="${escapeHtml(member.id)}">
@@ -4739,10 +5752,10 @@ function renderGovernanceEditPanel(member) {
         <label>Email<input type="email" data-governance-edit-field="email" value="${escapeHtml(member.email || "")}" /></label>
         <label>Position<input data-governance-edit-field="position" value="${escapeHtml(member.position === "-" ? "" : member.position || "")}" /></label>
         <label>Department<input data-governance-edit-field="department" value="${escapeHtml(member.department === "-" ? "" : member.department || "")}" /></label>
-        <label>Status<select data-governance-edit-field="inviteStatus" ${currentStatus === "Archived" && !isSuperAdmin() ? "disabled" : ""}>
+        <label>Status<select data-governance-edit-field="inviteStatus" ${currentStatus === "Archived" && !canEditPermissions ? "disabled" : ""}>
           ${statusOptions.map((status) => `<option value="${status}" ${currentStatus === status ? "selected" : ""}>${status}</option>`).join("")}
         </select></label>
-        <label>Role<select data-governance-edit-field="access" ${isSuperAdmin() ? "" : "disabled"}>
+        <label>Role<select data-governance-edit-field="access" ${canEditPermissions ? "" : "disabled"}>
           ${roleOptions.map((role) => `<option value="${role}" ${normalizeRole(member.access || member.role || "Read Only") === role ? "selected" : ""}>${role}</option>`).join("")}
         </select></label>
       </div>
@@ -4807,17 +5820,18 @@ function renderGovernanceUsers() {
 
 function renderGovernanceMatrix() {
   const members = governanceMembers();
-  const hubs = storageList(hubsStorageKey).filter((hub) => companyHubBySlug(hub.slug)).sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
+  const hubs = governanceHubList();
+  const canEditPermissions = currentUserCanEditPermissions();
   return `
     <section class="finance-card">
       <div class="panel-heading"><div><p class="eyebrow">Hub access control</p><h2>Hub Access Matrix</h2></div><button class="secondary-btn" data-governance-copy-permissions>Copy permissions</button></div>
-      <p class="finance-note">Only Super Admin users may change hub access. Every change is written to permission history and the full audit trail.</p>
+      <p class="finance-note">Hub access checkboxes can be changed by users with member access management permission. Every change is written to permission history and the full audit trail.</p>
       <div class="governance-matrix-wrap">
         <table class="governance-matrix">
           <thead><tr><th>User Name</th>${hubs.map((hub) => `<th>${escapeHtml(hub.name)}</th>`).join("")}</tr></thead>
           <tbody>${members.map((member) => `<tr><th>${escapeHtml(member.name)}</th>${hubs.map((hub) => {
             const checked = governanceHubAccessFor(member, hub);
-            return `<td><input type="checkbox" ${checked ? "checked" : ""} ${isSuperAdmin() ? "" : "disabled"} data-governance-hub-access data-member-id="${escapeHtml(member.id)}" data-hub-slug="${escapeHtml(hub.slug)}" /></td>`;
+            return `<td><input type="checkbox" ${checked ? "checked" : ""} ${canEditPermissions ? "" : "disabled"} data-governance-hub-access data-member-id="${escapeHtml(member.id)}" data-hub-slug="${escapeHtml(hub.slug)}" /></td>`;
           }).join("")}</tr>`).join("")}</tbody>
         </table>
       </div>
@@ -4977,10 +5991,26 @@ function financeTabFromHash() {
   return financeTabs.some((item) => item.key === key) ? key : activeFinanceTab;
 }
 
+function costTabFromHash() {
+  const key = window.location.hash.slice(1);
+  return costTabs.some((item) => item.key === key) ? key : activeCostTab;
+}
+
 function renderPortal() {
   const routeHub = companyHubBySlug(currentCompanyHubSlug());
+  const member = currentMember();
+  const superAdminBypass = isSuperAdminUser(member);
+  const allowedHubs = getAllowedHubs(member);
+  logAuthDebug("renderPortal:start", member, allowedHubs);
   if (routeHub && routeHub.slug !== "quotation-hub") {
-    if (!hasHubAccess(routeHub)) {
+    if (!canAccessCompanyHub(member, routeHub.slug)) {
+      console.warn("Hub access denied", {
+        userRole: normalizeRole(member.access || member.role),
+        hub: routeHub.slug,
+        permissions: Array.from(memberPermissions(member)),
+        allowedHubs,
+        superAdminBypass,
+      });
       document.body.classList.remove("finance-hub-active");
       portalHubGrid.innerHTML = `<p class="empty-state">Access denied</p>`;
       return;
@@ -4988,6 +6018,11 @@ function renderPortal() {
     if (routeHub.slug === "finance-age-analysis") {
       document.body.classList.add("finance-hub-active");
       renderFinanceHub(financeTabFromHash());
+      return;
+    }
+    if (routeHub.slug === "cost-hub") {
+      document.body.classList.add("finance-hub-active");
+      renderCostHub(costTabFromHash());
       return;
     }
     if (routeHub.slug === "administration-governance") {
@@ -5004,7 +6039,7 @@ function renderPortal() {
           <strong>${escapeHtml(routeHub.name)}</strong>
           <p>${escapeHtml(routeHub.description)} This hub has been reserved and will be built out in a future phase.</p>
           <ul class="hub-feature-list">
-            ${routeHub.features.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("")}
+            ${(routeHub.features || []).map((feature) => `<li>${escapeHtml(feature)}</li>`).join("")}
           </ul>
         </div>
         <button class="secondary-btn" type="button" onclick="window.close()">Close tab</button>
@@ -5014,13 +6049,36 @@ function renderPortal() {
   }
   document.body.classList.remove("finance-hub-active");
 
-  const hubs = storageList(hubsStorageKey)
-    .filter((hub) => companyHubBySlug(hub.slug))
+  const storedHubs = storageList(hubsStorageKey);
+  const hubBySlug = new Map(companyHubs.map((hub, index) => [hub.slug, { ...hub, sortOrder: index + 1 }]));
+  storedHubs.forEach((hub) => {
+    hubBySlug.set(hub.slug, { ...hubBySlug.get(hub.slug), ...hub });
+  });
+  const hubs = Array.from(hubBySlug.values())
+    .filter((hub) => ["active", "placeholder"].includes(hub.status || "active"))
     .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0))
-    .filter((hub) => hasHubAccess(hub));
+    .filter((hub) => superAdminBypass || allowedHubs.includes(hub.slug));
+
+  console.info("Portal hub loading", {
+    userRole: normalizeRole(member.access || member.role),
+    permissionsApplied: Array.from(memberPermissions(member)),
+    superAdminBypass,
+    allowedHubs,
+    hubsLoaded: hubs.map((hub) => hub.slug),
+  });
+
+  const authDebugPanel = `
+    <div class="portal-auth-debug">
+      <strong>AUTH DEBUG</strong>
+      <span>Email: ${escapeHtml(member.email || "-")}</span>
+      <span>Role: ${escapeHtml(member.role || member.access || "-")}</span>
+      <span>isSuperAdmin: ${escapeHtml(String(superAdminBypass))}</span>
+      <span>Allowed hubs: ${escapeHtml(allowedHubs.join(", ") || "-")}</span>
+    </div>
+  `;
 
   portalHubGrid.innerHTML = hubs.length
-    ? hubs.map((hub) => `
+    ? authDebugPanel + hubs.map((hub) => `
       <article class="hub-card portal-module-card" data-open-hub="${escapeHtml(hub.slug)}">
         <div class="module-icon" aria-hidden="true">${moduleIcon(hub.icon)}</div>
         <div>
@@ -5028,13 +6086,13 @@ function renderPortal() {
           <strong>${escapeHtml(hub.name)}</strong>
           <p>${escapeHtml(hub.description)}</p>
           <ul class="hub-feature-list">
-            ${hub.features.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("")}
+            ${(hub.features || []).map((feature) => `<li>${escapeHtml(feature)}</li>`).join("")}
           </ul>
         </div>
         <button class="primary-btn" type="button" data-open-hub="${escapeHtml(hub.slug)}">Open hub</button>
       </article>
     `).join("")
-    : `<p class="empty-state">No hub access has been assigned. Please contact an administrator.</p>`;
+    : `${authDebugPanel}<p class="empty-state">No hub access has been assigned. Please contact an administrator.</p>`;
 }
 
 function exportDashboardCsv(type = "all") {
@@ -10769,6 +11827,7 @@ loginForm.addEventListener("submit", async (event) => {
     access: user.role,
     role: user.role,
     permissions: Array.isArray(user.permissions) ? user.permissions : member?.permissions || [],
+    permissionsExplicit: Boolean(user.permissionsExplicit),
     hasLoggedIn: true,
     inviteStatus: "Active",
     passwordHash: undefined,
@@ -10983,8 +12042,10 @@ async function openHub(hubSlug, targetSection = "dashboard") {
     window.location.hash = "portal";
     return;
   }
-  const hub = storageList(hubsStorageKey).find((item) => item.slug === hubSlug);
-  if (!hasHubAccess(hub)) {
+  const hub = companyHubBySlug(hubSlug);
+  const member = currentMember();
+  logAuthDebug(`openHub:${hubSlug}`, member, getAllowedHubs(member));
+  if (!hub || !canAccessCompanyHub(member, hubSlug)) {
     alert("Access denied");
     return;
   }
@@ -11037,8 +12098,10 @@ function openPlaceholderHub(hubSlug) {
     window.location.hash = "portal";
     return;
   }
-  const hub = storageList(hubsStorageKey).find((item) => item.slug === hubSlug);
-  if (!hasHubAccess(hub)) {
+  const hub = companyHubBySlug(hubSlug);
+  const member = currentMember();
+  logAuthDebug(`openPlaceholderHub:${hubSlug}`, member, getAllowedHubs(member));
+  if (!hub || !canAccessCompanyHub(member, hubSlug)) {
     alert("Access denied");
     return;
   }
@@ -11063,11 +12126,160 @@ portalHubGrid.addEventListener("click", async (event) => {
     renderFinanceHub(financeTab.dataset.financeTab);
     return;
   }
+  const costTab = event.target.closest("[data-cost-tab]");
+  if (costTab) {
+    window.location.hash = costTab.dataset.costTab;
+    renderCostHub(costTab.dataset.costTab);
+    return;
+  }
+  const dashboardMonthDirection = event.target.closest("[data-cost-dashboard-month]")?.dataset.costDashboardMonth;
+  if (dashboardMonthDirection) {
+    const [year, month] = costDashboardFilters.month.split("-").map(Number);
+    const date = new Date(year, month - 1 + (dashboardMonthDirection === "prev" ? -1 : 1), 1);
+    costDashboardFilters.month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    renderCostHub("dashboard");
+    return;
+  }
+  if (event.target.closest("[data-cost-add-request-line]")) {
+    const form = event.target.closest('[data-cost-form="request"], [data-cost-form="rejectedPo"]');
+    form?.querySelector("[data-cost-request-lines]")?.insertAdjacentHTML("beforeend", costRequestItemRow());
+    if (form) updateCostRequestTotals(form);
+    return;
+  }
+  const removeRequestLine = event.target.closest("[data-cost-remove-request-line]");
+  if (removeRequestLine) {
+    const form = removeRequestLine.closest('[data-cost-form="request"], [data-cost-form="rejectedPo"]');
+    if (form?.querySelectorAll("[data-cost-request-line]").length > 1) removeRequestLine.closest("[data-cost-request-line]")?.remove();
+    if (form) updateCostRequestTotals(form);
+    return;
+  }
+  const requestPoId = event.target.closest("[data-cost-request-po]")?.dataset.costRequestPo;
+  if (requestPoId) { processCostRequest(requestPoId); return; }
+  const requestDocument = event.target.closest("[data-cost-request-document]");
+  if (requestDocument) { openCostRequestDocument(requestDocument.dataset.costRequestDocument, requestDocument.dataset.fileId); return; }
+  const dashboardEditEntityId = event.target.closest("[data-cost-dashboard-edit-entity]")?.dataset.costDashboardEditEntity;
+  if (dashboardEditEntityId) { costEditingEntityId = dashboardEditEntityId; renderCostHub("entities"); return; }
+  const entityOverviewCard = event.target.closest(".cost-entity-card");
+  if (entityOverviewCard) { costSelectedEntityOverview = entityOverviewCard.querySelector("h3")?.textContent.trim() || ""; costEntityOverviewTab = "paid"; renderCostHub("dashboard"); return; }
+  if (event.target.closest("[data-cost-entity-overview-back]")) { costSelectedEntityOverview = ""; renderCostHub("dashboard"); return; }
+  const entityDetailTab = event.target.closest("[data-cost-entity-detail-tab]")?.dataset.costEntityDetailTab;
+  if (entityDetailTab) { costEntityOverviewTab = entityDetailTab; renderCostHub("dashboard"); return; }
+  const openApprovalId = event.target.closest("[data-cost-open-approval]")?.dataset.costOpenApproval;
+  if (openApprovalId) { costSelectedApprovalId = openApprovalId; renderCostHub("approvals"); return; }
+  if (event.target.closest("[data-cost-close-approval]")) { costSelectedApprovalId = ""; renderCostHub("approvals"); return; }
+  const approvePoId = event.target.closest("[data-cost-approve-po]")?.dataset.costApprovePo;
+  if (approvePoId) {
+    if (!isGovernanceAdmin()) return alert("Only an administrator can approve purchase orders.");
+    const now = new Date().toISOString();
+    const orders = costRows("purchaseOrders").map((po) => po.id === approvePoId ? { ...po, status: "Approved", rejectionReason: "", approvedAt: now, approvedBy: currentUserName() } : po);
+    const changed = orders.find((po) => po.id === approvePoId);
+    saveCostRows("purchaseOrders", orders);
+    if (changed?.requestId) saveCostRows("requests", costRows("requests").map((request) => request.id === changed.requestId ? { ...request, status: "PO approved", updatedAt: now } : request));
+    costAudit("Approved purchase order", changed?.number || approvePoId, `Approved by ${currentUserName()}`);
+    renderCostHub("approvals");
+    return;
+  }
+  const rejectPoId = event.target.closest("[data-cost-reject-po]")?.dataset.costRejectPo;
+  if (rejectPoId) {
+    if (!isGovernanceAdmin()) return alert("Only an administrator can reject purchase orders.");
+    const reason = prompt("Please enter the reason for rejecting this purchase order:", "");
+    if (!reason?.trim()) { alert("A rejection reason is required."); return; }
+    const now = new Date().toISOString();
+    const orders = costRows("purchaseOrders").map((po) => po.id === rejectPoId ? { ...po, status: "Rejected", rejectionReason: reason.trim(), rejectedAt: now, rejectedBy: currentUserName() } : po);
+    const changed = orders.find((po) => po.id === rejectPoId);
+    saveCostRows("purchaseOrders", orders);
+    if (changed?.requestId) saveCostRows("requests", costRows("requests").map((request) => request.id === changed.requestId ? { ...request, status: "PO rejected", rejectionReason: reason.trim(), updatedAt: now } : request));
+    costAudit("Rejected purchase order", changed?.number || rejectPoId, reason.trim());
+    renderCostHub("approvals");
+    return;
+  }
   const governanceTab = event.target.closest("[data-governance-tab]");
   if (governanceTab) {
     window.location.hash = governanceTab.dataset.governanceTab;
     if (governanceTab.dataset.governanceTab === "security") await loadGovernancePasswordResetRequests();
     renderGovernanceHub(governanceTab.dataset.governanceTab);
+    return;
+  }
+  if (event.target.closest("[data-cost-clear-request-filters]")) {
+    costRequestFilters = { status: "", requester: "", supplier: "", date: "", entity: "" };
+    renderCostHub("requests");
+    return;
+  }
+  if (event.target.closest("[data-cost-clear-approval-filters]")) {
+    costApprovalFilters = { status: "", requester: "", supplier: "", date: "", entity: "" };
+    renderCostHub("approvals");
+    return;
+  }
+  if (event.target.closest("[data-cost-download-entity-template]")) {
+    const rows = [["Entity", "Current Balance"], ...costRows("entities").filter((entity) => entity.status !== "Archived").map((entity) => [entity.name, financeNumber(entity.currentBalance).toFixed(2)])];
+    downloadBlobFile(new Blob([rows.map((row) => row.map(csvEscape).join(",")).join("\n")], { type: "text/csv;charset=utf-8" }), `entity-balance-template-${todayInputValue()}.csv`);
+    return;
+  }
+  const editEntityId = event.target.closest("[data-cost-edit-entity]")?.dataset.costEditEntity;
+  if (editEntityId) { costEditingEntityId = editEntityId; renderCostHub("entities"); portalHubGrid.querySelector('[data-cost-form="entity"] [name="name"]')?.focus(); return; }
+  if (event.target.closest("[data-cost-cancel-entity-edit]")) { costEditingEntityId = ""; renderCostHub("entities"); return; }
+  const archiveEntityId = event.target.closest("[data-cost-archive-entity]")?.dataset.costArchiveEntity;
+  if (archiveEntityId) {
+    const entities = costRows("entities").map((entity) => entity.id === archiveEntityId ? { ...entity, status: entity.status === "Archived" ? "Active" : "Archived", updatedAt: new Date().toISOString(), updatedBy: currentUserName() } : entity);
+    const changed = entities.find((entity) => entity.id === archiveEntityId);
+    saveCostRows("entities", entities);
+    costAudit(changed.status === "Archived" ? "Archived entity" : "Restored entity", changed.name);
+    if (costEditingEntityId === archiveEntityId) costEditingEntityId = "";
+    renderCostHub("entities");
+    return;
+  }
+  const editSupplierId = event.target.closest("[data-cost-edit-supplier]")?.dataset.costEditSupplier;
+  if (editSupplierId) {
+    costEditingSupplierId = editSupplierId;
+    renderCostHub("suppliers");
+    portalHubGrid.querySelector('[data-cost-form="supplier"]')?.scrollIntoView({ behavior: "smooth", block: "start" });
+    portalHubGrid.querySelector('[data-cost-form="supplier"] [name="name"]')?.focus();
+    return;
+  }
+  if (event.target.closest("[data-cost-cancel-supplier-edit]")) {
+    costEditingSupplierId = "";
+    renderCostHub("suppliers");
+    return;
+  }
+  const archiveSupplierId = event.target.closest("[data-cost-archive-supplier]")?.dataset.costArchiveSupplier;
+  if (archiveSupplierId) {
+    const suppliers = costRows("suppliers").map((supplier) => supplier.id === archiveSupplierId ? { ...supplier, status: supplier.status === "Archived" ? "Active" : "Archived", updatedAt: new Date().toISOString(), updatedBy: currentUserName() } : supplier);
+    const changed = suppliers.find((supplier) => supplier.id === archiveSupplierId);
+    saveCostRows("suppliers", suppliers);
+    costAudit(changed.status === "Archived" ? "Archived supplier" : "Restored supplier", changed.name);
+    if (costEditingSupplierId === archiveSupplierId) costEditingSupplierId = "";
+    renderCostHub("suppliers");
+    return;
+  }
+  const poStatusId = event.target.closest("[data-cost-po-status]")?.dataset.costPoStatus;
+  if (poStatusId) {
+    const currentPo = costRows("purchaseOrders").find((po) => po.id === poStatusId);
+    if (!currentPo || !["Approved", "Issued", "Completed", "Cancelled"].includes(currentPo.status)) return alert("This purchase order must be handled through PO Approvals first.");
+    const status = prompt("Purchase order status: Approved, Issued, Completed, Cancelled", currentPo.status || "Approved");
+    if (!status) return;
+    if (!["Approved", "Issued", "Completed", "Cancelled"].includes(status)) return alert("Please use one of the listed purchase order statuses.");
+    const orders = costRows("purchaseOrders").map((po) => po.id === poStatusId ? { ...po, status, updatedAt: new Date().toISOString(), updatedBy: currentUserName() } : po);
+    const changed = orders.find((po) => po.id === poStatusId);
+    saveCostRows("purchaseOrders", orders);
+    costAudit("Updated purchase order status", changed.number, status);
+    renderCostHub("purchaseOrders");
+    return;
+  }
+  if (event.target.closest("[data-cost-export-report]")) {
+    exportCostReport();
+    return;
+  }
+  const viewCostDocumentId = event.target.closest("[data-cost-view-document]")?.dataset.costViewDocument;
+  if (viewCostDocumentId) { openCostDocument(viewCostDocumentId, "view"); return; }
+  const downloadCostDocumentId = event.target.closest("[data-cost-download-document]")?.dataset.costDownloadDocument;
+  if (downloadCostDocumentId) { openCostDocument(downloadCostDocumentId, "download"); return; }
+  const removeCostDocumentId = event.target.closest("[data-cost-remove-document]")?.dataset.costRemoveDocument;
+  if (removeCostDocumentId) {
+    const documentRecord = costRows("documents").find((document) => document.id === removeCostDocumentId);
+    if (!documentRecord || !confirm(`Remove ${documentRecord.file_name}?`)) return;
+    saveCostRows("documents", costRows("documents").filter((document) => document.id !== removeCostDocumentId));
+    costAudit("Removed cost document", documentRecord.file_name);
+    renderCostHub("documents");
     return;
   }
   if (event.target.closest("[data-governance-refresh-resets]")) {
@@ -11142,7 +12354,7 @@ portalHubGrid.addEventListener("click", async (event) => {
       changes.deactivatedAt = "";
       changes.deactivatedBy = "";
     }
-    if (isSuperAdmin()) {
+    if (currentUserCanEditPermissions()) {
       const nextPermissions = new Set(Array.isArray(member.permissions) ? member.permissions : Array.from(memberPermissions(member)));
       panel.querySelectorAll("[data-governance-edit-hub]").forEach((checkbox) => {
         const permissionKey = permissionDefinitions.find((permission) => permission.hubSlug === checkbox.dataset.governanceEditHub)?.key || checkbox.dataset.governanceEditHub.replace(/-/g, "_");
@@ -11224,8 +12436,8 @@ portalHubGrid.addEventListener("click", async (event) => {
     return;
   }
   if (event.target.closest("[data-governance-copy-permissions]")) {
-    if (!isSuperAdmin()) {
-      alert("Only Super Admin users may copy permissions.");
+    if (!currentUserCanEditPermissions()) {
+      alert("You do not have permission to copy permissions.");
       return;
     }
     const fromEmail = prompt("Copy permissions from user email:");
@@ -11236,7 +12448,7 @@ portalHubGrid.addEventListener("click", async (event) => {
       alert("Could not find one or both users.");
       return;
     }
-    storageList(hubsStorageKey).filter((hub) => companyHubBySlug(hub.slug)).forEach((hub) => {
+    governanceHubList().forEach((hub) => {
       setGovernanceHubAccess(toMember.id, hub.slug, governanceHubAccessFor(fromMember, hub));
     });
     writeAudit("Copied hub permissions", `${fromMember.email} -> ${toMember.email}`, "Administration & Governance", toMember.email, `Copied by ${currentUserName()}`);
@@ -11255,11 +12467,13 @@ portalHubGrid.addEventListener("click", async (event) => {
       const from = prompt("From date (YYYY-MM-DD):", financeOpeningView.from || todayInputValue());
       const to = prompt("To date (YYYY-MM-DD):", financeOpeningView.to || todayInputValue());
       if (!from || !to) return;
+      localStorage.setItem(financeStorageKeys.openingHistoricalExpanded, "true");
       financeOpeningView = { mode, from, to };
-      financeAudit("Date range viewed", "Opening Balances", `${from} to ${to}`);
+      financeAudit("Date range viewed", "Current Balances", `${from} to ${to}`);
     } else {
+      localStorage.setItem(financeStorageKeys.openingHistoricalExpanded, mode === "historical" ? "true" : "false");
       financeOpeningView = { mode, from: "", to: "" };
-      financeAudit("Date range viewed", "Opening Balances", mode === "current" ? "Current day only" : "Previous days");
+      financeAudit("Date range viewed", "Current Balances", mode === "historical" ? "All historical balances shown" : "Collapsed to previous day and current day");
     }
     renderFinanceHub("opening");
     return;
@@ -11376,7 +12590,58 @@ portalHubGrid.addEventListener("click", async (event) => {
   openPlaceholderHub(slug);
 });
 
+portalHubGrid.addEventListener("submit", async (event) => {
+  const costForm = event.target.closest("[data-cost-form]");
+  if (!costForm) return;
+  event.preventDefault();
+  await handleCostFormSubmit(costForm);
+});
+
+portalHubGrid.addEventListener("input", (event) => {
+  if (event.target.matches("[data-cost-request-filter]")) {
+    costRequestFilters[event.target.dataset.costRequestFilter] = event.target.value;
+    applyCostRequestFilters();
+    return;
+  }
+  if (event.target.matches("[data-cost-approval-filter]")) {
+    costApprovalFilters[event.target.dataset.costApprovalFilter] = event.target.value;
+    applyCostApprovalFilters();
+    return;
+  }
+  if (!event.target.matches('[name="lineQuantity"], [name="lineUnitCost"]')) return;
+  const form = event.target.closest('[data-cost-form="request"], [data-cost-form="rejectedPo"]');
+  if (form) updateCostRequestTotals(form);
+});
+
 portalHubGrid.addEventListener("change", async (event) => {
+  if (event.target.matches("[data-cost-approval-filter]")) {
+    costApprovalFilters[event.target.dataset.costApprovalFilter] = event.target.value;
+    applyCostApprovalFilters();
+    return;
+  }
+  if (event.target.matches("[data-cost-request-filter]")) {
+    costRequestFilters[event.target.dataset.costRequestFilter] = event.target.value;
+    applyCostRequestFilters();
+    return;
+  }
+  if (event.target.matches("[data-cost-entity-balance-upload]")) {
+    await importCostEntityBalances(event.target.files?.[0]);
+    event.target.value = "";
+    return;
+  }
+  if (event.target.matches("[data-cost-dashboard-filter]")) {
+    costDashboardFilters[event.target.dataset.costDashboardFilter] = event.target.value;
+    renderCostHub("dashboard");
+    return;
+  }
+  if (event.target.matches("[data-cost-request-supplier]")) {
+    const form = event.target.closest('[data-cost-form="request"]');
+    const supplier = costRows("suppliers").find((item) => item.status !== "Archived" && item.name.trim().toLowerCase() === event.target.value.trim().toLowerCase());
+    const fields = ["registrationNumber", "vatNumber", "email", "phone", "category", "address", "bankName", "accountNumber", "branchCode", "paymentTerms"];
+    form.elements.supplierId.value = supplier?.id || "";
+    fields.forEach((name) => { form.elements[name].value = supplier?.[name] || (name === "paymentTerms" ? "30 days" : ""); form.elements[name].readOnly = Boolean(supplier) && form.elements[name].tagName !== "SELECT"; form.elements[name].disabled = false; });
+    return;
+  }
   if (event.target.matches("[data-governance-hub-access]")) {
     setGovernanceHubAccess(event.target.dataset.memberId, event.target.dataset.hubSlug, event.target.checked);
     return;
@@ -11526,8 +12791,13 @@ const initialSection = ["portal", "projections", "dashboard", "builder", "guardi
 handlePasswordResetTokenFromUrl().then((handledReset) => {
   if (handledReset) return true;
   return consumeHubSsoTokenIfPresent();
-}).then((handledSso) => {
+}).then(async (handledSso) => {
   if (handledSso) return;
+  const refreshed = await refreshBackendSession();
+  if (refreshed) {
+    loginScreen.hidden = true;
+    applyPermissions();
+  }
   if (isQuotationHubRouteOnLoad && isSignedIn()) {
     loginScreen.hidden = true;
     applyPermissions();
@@ -11540,6 +12810,10 @@ handlePasswordResetTokenFromUrl().then((handledReset) => {
     applyPermissions();
     showSection("portal");
   } else if (hasSsoParamOnLoad && isSignedIn()) {
+    loginScreen.hidden = true;
+    applyPermissions();
+    showSection("portal");
+  } else if (isSignedIn()) {
     loginScreen.hidden = true;
     applyPermissions();
     showSection("portal");

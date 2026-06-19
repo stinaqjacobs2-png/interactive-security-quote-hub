@@ -36,7 +36,18 @@ const permissionKeys = [
   "supplier_prices",
   "member_access_management",
   "quotation_hub",
+  "cost_hub",
   "finance_age_analysis",
+  "fleet_hub",
+  "living_resources",
+  "accounts_sales",
+  "hr_hub",
+  "technical_maintenance",
+  "payroll_hub",
+  "overtime_hub",
+  "control_room_it",
+  "uniforms_stores",
+  "employee_files",
   "administration_governance",
   "sales_quotation_requests",
 ];
@@ -57,14 +68,88 @@ const roleDefaults = {
   "Read Only": ["quotation_hub", "dashboard", "quote_library", "reports"],
 };
 
+const ALL_HUBS = [
+  "quotation-hub",
+  "cost-hub",
+  "finance-age-analysis",
+  "fleet",
+  "living-resources",
+  "accounts-sales",
+  "hr",
+  "technical-maintenance",
+  "payroll",
+  "overtime",
+  "control-room-it",
+  "uniforms-stores",
+  "employee-files",
+  "administration-governance",
+];
+
+function hubPermissionKey(hubId = "") {
+  return {
+    "quotation-hub": "quotation_hub",
+    quotation: "quotation_hub",
+    "cost-hub": "cost_hub",
+    cost: "cost_hub",
+    "finance-age-analysis": "finance_age_analysis",
+    "finance-balances": "finance_age_analysis",
+    fleet: "fleet_hub",
+    "living-resources": "living_resources",
+    "accounts-sales": "accounts_sales",
+    hr: "hr_hub",
+    "technical-maintenance": "technical_maintenance",
+    payroll: "payroll_hub",
+    overtime: "overtime_hub",
+    "control-room-it": "control_room_it",
+    "uniforms-stores": "uniforms_stores",
+    "employee-files": "employee_files",
+    "administration-governance": "administration_governance",
+  }[hubId] || "";
+}
+
+function isSuperAdminAuth(user = {}) {
+  return normalizeRole(user.role || user.access) === "Super Admin"
+    || (normalizeRole(user.role || user.access) === "Admin" && user.isSuperAdmin === true);
+}
+
+function getAllowedHubsAuth(user = {}) {
+  if (isSuperAdminAuth(user)) return [...ALL_HUBS];
+  if (Array.isArray(user.allowedHubs)) return user.allowedHubs;
+  const permissions = sanitizePermissions(user.permissions);
+  return ALL_HUBS.filter((hubId) => permissions.includes(hubPermissionKey(hubId)));
+}
+
+function canAccessHubAuth(user = {}, hubId = "") {
+  if (isSuperAdminAuth(user)) return true;
+  return getAllowedHubsAuth(user).includes(hubId);
+}
+
+function logAuthDebug(context, user = {}) {
+  console.log("AUTH DEBUG", {
+    context,
+    email: user.email,
+    role: user.role || user.access,
+    isSuperAdmin: isSuperAdminAuth(user),
+    allowedHubs: getAllowedHubsAuth(user),
+  });
+}
+
 function normalizeRole(role = "") {
   const value = String(role || "").trim();
+  const normalized = value.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
   const aliases = {
     "Full Access Member": "Admin",
     "Quotation Builder Only": "Quotation Builder",
     Member: "Sales Representative",
+    "super admin": "Super Admin",
+    administrator: "Admin",
+    admin: "Admin",
+    "quotation builder": "Quotation Builder",
+    "sales representative": "Sales Representative",
+    member: "Sales Representative",
+    "read only": "Read Only",
   };
-  return aliases[value] || (roleDefaults[value] ? value : "Read Only");
+  return aliases[value] || aliases[normalized] || (roleDefaults[value] ? value : "Read Only");
 }
 
 function defaultPermissionsForRole(role) {
@@ -190,7 +275,7 @@ function normalizeEmail(value = "") {
 
 function publicUser(member) {
   const role = normalizeRole(member.role || member.access || "Read Only");
-  const hasExplicitPermissions = Boolean(member.permissionsExplicit) || (Array.isArray(member.permissions) && member.permissions.length > 0);
+  const hasExplicitPermissions = Boolean(member.permissionsExplicit);
   const permissions = hasExplicitPermissions ? sanitizePermissions(member.permissions) : defaultPermissionsForRole(role);
   return {
     userId: member.id,
@@ -226,12 +311,19 @@ function publicMemberRecord(member) {
 
 function persistentPermissionsForMember(member) {
   const role = normalizeRole(member.role || member.access || "Read Only");
+  if (role === "Super Admin") {
+    return {
+      role,
+      permissions: defaultPermissionsForRole(role),
+      permissionsExplicit: false,
+    };
+  }
   const explicit = Boolean(member.permissionsExplicit);
   const permissions = sanitizePermissions(member.permissions);
   return {
     role,
-    permissions: explicit ? permissions : (permissions.length ? permissions : defaultPermissionsForRole(role)),
-    permissionsExplicit: explicit || permissions.length > 0,
+    permissions: explicit ? permissions : defaultPermissionsForRole(role),
+    permissionsExplicit: explicit,
   };
 }
 
@@ -671,13 +763,10 @@ function saveSession(user) {
 function canAccessHub(session, hubSlug) {
   if (!session) return false;
   if (session.mustChangePassword) return false;
-  const hubPermissionMap = {
-    "quotation-hub": "quotation_hub",
-    "finance-age-analysis": "finance_age_analysis",
-    "administration-governance": "administration_governance",
-  };
-  const permissionKey = hubPermissionMap[hubSlug];
-  return permissionKey ? hasPermission(session, permissionKey) : ["Super Admin", "Admin"].includes(normalizeRole(session.role || session.access));
+  logAuthDebug(`canAccessHub:${hubSlug}`, session);
+  const allowed = canAccessHubAuth(session, hubSlug);
+  console.log(`[hub-access] user=${session.email || session.userId || "-"} role=${normalizeRole(session.role || session.access)} hub=${hubSlug} allowed=${allowed}`);
+  return allowed;
 }
 
 function hasPermission(session, permissionKey) {
@@ -831,36 +920,84 @@ month_lookup = {
   "JANUARY": 1, "FEBRUARY": 2, "MARCH": 3, "APRIL": 4, "MAY": 5, "JUNE": 6,
   "JULY": 7, "AUGUST": 8, "SEPTEMBER": 9, "OCTOBER": 10, "NOVEMBER": 11, "DECEMBER": 12,
 }
-wb = load_workbook(path, data_only=True)
+wb = load_workbook(path, data_only=True, read_only=True)
 ws = wb["BALANSE"] if "BALANSE" in wb.sheetnames else wb[wb.sheetnames[0]]
+balanse_values = list(ws.iter_rows(values_only=True))
+
+def cell_value(values, row, col):
+  if row < 1 or col < 1 or row > len(values):
+    return None
+  row_values = values[row - 1]
+  if col > len(row_values):
+    return None
+  return row_values[col - 1]
 
 def slug(value):
   return re.sub(r"(^-|-$)", "", re.sub(r"[^A-Z0-9]+", "-", str(value).upper())).strip("-")
 
-def parse_date(value):
+def number_value(value):
   if value is None:
-    return ""
+    return 0
+  if isinstance(value, (int, float)):
+    return float(value)
+  text = str(value).strip()
+  if text.startswith("#"):
+    return 0
+  text = re.sub(r"[^0-9,.-]", "", text).replace(",", ".")
+  try:
+    return float(text) if text else 0
+  except Exception:
+    return 0
+
+def parse_date_text(value):
+  if value is None:
+    return None
   if hasattr(value, "date"):
-    return value.date().isoformat()
+    return value.date()
   text = str(value).strip().upper()
   parts = text.split()
   if len(parts) >= 2 and parts[0].isdigit():
     month = month_lookup.get(parts[1])
     if month:
-      return datetime(year, month, int(parts[0])).date().isoformat()
-  return ""
+      explicit_year = None
+      if len(parts) >= 3 and parts[2].isdigit():
+        explicit_year = int(parts[2])
+      return {"day": int(parts[0]), "month": month, "year": explicit_year}
+  return None
+
+raw_date_cols = []
+max_balanse_col = max((len(row) for row in balanse_values), default=0)
+for col in range(2, max_balanse_col + 1):
+  parsed = parse_date_text(cell_value(balanse_values, 1, col))
+  if parsed:
+    raw_date_cols.append((col, parsed))
 
 date_cols = []
-for col in range(2, ws.max_column + 1):
-  date_value = parse_date(ws.cell(1, col).value)
-  if date_value:
-    date_cols.append((col, date_value))
+first_explicit_year = next((item[1]["year"] for item in raw_date_cols if isinstance(item[1], dict) and item[1].get("year")), year)
+current_year = first_explicit_year
+previous_month = None
+for col, parsed in raw_date_cols:
+  if not isinstance(parsed, dict):
+    current_year = parsed.year
+    previous_month = parsed.month
+    date_cols.append((col, parsed.isoformat()))
+    continue
+  if parsed.get("year"):
+    current_year = parsed["year"]
+  elif current_year is None:
+    current_year = first_explicit_year
+  elif previous_month and parsed["month"] < previous_month and previous_month >= 11:
+    current_year += 1
+  previous_month = parsed["month"]
+  date_cols.append((col, datetime(current_year, parsed["month"], parsed["day"]).date().isoformat()))
 
-section_words = {"OPERATING COMPANIES", "PROPERTY COMPANIES", "LOAN COMPANIES", "BONDS", "NEDBANK PRIVATE", "DISCOVERY CURRENT", "FNB CURRENT", "ABSA BUSINESS", "ABSA PRIVATE", "ASCOGYSTIX"}
+section_words = {"OPERATING COMPANIES", "PROPERTY COMPANIES", "LOAN COMPANIES", "BONDS", "NEDBANK PRIVATE", "DISCOVERY", "FNB", "ABSA BUSINESS", "ABSA PRIVATE", "SALARY COMPANIES"}
 rows = []
+debit_order_budget = []
 now = datetime.utcnow().isoformat() + "Z"
-for row_index in range(2, ws.max_row + 1):
-  name = ws.cell(row_index, 1).value
+current_section = ""
+for row_index in range(2, len(balanse_values) + 1):
+  name = cell_value(balanse_values, row_index, 1)
   if name is None:
     continue
   name = str(name).strip()
@@ -872,13 +1009,14 @@ for row_index in range(2, ws.max_row + 1):
   row_type = "account"
   if upper in section_words:
     row_type = "section"
+    current_section = name
   elif "GRAND TOTAL" in upper:
     row_type = "grand-total"
   elif "TOTAL" in upper or "SUB TOTAL" in upper:
     row_type = "total"
   for col, date_value in date_cols:
-    balance = ws.cell(row_index, col).value
-    available = ws.cell(row_index, col + 1).value if col + 1 <= ws.max_column else None
+    balance = cell_value(balanse_values, row_index, col)
+    available = cell_value(balanse_values, row_index, col + 1)
     if balance is None and available is None:
       continue
     rows.append({
@@ -886,18 +1024,70 @@ for row_index in range(2, ws.max_row + 1):
       "accountCode": "" if row_type != "account" else slug(name),
       "accountName": name,
       "partyName": name,
-      "branch": "",
+      "branch": current_section if row_type == "account" else "",
+      "group": current_section if row_type == "account" else name if row_type == "section" else current_section,
       "rowType": row_type,
       "rowOrder": row_index,
       "openingDate": date_value,
-      "openingBalance": float(balance or 0),
-      "availableBalance": float(available or 0),
+      "openingBalance": number_value(balance),
+      "availableBalance": number_value(available),
       "source": "Excel - BALANSE",
       "importedBy": member_name,
       "importedAt": now,
     })
 
-print(json.dumps({"rows": rows}))
+if "DEBIT ORDER BUDGET" in wb.sheetnames:
+  budget_ws = wb["DEBIT ORDER BUDGET"]
+  budget_values = list(budget_ws.iter_rows(values_only=True))
+  budget_dates = []
+  raw_budget_dates = []
+  previous_budget_month = None
+  max_budget_col = max((len(row) for row in budget_values), default=0)
+  for col in range(2, max_budget_col + 1):
+    parsed = parse_date_text(cell_value(budget_values, 4, col))
+    if not parsed:
+      continue
+    raw_budget_dates.append((col, parsed))
+  first_budget_explicit_year = next((item[1]["year"] for item in raw_budget_dates if isinstance(item[1], dict) and item[1].get("year")), year)
+  current_budget_year = first_budget_explicit_year
+  for col, parsed in raw_budget_dates:
+    if not isinstance(parsed, dict):
+      current_budget_year = parsed.year
+      previous_budget_month = parsed.month
+      budget_dates.append((col, parsed.isoformat()))
+      continue
+    if parsed.get("year"):
+      current_budget_year = parsed["year"]
+    elif current_budget_year is None:
+      current_budget_year = first_budget_explicit_year
+    elif previous_budget_month and parsed["month"] < previous_budget_month and previous_budget_month >= 11:
+      current_budget_year += 1
+    previous_budget_month = parsed["month"]
+    budget_dates.append((col, datetime(current_budget_year, parsed["month"], parsed["day"]).date().isoformat()))
+  for row_index in range(5, len(budget_values) + 1):
+    name = cell_value(budget_values, row_index, 1)
+    if name is None:
+      continue
+    name = str(name).strip()
+    if not name:
+      continue
+    for col, date_value in budget_dates:
+      balance = cell_value(budget_values, row_index, col)
+      available = cell_value(budget_values, row_index, col + 1)
+      if balance is None and available is None:
+        continue
+      debit_order_budget.append({
+        "id": f"finance-debit-budget-{row_index}-{col}-{date_value}",
+        "accountName": name,
+        "budgetDate": date_value,
+        "balance": number_value(balance),
+        "available": number_value(available),
+        "source": "Excel - DEBIT ORDER BUDGET",
+        "importedBy": member_name,
+        "importedAt": now,
+      })
+
+print(json.dumps({"rows": rows, "debitOrderBudget": debit_order_budget}))
 `;
   const result = spawnSync(bundledPythonPath(), ["-", filePath, session.name || session.email || "Unknown", String(new Date().getFullYear())], {
     input: script,
@@ -907,6 +1097,63 @@ print(json.dumps({"rows": rows}))
   if (result.status !== 0) {
     throw new Error(result.stderr || "BALANSE workbook parser failed.");
   }
+  return JSON.parse(result.stdout || "{\"rows\":[]}");
+}
+
+function parseEntityBalanceWorkbook(filePath) {
+  const script = `
+import json, re, sys
+from openpyxl import load_workbook
+
+path = sys.argv[1]
+wb = load_workbook(path, data_only=True, read_only=True)
+ws = wb[wb.sheetnames[0]]
+values = list(ws.iter_rows(values_only=True))
+
+def normalize(value):
+  return re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).strip()
+
+def number_value(value):
+  if value is None: return 0
+  if isinstance(value, (int, float)): return float(value)
+  text = str(value).strip().replace(" ", "")
+  negative = text.startswith("(") and text.endswith(")")
+  text = re.sub(r"[^0-9,.-]", "", text)
+  if "," in text and "." in text:
+    text = text.replace(",", "") if text.rfind(".") > text.rfind(",") else text.replace(".", "").replace(",", ".")
+  elif "," in text:
+    text = text.replace(",", ".")
+  try:
+    result = float(text) if text else 0
+    return -abs(result) if negative else result
+  except Exception:
+    return 0
+
+entity_aliases = ["entity", "entity name", "company", "branch", "name"]
+balance_aliases = ["current balance", "available balance", "bank balance", "balance", "available"]
+header_index = entity_col = balance_col = None
+for row_index, row in enumerate(values[:20]):
+  headers = [normalize(cell) for cell in row]
+  e = next((i for i, header in enumerate(headers) if header in entity_aliases or any(alias in header for alias in entity_aliases[:-1])), None)
+  b = next((i for i, header in enumerate(headers) if header in balance_aliases or any(alias in header for alias in balance_aliases[:3])), None)
+  if e is not None and b is not None and e != b:
+    header_index, entity_col, balance_col = row_index, e, b
+    break
+
+if header_index is None:
+  raise ValueError("The workbook needs Entity and Current Balance columns.")
+
+rows = []
+for row in values[header_index + 1:]:
+  name = row[entity_col] if entity_col < len(row) else None
+  balance = row[balance_col] if balance_col < len(row) else None
+  if name is None or str(name).strip() == "": continue
+  rows.append({"entityName": str(name).strip(), "balance": number_value(balance)})
+
+print(json.dumps({"rows": rows}))
+`;
+  const result = spawnSync(bundledPythonPath(), ["-", filePath], { input: script, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
+  if (result.status !== 0) throw new Error(result.stderr || "Entity balance workbook parser failed.");
   return JSON.parse(result.stdout || "{\"rows\":[]}");
 }
 
@@ -1003,6 +1250,7 @@ async function handleApi(req, res) {
 
     console.log(`[login] OK: ${email} role=${member.role}`);
     const session = saveSession(publicUser(member));
+    logAuthDebug("login-success", session);
     setCookie(res, "interactive_security_session", session.sid);
     return json(res, 200, {
       user: {
@@ -1869,6 +2117,29 @@ async function handleApi(req, res) {
     return json(res, 200, { ok: true, email });
   }
 
+  if (req.method === "POST" && url.pathname === "/api/cost/import-entity-balances") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "cost_hub")) return json(res, 403, { error: "Access denied" });
+    const fileName = path.basename(url.searchParams.get("fileName") || "entity-balances.xlsx");
+    if (!/\.xlsx$/i.test(fileName)) return json(res, 400, { error: "Please upload an .xlsx Excel workbook or use CSV." });
+    const uploadsDir = path.join(dataDir, "uploads");
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+    const tempPath = path.join(uploadsDir, `${crypto.randomUUID()}-${fileName}`);
+    try {
+      fs.writeFileSync(tempPath, await readRawBody(req));
+      const parsed = parseEntityBalanceWorkbook(tempPath);
+      const db = readDb();
+      writeAudit(db, "Entity balances workbook parsed", session, "Cost Hub", fileName, `${parsed.rows.length} rows parsed`);
+      writeDb(db);
+      return json(res, 200, parsed);
+    } catch (error) {
+      return json(res, 500, { error: error.message || "Entity balance workbook could not be imported." });
+    } finally {
+      try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch {}
+    }
+  }
+
   if (req.method === "POST" && url.pathname === "/api/finance/import-opening-balances") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
@@ -1902,7 +2173,20 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res);
-    if (url.pathname.startsWith("/hubs/")) return serveIndex(res);
+    if (url.pathname.startsWith("/hubs/")) {
+      const hubMatch = url.pathname.match(/^\/hubs\/([^/]+)/);
+      const hubSlug = hubMatch ? hubMatch[1] : "";
+      const isSsoLogin = url.pathname.includes("/sso-login");
+      if (hubSlug && !isSsoLogin) {
+        const session = getSession(req);
+        if (session && !canAccessHub(session, hubSlug)) {
+          res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+          res.end("Access denied");
+          return;
+        }
+      }
+      return serveIndex(res);
+    }
     if (url.pathname === "/reset-password") return serveIndex(res);
     if (url.pathname === "/setup") return serveSetup(res);
     return serveStatic(req, res);
