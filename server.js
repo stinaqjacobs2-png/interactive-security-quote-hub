@@ -2,13 +2,10 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const os = require("os");
-const https = require("https");
-const { spawnSync } = require("child_process");
 const bcrypt = require("./vendor/bcrypt");
 
 const root = __dirname;
-const dataDir = process.env.DATA_DIR || process.env.RENDER_PERSISTENT_DIR || path.join(root, "data");
+const dataDir = path.join(root, "data");
 const dbPath = path.join(dataDir, "app-db.json");
 const port = Number(process.env.PORT || 3100);
 const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS || 12);
@@ -17,10 +14,14 @@ const LOCKOUT_MINUTES = Number(process.env.LOCKOUT_MINUTES || 30);
 const SESSION_IDLE_MINUTES = Number(process.env.SESSION_IDLE_MINUTES || 30);
 const SESSION_ABSOLUTE_HOURS = Number(process.env.SESSION_ABSOLUTE_HOURS || 8);
 const PASSWORD_RESET_MINUTES = Number(process.env.PASSWORD_RESET_MINUTES || 30);
-const PASSWORD_POLICY_MESSAGE = "Password must be at least 5 characters long and contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special character.";
-const DEFAULT_PASSWORD_RESET_ADMIN_EMAIL = "christien@interactivesecurity.co.za";
-const PASSWORD_RESET_OTP_MINUTES = Number(process.env.PASSWORD_RESET_OTP_MINUTES || 15);
-const PASSWORD_RESET_OTP_MAX_ATTEMPTS = Number(process.env.PASSWORD_RESET_OTP_MAX_ATTEMPTS || 5);
+
+// ── Env-var bootstrap admin (set on Render for first deploy) ──────────────────
+// Set SUPER_ADMIN_EMAIL + SUPER_ADMIN_PASSWORD in Render env vars to seed
+// the first Super Admin on a fresh deployment. Once the account exists these
+// vars are ignored, so they are safe to leave in place.
+const BOOTSTRAP_EMAIL = (process.env.SUPER_ADMIN_EMAIL || "").trim().toLowerCase();
+const BOOTSTRAP_PASSWORD = (process.env.SUPER_ADMIN_PASSWORD || "").trim();
+const BOOTSTRAP_NAME = (process.env.SUPER_ADMIN_NAME || "Super Admin").trim();
 
 const permissionKeys = [
   "dashboard",
@@ -36,19 +37,6 @@ const permissionKeys = [
   "supplier_prices",
   "member_access_management",
   "quotation_hub",
-  "cost_hub",
-  "finance_age_analysis",
-  "fleet_hub",
-  "living_resources",
-  "accounts_sales",
-  "hr_hub",
-  "technical_maintenance",
-  "payroll_hub",
-  "overtime_hub",
-  "control_room_it",
-  "uniforms_stores",
-  "employee_files",
-  "administration_governance",
   "sales_quotation_requests",
 ];
 
@@ -68,88 +56,14 @@ const roleDefaults = {
   "Read Only": ["quotation_hub", "dashboard", "quote_library", "reports"],
 };
 
-const ALL_HUBS = [
-  "quotation-hub",
-  "cost-hub",
-  "finance-age-analysis",
-  "fleet",
-  "living-resources",
-  "accounts-sales",
-  "hr",
-  "technical-maintenance",
-  "payroll",
-  "overtime",
-  "control-room-it",
-  "uniforms-stores",
-  "employee-files",
-  "administration-governance",
-];
-
-function hubPermissionKey(hubId = "") {
-  return {
-    "quotation-hub": "quotation_hub",
-    quotation: "quotation_hub",
-    "cost-hub": "cost_hub",
-    cost: "cost_hub",
-    "finance-age-analysis": "finance_age_analysis",
-    "finance-balances": "finance_age_analysis",
-    fleet: "fleet_hub",
-    "living-resources": "living_resources",
-    "accounts-sales": "accounts_sales",
-    hr: "hr_hub",
-    "technical-maintenance": "technical_maintenance",
-    payroll: "payroll_hub",
-    overtime: "overtime_hub",
-    "control-room-it": "control_room_it",
-    "uniforms-stores": "uniforms_stores",
-    "employee-files": "employee_files",
-    "administration-governance": "administration_governance",
-  }[hubId] || "";
-}
-
-function isSuperAdminAuth(user = {}) {
-  return normalizeRole(user.role || user.access) === "Super Admin"
-    || (normalizeRole(user.role || user.access) === "Admin" && user.isSuperAdmin === true);
-}
-
-function getAllowedHubsAuth(user = {}) {
-  if (isSuperAdminAuth(user)) return [...ALL_HUBS];
-  if (Array.isArray(user.allowedHubs)) return user.allowedHubs;
-  const permissions = sanitizePermissions(user.permissions);
-  return ALL_HUBS.filter((hubId) => permissions.includes(hubPermissionKey(hubId)));
-}
-
-function canAccessHubAuth(user = {}, hubId = "") {
-  if (isSuperAdminAuth(user)) return true;
-  return getAllowedHubsAuth(user).includes(hubId);
-}
-
-function logAuthDebug(context, user = {}) {
-  console.log("AUTH DEBUG", {
-    context,
-    email: user.email,
-    role: user.role || user.access,
-    isSuperAdmin: isSuperAdminAuth(user),
-    allowedHubs: getAllowedHubsAuth(user),
-  });
-}
-
 function normalizeRole(role = "") {
   const value = String(role || "").trim();
-  const normalized = value.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
   const aliases = {
     "Full Access Member": "Admin",
     "Quotation Builder Only": "Quotation Builder",
     Member: "Sales Representative",
-    "super admin": "Super Admin",
-    administrator: "Admin",
-    admin: "Admin",
-    "quotation builder": "Quotation Builder",
-    "sales representative": "Sales Representative",
-    member: "Sales Representative",
-    "read only": "Read Only",
   };
-  return aliases[value] || aliases[normalized] || (roleDefaults[value] ? value : "Read Only");
+  return aliases[value] || (roleDefaults[value] ? value : "Read Only");
 }
 
 function defaultPermissionsForRole(role) {
@@ -158,20 +72,18 @@ function defaultPermissionsForRole(role) {
 
 function sanitizePermissions(permissions = []) {
   return Array.from(new Set((Array.isArray(permissions) ? permissions : [])
-    .filter((p) => permissionKeys.includes(p))));
+    .filter((permission) => permissionKeys.includes(permission))));
 }
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
-  ".js":   "text/javascript; charset=utf-8",
-  ".css":  "text/css; charset=utf-8",
-  ".jpg":  "image/jpeg",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
-  ".png":  "image/png",
+  ".png": "image/png",
   ".json": "application/json; charset=utf-8",
 };
-
-// ── Database ─────────────────────────────────────────────────────────────────
 
 function ensureDb() {
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
@@ -186,7 +98,6 @@ function ensureDb() {
       email_logs: [],
       audit_trail: [],
       password_reset_tokens: [],
-      password_reset_requests: [],
       security_settings: {
         maxFailedLogins: MAX_FAILED_LOGINS,
         lockoutMinutes: LOCKOUT_MINUTES,
@@ -196,13 +107,68 @@ function ensureDb() {
         mfaEnabled: false,
       },
     }, null, 2));
-    return;
   }
+
+  // ── Env-var bootstrap: seed Super Admin if no members exist ─────────────────
+  // Only runs when SUPER_ADMIN_EMAIL + SUPER_ADMIN_PASSWORD are set AND the
+  // members table is empty. Safe to run every startup — it's a no-op after.
+  if (BOOTSTRAP_EMAIL && BOOTSTRAP_PASSWORD) {
+    const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
+    if (!Array.isArray(db.members)) db.members = [];
+    const alreadyExists = db.members.some(
+      (m) => (m.email || "").toLowerCase() === BOOTSTRAP_EMAIL
+    );
+    if (!alreadyExists) {
+      try {
+        const hash = bcrypt.hashSync(BOOTSTRAP_PASSWORD, BCRYPT_ROUNDS);
+        const now = new Date().toISOString();
+        const newAdmin = {
+          id: BOOTSTRAP_EMAIL.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+          name: BOOTSTRAP_NAME,
+          email: BOOTSTRAP_EMAIL,
+          role: "Super Admin",
+          access: "Super Admin",
+          permissions: permissionKeys,
+          permissionsExplicit: true,
+          inviteStatus: "Active",
+          password_hash: hash,
+          passwordAlgorithm: "bcrypt",
+          mustChangePassword: false,
+          failedLoginAttempts: 0,
+          lockedUntil: null,
+          mfaEnabled: false,
+          mfaRequired: false,
+          created_at: now,
+          updated_at: now,
+        };
+        db.members.push(newAdmin);
+        if (!Array.isArray(db.audit_trail)) db.audit_trail = [];
+        db.audit_trail.unshift({
+          id: crypto.randomUUID(),
+          action: "Bootstrap Super Admin created",
+          detail: BOOTSTRAP_EMAIL,
+          module: "Authentication",
+          reference: BOOTSTRAP_EMAIL,
+          notes: "Created from SUPER_ADMIN_EMAIL env var",
+          user: "system",
+          userName: "System",
+          timestamp: now,
+        });
+        fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
+        console.log(`Bootstrap Super Admin created: ${BOOTSTRAP_EMAIL}`);
+      } catch (err) {
+        console.error("Bootstrap admin creation failed:", err.message);
+      }
+    }
+  }
+
   const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
   let changed = false;
-  ["sessions", "sso_tokens", "members", "user_permissions", "sales_quotation_requests",
-   "sales_quotation_request_files", "email_logs", "audit_trail", "password_reset_tokens", "password_reset_requests"].forEach((table) => {
-    if (!Array.isArray(db[table])) { db[table] = []; changed = true; }
+  ["sessions", "sso_tokens", "members", "user_permissions", "sales_quotation_requests", "sales_quotation_request_files", "email_logs", "audit_trail", "password_reset_tokens"].forEach((table) => {
+    if (!Array.isArray(db[table])) {
+      db[table] = [];
+      changed = true;
+    }
   });
   if (!db.security_settings) {
     db.security_settings = {
@@ -228,7 +194,6 @@ function ensureDb() {
       };
       changed = true;
     }
-    // Migrate legacy camelCase passwordHash to snake_case password_hash
     if (updated.passwordHash && !updated.legacyPasswordHash) {
       updated = {
         ...updated,
@@ -243,8 +208,11 @@ function ensureDb() {
     return updated;
   });
   db.sales_quotation_requests = db.sales_quotation_requests.map((request) => {
-    const normalized = String(request.status || "").trim().toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    const normalized = String(request.status || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
     let status = "Accepted for Processing";
     if (normalized === "approved") status = "Approved";
     if (["submitted_for_approval", "pending_approval", "awaiting_approval", "completed"].includes(normalized)) {
@@ -252,7 +220,12 @@ function ensureDb() {
     }
     if (request.status === status) return request;
     changed = true;
-    return { ...request, legacy_status: request.legacy_status || request.status || "", status, updated_at: request.updated_at || new Date().toISOString() };
+    return {
+      ...request,
+      legacy_status: request.legacy_status || request.status || "",
+      status,
+      updated_at: request.updated_at || new Date().toISOString(),
+    };
   });
   if (changed) fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
 }
@@ -267,15 +240,13 @@ function writeDb(db) {
   fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 function normalizeEmail(value = "") {
   return String(value).trim().toLowerCase();
 }
 
 function publicUser(member) {
   const role = normalizeRole(member.role || member.access || "Read Only");
-  const hasExplicitPermissions = Boolean(member.permissionsExplicit);
+  const hasExplicitPermissions = Boolean(member.permissionsExplicit) || (Array.isArray(member.permissions) && member.permissions.length > 0);
   const permissions = hasExplicitPermissions ? sanitizePermissions(member.permissions) : defaultPermissionsForRole(role);
   return {
     userId: member.id,
@@ -291,56 +262,44 @@ function publicUser(member) {
   };
 }
 
-function publicMemberRecord(member) {
-  const {
-    password_hash,
-    passwordHash,
-    legacyPasswordHash,
-    otp_hash,
-    temporaryPassword,
-    ...safe
-  } = member || {};
-  return {
-    ...safe,
-    userId: member?.id,
-    role: normalizeRole(member?.role || member?.access || "Read Only"),
-    access: normalizeRole(member?.access || member?.role || "Read Only"),
-    permissions: persistentPermissionsForMember(member || {}).permissions,
-  };
-}
-
-function persistentPermissionsForMember(member) {
+// Public member fields safe to send to the admin list (no hashes/tokens)
+function publicMemberForList(member) {
   const role = normalizeRole(member.role || member.access || "Read Only");
-  if (role === "Super Admin") {
-    return {
-      role,
-      permissions: defaultPermissionsForRole(role),
-      permissionsExplicit: false,
-    };
-  }
-  const explicit = Boolean(member.permissionsExplicit);
-  const permissions = sanitizePermissions(member.permissions);
+  const hasExplicit = Boolean(member.permissionsExplicit) || (Array.isArray(member.permissions) && member.permissions.length > 0);
   return {
+    id: member.id,
+    email: member.email,
+    name: member.name || member.email,
+    phone: member.phone || "",
+    branch: member.branch || "",
+    department: member.department || "",
     role,
-    permissions: explicit ? permissions : defaultPermissionsForRole(role),
-    permissionsExplicit: explicit,
+    access: role,
+    permissions: hasExplicit ? sanitizePermissions(member.permissions) : defaultPermissionsForRole(role),
+    permissionsExplicit: hasExplicit,
+    inviteStatus: member.inviteStatus || "Active",
+    mustChangePassword: Boolean(member.mustChangePassword),
+    mfaEnabled: Boolean(member.mfaEnabled),
+    mfaRequired: Boolean(member.mfaRequired),
+    created_at: member.created_at || "",
+    updated_at: member.updated_at || "",
   };
 }
 
 function passwordPolicyErrors(password = "") {
   const errors = [];
-  if (password.length < 5)             errors.push("at least 5 characters");
-  if (!/[A-Z]/.test(password))         errors.push("at least 1 uppercase letter");
-  if (!/[a-z]/.test(password))         errors.push("at least 1 lowercase letter");
-  if (!/[0-9]/.test(password))         errors.push("at least 1 number");
-  if (!/[^A-Za-z0-9]/.test(password))  errors.push("at least 1 special character");
+  if (password.length < 12) errors.push("at least 12 characters");
+  if (!/[A-Z]/.test(password)) errors.push("one uppercase letter");
+  if (!/[a-z]/.test(password)) errors.push("one lowercase letter");
+  if (!/[0-9]/.test(password)) errors.push("one number");
+  if (!/[^A-Za-z0-9]/.test(password)) errors.push("one special character");
   return errors;
 }
 
 function assertStrongPassword(password) {
   const errors = passwordPolicyErrors(password);
   if (errors.length) {
-    const error = new Error(PASSWORD_POLICY_MESSAGE);
+    const error = new Error(`Password must contain ${errors.join(", ")}.`);
     error.code = "WEAK_PASSWORD";
     error.details = errors;
     throw error;
@@ -349,91 +308,30 @@ function assertStrongPassword(password) {
 
 function hashPassword(password) {
   assertStrongPassword(password);
-  const hash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
-  // Paranoia: verify the hash we just created actually works before returning it
-  if (!bcrypt.compareSync(password, hash)) {
-    throw new Error("Password hash verification failed immediately after creation.");
-  }
-  return hash;
+  return bcrypt.hashSync(password, BCRYPT_ROUNDS);
 }
 
 function verifyPassword(password, passwordHash) {
-  if (!passwordHash || typeof passwordHash !== "string") return false;
-  if (!passwordHash.startsWith("$2")) return false;
-  try {
-    return bcrypt.compareSync(password, passwordHash);
-  } catch (err) {
-    console.error("[verifyPassword] bcrypt.compareSync threw:", err.message);
-    return false;
-  }
+  if (!passwordHash || !passwordHash.startsWith("$2")) return false;
+  return bcrypt.compareSync(password, passwordHash);
 }
 
 function tokenHash(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-function hashOtp(otp) {
-  return bcrypt.hashSync(String(otp), BCRYPT_ROUNDS);
-}
-
-function verifyOtp(otp, otpHash) {
-  if (!otpHash || typeof otpHash !== "string") return false;
-  try {
-    return bcrypt.compareSync(String(otp), otpHash);
-  } catch (err) {
-    console.error("[verifyOtp] bcrypt.compareSync threw:", err.message);
-    return false;
-  }
-}
-
-function generateSixDigitOtp() {
-  return String(crypto.randomInt(0, 1000000)).padStart(6, "0");
-}
-
-function generateTemporaryPassword() {
-  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-  const lower = "abcdefghijkmnopqrstuvwxyz";
-  const digits = "23456789";
-  const special = "!@#$%^&*";
-  const all = upper + lower + digits + special;
-  const pick = (chars) => chars[crypto.randomInt(0, chars.length)];
-  const chars = [pick(upper), pick(lower), pick(digits), pick(special)];
-  while (chars.length < 10) chars.push(pick(all));
-  for (let i = chars.length - 1; i > 0; i -= 1) {
-    const j = crypto.randomInt(0, i + 1);
-    [chars[i], chars[j]] = [chars[j], chars[i]];
-  }
-  return chars.join("");
-}
-
-function requestMeta(req) {
-  return {
-    ip: String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim(),
-    device: String(req.headers["user-agent"] || ""),
-  };
-}
-
-function resetDebug(message, details = {}) {
-  const safeDetails = { ...details };
-  delete safeDetails.otp;
-  delete safeDetails.password;
-  delete safeDetails.newPassword;
-  console.log(`[password-reset] ${message}`, safeDetails);
-}
-
 function securitySettings(db) {
   return {
-    maxFailedLogins:      Number(db.security_settings?.maxFailedLogins      || MAX_FAILED_LOGINS),
-    lockoutMinutes:       Number(db.security_settings?.lockoutMinutes        || LOCKOUT_MINUTES),
-    sessionIdleMinutes:   Number(db.security_settings?.sessionIdleMinutes    || SESSION_IDLE_MINUTES),
-    sessionAbsoluteHours: Number(db.security_settings?.sessionAbsoluteHours  || SESSION_ABSOLUTE_HOURS),
-    passwordResetMinutes: Number(db.security_settings?.passwordResetMinutes  || PASSWORD_RESET_MINUTES),
-    mfaEnabled:           Boolean(db.security_settings?.mfaEnabled),
+    maxFailedLogins: Number(db.security_settings?.maxFailedLogins || MAX_FAILED_LOGINS),
+    lockoutMinutes: Number(db.security_settings?.lockoutMinutes || LOCKOUT_MINUTES),
+    sessionIdleMinutes: Number(db.security_settings?.sessionIdleMinutes || SESSION_IDLE_MINUTES),
+    sessionAbsoluteHours: Number(db.security_settings?.sessionAbsoluteHours || SESSION_ABSOLUTE_HOURS),
+    passwordResetMinutes: Number(db.security_settings?.passwordResetMinutes || PASSWORD_RESET_MINUTES),
+    mfaEnabled: Boolean(db.security_settings?.mfaEnabled),
   };
 }
 
 function writeAudit(db, action, user, module = "Authentication", reference = user?.email || "", notes = "") {
-  if (!Array.isArray(db.audit_trail)) db.audit_trail = [];
   db.audit_trail.unshift({
     id: crypto.randomUUID(),
     action,
@@ -448,223 +346,87 @@ function writeAudit(db, action, user, module = "Authentication", reference = use
   db.audit_trail = db.audit_trail.slice(0, 5000);
 }
 
-function emailProviderDiagnostics() {
-  const adminEmail = process.env.PASSWORD_RESET_ADMIN_EMAIL || process.env.ADMIN_EMAIL || DEFAULT_PASSWORD_RESET_ADMIN_EMAIL;
-  const sender = process.env.EMAIL_FROM || process.env.RESEND_FROM || process.env.SENDGRID_FROM || process.env.SMTP_FROM || "";
-  return {
-    provider: process.env.RESEND_API_KEY ? "Resend" : process.env.SENDGRID_API_KEY ? "SendGrid" : process.env.SMTP_HOST ? "SMTP configured but unsupported without SMTP library" : "Not configured",
-    adminEmail,
-    sender,
-    hasResend: Boolean(process.env.RESEND_API_KEY),
-    hasSendGrid: Boolean(process.env.SENDGRID_API_KEY),
-    hasSmtpHost: Boolean(process.env.SMTP_HOST),
-    hasSmtpUser: Boolean(process.env.SMTP_USER),
-    hasSmtpPassword: Boolean(process.env.SMTP_PASSWORD),
-  };
-}
-
-function httpsJsonRequest(options, payload) {
-  return new Promise((resolve, reject) => {
-    const req = https.request(options, (res) => {
-      let body = "";
-      res.on("data", (chunk) => { body += chunk; });
-      res.on("end", () => {
-        const parsed = body ? (() => { try { return JSON.parse(body); } catch { return { raw: body }; } })() : {};
-        if (res.statusCode >= 200 && res.statusCode < 300) resolve(parsed);
-        else reject(new Error(`${res.statusCode}: ${body || res.statusMessage}`));
-      });
-    });
-    req.on("error", reject);
-    req.write(JSON.stringify(payload));
-    req.end();
-  });
-}
-
-async function sendPlatformEmail(db, { to, subject, text, type = "system", reference = "" }) {
-  const diagnostics = emailProviderDiagnostics();
-  const log = {
-    id: crypto.randomUUID(),
-    type,
-    to,
-    from: diagnostics.sender,
-    subject,
-    provider: diagnostics.provider,
-    status: "Failed",
-    reference,
-    error: "",
-    created_at: new Date().toISOString(),
-  };
-  try {
-    if (!to) throw new Error("Missing recipient email. Set PASSWORD_RESET_ADMIN_EMAIL or ADMIN_EMAIL on Render.");
-    if (!diagnostics.sender) throw new Error("Missing sender email. Set EMAIL_FROM, RESEND_FROM, SENDGRID_FROM, or SMTP_FROM on Render.");
-    if (process.env.RESEND_API_KEY) {
-      const result = await httpsJsonRequest({
-        hostname: "api.resend.com",
-        path: "/emails",
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-        },
-      }, { from: diagnostics.sender, to: [to], subject, text });
-      log.status = "Sent";
-      log.provider_message_id = result.id || "";
-      db.email_logs.push(log);
-      console.log(`[email] Sent via Resend to ${to}: ${subject}`);
-      return { ok: true, provider: "Resend", log };
-    }
-    if (process.env.SENDGRID_API_KEY) {
-      const result = await httpsJsonRequest({
-        hostname: "api.sendgrid.com",
-        path: "/v3/mail/send",
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.SENDGRID_API_KEY}`,
-        },
-      }, {
-        personalizations: [{ to: [{ email: to }] }],
-        from: { email: diagnostics.sender },
-        subject,
-        content: [{ type: "text/plain", value: text }],
-      });
-      log.status = "Sent";
-      log.provider_message_id = result.id || "";
-      db.email_logs.push(log);
-      console.log(`[email] Sent via SendGrid to ${to}: ${subject}`);
-      return { ok: true, provider: "SendGrid", log };
-    }
-    throw new Error(diagnostics.hasSmtpHost
-      ? "SMTP variables are present, but SMTP delivery needs an SMTP library. Configure RESEND_API_KEY or SENDGRID_API_KEY for this deployment."
-      : "No email provider configured. Set RESEND_API_KEY or SENDGRID_API_KEY plus sender/admin email variables on Render.");
-  } catch (error) {
-    log.error = error.message;
-    db.email_logs.push(log);
-    console.error(`[email] Failed to send to ${to || "(missing recipient)"}: ${error.message}`);
-    return { ok: false, provider: diagnostics.provider, error: error.message, log };
-  }
-}
-
 function json(res, status, payload) {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
   res.end(JSON.stringify(payload));
 }
 
 function parseCookies(req) {
-  return Object.fromEntries(
-    (req.headers.cookie || "").split(";").filter(Boolean).map((c) => {
-      const i = c.indexOf("=");
-      return [decodeURIComponent(c.slice(0, i).trim()), decodeURIComponent(c.slice(i + 1).trim())];
-    })
-  );
+  return Object.fromEntries((req.headers.cookie || "").split(";").filter(Boolean).map((cookie) => {
+    const index = cookie.indexOf("=");
+    return [
+      decodeURIComponent(cookie.slice(0, index).trim()),
+      decodeURIComponent(cookie.slice(index + 1).trim()),
+    ];
+  }));
 }
 
 function setCookie(res, name, value, maxAgeSeconds = 60 * 60 * 8) {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie",
-    `${encodeURIComponent(name)}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAgeSeconds}; SameSite=Lax; HttpOnly${secure}`);
+  res.setHeader("Set-Cookie", `${encodeURIComponent(name)}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAgeSeconds}; SameSite=Lax; HttpOnly${secure}`);
 }
 
+// Expire a cookie immediately
 function clearCookie(res, name) {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie",
-    `${encodeURIComponent(name)}=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly${secure}`);
+  res.setHeader("Set-Cookie", `${encodeURIComponent(name)}=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly${secure}`);
 }
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
-    req.on("data", (chunk) => { body += chunk; if (body.length > 1024 * 1024) req.destroy(); });
-    req.on("end", () => { try { resolve(body ? JSON.parse(body) : {}); } catch (e) { reject(e); } });
-    req.on("error", reject);
-  });
-}
-
-// ── Session management ────────────────────────────────────────────────────────
-//
-// getSession: reads session from cookie, validates expiry/idle, updates
-//   lastActivityAt in the sessions array only (does NOT touch member records).
-//
-// saveSession: creates a new session. Does NOT rewrite the member's security
-//   fields (password_hash, passwordAlgorithm, failedLoginAttempts, lockedUntil,
-//   mustChangePassword). Only refreshes non-sensitive profile fields.
-function readRawBody(req, maxBytes = 15 * 1024 * 1024) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let total = 0;
     req.on("data", (chunk) => {
-      total += chunk.length;
-      if (total > maxBytes) {
-        req.destroy();
-        reject(new Error("Uploaded file is too large."));
-        return;
-      }
-      chunks.push(chunk);
+      body += chunk;
+      if (body.length > 1024 * 1024) req.destroy();
     });
-    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (error) {
+        reject(error);
+      }
+    });
     req.on("error", reject);
   });
-}
-
-function bundledPythonPath() {
-  const candidates = [
-    process.env.PYTHON,
-    path.join(os.homedir(), ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "python", "python.exe"),
-    path.join(os.homedir(), ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "python", "bin", "python"),
-    "python",
-  ].filter(Boolean);
-  return candidates.find((candidate) => candidate === "python" || fs.existsSync(candidate)) || "python";
 }
 
 function getSession(req) {
   const sid = parseCookies(req).interactive_security_session;
   if (!sid) return null;
-
   const db = readDb();
   const settings = securitySettings(db);
   const now = new Date();
-  const sessionIndex = db.sessions.findIndex((s) => s.sid === sid);
-  if (sessionIndex === -1) return null;
+  const session = db.sessions.find((item) => item.sid === sid);
+  if (!session) return null;
 
-  const session = db.sessions[sessionIndex];
   const absoluteExpired = new Date(session.expiresAt) <= now;
   const lastActivity = session.lastActivityAt ? new Date(session.lastActivityAt) : new Date(session.createdAt || 0);
   const idleExpired = now.getTime() - lastActivity.getTime() > settings.sessionIdleMinutes * 60 * 1000;
-
   if (absoluteExpired || idleExpired) {
-    db.sessions.splice(sessionIndex, 1);
-    writeAudit(db, "Session expired", session, "Authentication", session.email,
-      absoluteExpired ? "Absolute session expiry" : "Idle session expiry");
+    db.sessions = db.sessions.filter((item) => item.sid !== sid);
+    writeAudit(db, "Session expired", session, "Authentication", session.email, absoluteExpired ? "Absolute session expiry" : "Inactive session expiry");
     writeDb(db);
     return null;
   }
 
-  const member = db.members.find(
-    (m) => m.id === session.userId || normalizeEmail(m.email) === normalizeEmail(session.email)
-  );
-  const accountStatus = String(member?.inviteStatus || member?.status || "").toLowerCase();
-  if (!member || ["disabled", "archived", "deactivated"].includes(accountStatus)) {
-    db.sessions.splice(sessionIndex, 1);
-    writeAudit(db, "Session revoked", session, "Authentication", session.email, "Member missing, disabled, or archived");
+  // ── FIX: verify member is still active on every request ───────────────────
+  const member = db.members.find((m) => normalizeEmail(m.email) === normalizeEmail(session.email));
+  if (member && member.inviteStatus === "Disabled") {
+    db.sessions = db.sessions.filter((item) => item.sid !== sid);
+    writeAudit(db, "Session rejected — account disabled", session, "Authentication", session.email, "Member deactivated");
     writeDb(db);
     return null;
   }
-  const { role, permissions, permissionsExplicit } = persistentPermissionsForMember(member);
 
-  db.sessions[sessionIndex] = {
-    ...session,
-    userId: member.id,
-    email: member.email,
-    name: member.name || member.email,
-    role,
-    permissions,
-    permissionsExplicit,
-    mustChangePassword: Boolean(member.mustChangePassword),
-    lastActivityAt: now.toISOString(),
-  };
+  session.role = normalizeRole(session.role || session.access || "Read Only");
+  const sanitizedSessionPermissions = sanitizePermissions(session.permissions);
+  session.permissions = session.permissionsExplicit ? sanitizedSessionPermissions : (sanitizedSessionPermissions.length ? sanitizedSessionPermissions : defaultPermissionsForRole(session.role));
+  session.lastActivityAt = now.toISOString();
   writeDb(db);
-
-  return db.sessions[sessionIndex];
+  return session;
 }
 
 function saveSession(user) {
@@ -672,114 +434,67 @@ function saveSession(user) {
   const settings = securitySettings(db);
   const sid = crypto.randomBytes(32).toString("hex");
   const now = new Date();
-  const member = db.members.find(
-    (m) => normalizeEmail(m.email) === normalizeEmail(user.email) || m.id === (user.userId || user.id)
-  );
-  const persisted = member
-    ? persistentPermissionsForMember(member)
-    : {
-      role: normalizeRole(user.role || user.access || "Read Only"),
-      permissions: sanitizePermissions(user.permissions).length ? sanitizePermissions(user.permissions) : defaultPermissionsForRole(user.role || user.access),
-      permissionsExplicit: Boolean(user.permissionsExplicit) || sanitizePermissions(user.permissions).length > 0,
-    };
-
+  const role = normalizeRole(user.role || user.access || "Read Only");
+  const userPermissions = sanitizePermissions(user.permissions);
+  const hasExplicitPermissions = Boolean(user.permissionsExplicit) || userPermissions.length > 0;
   const session = {
     sid,
-    userId: member?.id || user.userId || user.id || user.email,
-    email: member?.email || user.email,
-    name: member?.name || user.name || user.email,
-    role: persisted.role,
-    permissions: persisted.permissions,
-    permissionsExplicit: persisted.permissionsExplicit,
-    mfaEnabled: Boolean(member?.mfaEnabled ?? user.mfaEnabled),
-    mfaRequired: Boolean(member?.mfaRequired ?? user.mfaRequired),
-    mustChangePassword: Boolean(member?.mustChangePassword ?? user.mustChangePassword),
+    userId: user.userId || user.id || user.email,
+    email: user.email,
+    name: user.name || user.email,
+    role,
+    permissions: hasExplicitPermissions ? userPermissions : defaultPermissionsForRole(role),
+    permissionsExplicit: hasExplicitPermissions,
+    mfaEnabled: Boolean(user.mfaEnabled),
+    mfaRequired: Boolean(user.mfaRequired),
     createdAt: now.toISOString(),
     lastActivityAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + settings.sessionAbsoluteHours * 60 * 60 * 1000).toISOString(),
   };
-
-  // Remove expired/duplicate sessions for this user
-  db.sessions = db.sessions.filter(
-    (s) => s.email !== session.email || new Date(s.expiresAt) > now
-  );
+  db.sessions = db.sessions.filter((item) => item.email !== session.email || new Date(item.expiresAt) > new Date());
   db.sessions.push(session);
 
-  // Update ONLY non-security profile fields on the member record.
-  // NEVER touch: password_hash, passwordAlgorithm, mustChangePassword,
-  //              failedLoginAttempts, lockedUntil — those are managed
-  //              by the auth/password endpoints exclusively.
-  const memberIndex = db.members.findIndex((m) => m.id === session.userId || normalizeEmail(m.email) === normalizeEmail(session.email));
+  // ── FIX: only update non-sensitive fields; never overwrite password_hash ───
+  const memberIndex = db.members.findIndex((m) => m.email === session.email || m.id === session.userId);
+  const safeUpdate = {
+    id: session.userId,
+    name: session.name,
+    email: session.email,
+    phone: user.phone || user.phoneNumber || "",
+    branch: user.branch || "",
+    department: user.department || "",
+    inviteStatus: user.inviteStatus || "Active",
+    role: session.role,
+    access: session.role,
+    permissions: session.permissions,
+    permissionsExplicit: hasExplicitPermissions,
+    mfaEnabled: session.mfaEnabled,
+    mfaRequired: session.mfaRequired,
+    updated_at: new Date().toISOString(),
+  };
   if (memberIndex >= 0) {
-    const existing = db.members[memberIndex];
-    db.members[memberIndex] = {
-      ...existing,
-      name: session.name || existing.name,
-      role: existing.role || session.role,
-      access: existing.access || session.role,
-      permissions: Array.isArray(existing.permissions) ? existing.permissions : session.permissions,
-      permissionsExplicit: Boolean(existing.permissionsExplicit),
-      mfaEnabled: Boolean(existing.mfaEnabled),
-      mfaRequired: Boolean(existing.mfaRequired),
-      inviteStatus: user.inviteStatus || existing.inviteStatus || "Active",
-      updated_at: now.toISOString(),
-      password_hash: existing.password_hash,
-      passwordAlgorithm: existing.passwordAlgorithm,
-      mustChangePassword: existing.mustChangePassword,
-      failedLoginAttempts: existing.failedLoginAttempts,
-      lockedUntil: existing.lockedUntil,
-      passwordChangedAt: existing.passwordChangedAt,
-    };
+    // Preserve password_hash, failedLoginAttempts, lockedUntil, etc.
+    db.members[memberIndex] = { ...db.members[memberIndex], ...safeUpdate };
   } else {
-    // New member record (SSO path or first-time). No password_hash here.
-    db.members.push({
-      id: session.userId,
-      name: session.name,
-      email: session.email,
-      phone: user.phone || user.phoneNumber || "",
-      branch: user.branch || "",
-      department: user.department || "",
-      inviteStatus: user.inviteStatus || "Active",
-      role: session.role,
-      access: session.role,
-      permissions: session.permissions,
-      permissionsExplicit: session.permissionsExplicit,
-      mfaEnabled: Boolean(user.mfaEnabled),
-      mfaRequired: Boolean(user.mfaRequired),
-      password_hash: "",
-      passwordAlgorithm: "",
-      mustChangePassword: false,
-      failedLoginAttempts: 0,
-      lockedUntil: null,
-      created_at: now.toISOString(),
-      updated_at: now.toISOString(),
-    });
+    db.members.push({ ...safeUpdate, created_at: new Date().toISOString() });
   }
-
   writeDb(db);
   return session;
 }
 
 function canAccessHub(session, hubSlug) {
-  if (!session) return false;
-  if (session.mustChangePassword) return false;
-  logAuthDebug(`canAccessHub:${hubSlug}`, session);
-  const allowed = canAccessHubAuth(session, hubSlug);
-  console.log(`[hub-access] user=${session.email || session.userId || "-"} role=${normalizeRole(session.role || session.access)} hub=${hubSlug} allowed=${allowed}`);
-  return allowed;
+  if (!session || hubSlug !== "quotation-hub") return false;
+  return hasPermission(session, "quotation_hub");
 }
 
 function hasPermission(session, permissionKey) {
   if (!session) return false;
-  if (session.mustChangePassword) return false;
   const role = normalizeRole(session.role || session.access);
   if (["Super Admin", "Admin"].includes(role)) return true;
   const permissions = sanitizePermissions(session.permissions);
   const assigned = session.permissionsExplicit ? permissions : (permissions.length ? permissions : defaultPermissionsForRole(role));
   return assigned.includes(permissionKey);
 }
-
-// ── Static file serving ───────────────────────────────────────────────────────
 
 function serveIndex(res) {
   const filePath = path.join(root, "index.html");
@@ -791,466 +506,68 @@ function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   let cleanPath = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
   const hubAssetMatch = cleanPath.match(/^\/hubs\/[^/]+\/(.+)$/);
-  if (hubAssetMatch) cleanPath = `/${hubAssetMatch[1]}`;
+  if (hubAssetMatch) {
+    cleanPath = `/${hubAssetMatch[1]}`;
+  }
   const filePath = path.normalize(path.join(root, cleanPath));
-  if (!filePath.startsWith(root)) { res.writeHead(403); res.end("Forbidden"); return; }
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) { res.writeHead(404); res.end("Not found"); return; }
+  if (!filePath.startsWith(root)) {
+    res.writeHead(403);
+    res.end("Forbidden");
+    return;
+  }
+  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+    res.writeHead(404);
+    res.end("Not found");
+    return;
+  }
   const ext = path.extname(filePath).toLowerCase();
-  res.writeHead(200, { "Content-Type": mimeTypes[ext] || "application/octet-stream", "Cache-Control": "no-store" });
-  res.end(fs.readFileSync(filePath));
-}
-
-// ── First-time setup page ─────────────────────────────────────────────────────
-// Serves a browser form to create the first Super Admin.
-// Permanently redirects to / once any user with a password_hash exists.
-
-function serveSetup(res) {
-  const db = readDb();
-  const hasSuperAdmin = db.members && db.members.some((m) => m.password_hash && normalizeRole(m.role || m.access) === "Super Admin");
-  if (hasSuperAdmin) { res.writeHead(302, { Location: "/" }); res.end(); return; }
-
-  const html = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>First-time Setup – Interactive Security Portal</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:system-ui,sans-serif;background:#f4f5f7;display:flex;
-         align-items:center;justify-content:center;min-height:100vh;padding:1rem}
-    .card{background:#fff;border-radius:10px;box-shadow:0 2px 16px rgba(0,0,0,.12);
-          padding:2.5rem;width:100%;max-width:420px}
-    h1{font-size:1.25rem;margin-bottom:.25rem}
-    p.sub{color:#555;font-size:.9rem;margin-bottom:1.5rem}
-    label{display:block;font-size:.85rem;font-weight:600;margin-bottom:.9rem}
-    label span{display:block;margin-bottom:.3rem}
-    input{width:100%;padding:.55rem .75rem;border:1px solid #ccc;border-radius:6px;font-size:.95rem}
-    input:focus{outline:none;border-color:#2563eb}
-    .hint{font-size:.78rem;color:#666;margin-top:.3rem}
-    button{width:100%;margin-top:1.25rem;padding:.65rem;background:#1d4ed8;
-           color:#fff;border:none;border-radius:6px;font-size:1rem;font-weight:600;cursor:pointer}
-    button:hover{background:#1e40af}
-    button:disabled{background:#93c5fd;cursor:not-allowed}
-    .msg{margin-top:1rem;padding:.75rem;border-radius:6px;font-size:.9rem;display:none}
-    .msg.error{background:#fee2e2;color:#b91c1c;display:block}
-    .msg.success{background:#dcfce7;color:#15803d;display:block}
-    .badge{display:inline-block;background:#fef9c3;color:#854d0e;border-radius:4px;
-           padding:.15rem .5rem;font-size:.78rem;font-weight:600;margin-bottom:1.25rem}
-  </style>
-</head>
-<body>
-<div class="card">
-  <span class="badge">First-time setup</span>
-  <h1>Create Super Admin</h1>
-  <p class="sub">This page is only accessible while no Super Admin exists in the database.
-  It permanently disables itself as soon as the first Super Admin account is created.</p>
-  <form id="form">
-    <label><span>Full name</span>
-      <input id="name" type="text" placeholder="Jane Smith" required autocomplete="name"/>
-    </label>
-    <label><span>Email address</span>
-      <input id="email" type="email" placeholder="admin@yourcompany.com" required autocomplete="email"/>
-    </label>
-    <label><span>Password</span>
-      <input id="password" type="password" required autocomplete="new-password"/>
-      <div class="hint">Password must be at least 5 characters long and contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special character.</div>
-    </label>
-    <label><span>Confirm password</span>
-      <input id="confirm" type="password" required autocomplete="new-password"/>
-    </label>
-    <button type="submit" id="btn">Create Super Admin account</button>
-  </form>
-  <div class="msg" id="msg"></div>
-</div>
-<script>
-document.getElementById('form').addEventListener('submit', async function(e) {
-  e.preventDefault();
-  const msg = document.getElementById('msg');
-  const btn = document.getElementById('btn');
-  msg.className = 'msg'; msg.textContent = '';
-  const name     = document.getElementById('name').value.trim();
-  const email    = document.getElementById('email').value.trim();
-  const password = document.getElementById('password').value;
-  const confirm  = document.getElementById('confirm').value;
-  if (password !== confirm) {
-    msg.className = 'msg error'; msg.textContent = 'Passwords do not match.'; return;
-  }
-  btn.disabled = true; btn.textContent = 'Creating account…';
-  try {
-    const res = await fetch('/api/setup/create-admin', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email, password }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      msg.className = 'msg error';
-      msg.textContent = data.error || 'Setup failed.';
-      btn.disabled = false; btn.textContent = 'Create Super Admin account'; return;
-    }
-    msg.className = 'msg success';
-    msg.textContent = 'Super Admin created! Redirecting to login…';
-    document.getElementById('form').style.display = 'none';
-    setTimeout(() => { window.location.href = '/'; }, 2000);
-  } catch (err) {
-    msg.className = 'msg error'; msg.textContent = 'Network error – please try again.';
-    btn.disabled = false; btn.textContent = 'Create Super Admin account';
-  }
-});
-</script>
-</body>
-</html>`;
-  res.writeHead(200, { "Content-Type": mimeTypes[".html"], "Cache-Control": "no-store" });
-  res.end(html);
-}
-
-// ── API handlers ──────────────────────────────────────────────────────────────
-
-function parseBalanseWorkbook(filePath, session) {
-  const script = `
-import json, re, sys
-from datetime import datetime
-from openpyxl import load_workbook
-
-path = sys.argv[1]
-member_name = sys.argv[2]
-year = int(sys.argv[3])
-month_lookup = {
-  "JANUARY": 1, "FEBRUARY": 2, "MARCH": 3, "APRIL": 4, "MAY": 5, "JUNE": 6,
-  "JULY": 7, "AUGUST": 8, "SEPTEMBER": 9, "OCTOBER": 10, "NOVEMBER": 11, "DECEMBER": 12,
-}
-wb = load_workbook(path, data_only=True, read_only=True)
-ws = wb["BALANSE"] if "BALANSE" in wb.sheetnames else wb[wb.sheetnames[0]]
-balanse_values = list(ws.iter_rows(values_only=True))
-
-def cell_value(values, row, col):
-  if row < 1 or col < 1 or row > len(values):
-    return None
-  row_values = values[row - 1]
-  if col > len(row_values):
-    return None
-  return row_values[col - 1]
-
-def slug(value):
-  return re.sub(r"(^-|-$)", "", re.sub(r"[^A-Z0-9]+", "-", str(value).upper())).strip("-")
-
-def number_value(value):
-  if value is None:
-    return 0
-  if isinstance(value, (int, float)):
-    return float(value)
-  text = str(value).strip()
-  if text.startswith("#"):
-    return 0
-  text = re.sub(r"[^0-9,.-]", "", text).replace(",", ".")
-  try:
-    return float(text) if text else 0
-  except Exception:
-    return 0
-
-def parse_date_text(value):
-  if value is None:
-    return None
-  if hasattr(value, "date"):
-    return value.date()
-  text = str(value).strip().upper()
-  parts = text.split()
-  if len(parts) >= 2 and parts[0].isdigit():
-    month = month_lookup.get(parts[1])
-    if month:
-      explicit_year = None
-      if len(parts) >= 3 and parts[2].isdigit():
-        explicit_year = int(parts[2])
-      return {"day": int(parts[0]), "month": month, "year": explicit_year}
-  return None
-
-raw_date_cols = []
-max_balanse_col = max((len(row) for row in balanse_values), default=0)
-for col in range(2, max_balanse_col + 1):
-  parsed = parse_date_text(cell_value(balanse_values, 1, col))
-  if parsed:
-    raw_date_cols.append((col, parsed))
-
-date_cols = []
-first_explicit_year = next((item[1]["year"] for item in raw_date_cols if isinstance(item[1], dict) and item[1].get("year")), year)
-current_year = first_explicit_year
-previous_month = None
-for col, parsed in raw_date_cols:
-  if not isinstance(parsed, dict):
-    current_year = parsed.year
-    previous_month = parsed.month
-    date_cols.append((col, parsed.isoformat()))
-    continue
-  if parsed.get("year"):
-    current_year = parsed["year"]
-  elif current_year is None:
-    current_year = first_explicit_year
-  elif previous_month and parsed["month"] < previous_month and previous_month >= 11:
-    current_year += 1
-  previous_month = parsed["month"]
-  date_cols.append((col, datetime(current_year, parsed["month"], parsed["day"]).date().isoformat()))
-
-section_words = {"OPERATING COMPANIES", "PROPERTY COMPANIES", "LOAN COMPANIES", "BONDS", "NEDBANK PRIVATE", "DISCOVERY", "FNB", "ABSA BUSINESS", "ABSA PRIVATE", "SALARY COMPANIES"}
-rows = []
-debit_order_budget = []
-now = datetime.utcnow().isoformat() + "Z"
-current_section = ""
-for row_index in range(2, len(balanse_values) + 1):
-  name = cell_value(balanse_values, row_index, 1)
-  if name is None:
-    continue
-  name = str(name).strip()
-  if not name:
-    continue
-  upper = name.upper()
-  if upper == "NEDBANK":
-    continue
-  row_type = "account"
-  if upper in section_words:
-    row_type = "section"
-    current_section = name
-  elif "GRAND TOTAL" in upper:
-    row_type = "grand-total"
-  elif "TOTAL" in upper or "SUB TOTAL" in upper:
-    row_type = "total"
-  for col, date_value in date_cols:
-    balance = cell_value(balanse_values, row_index, col)
-    available = cell_value(balanse_values, row_index, col + 1)
-    if balance is None and available is None:
-      continue
-    rows.append({
-      "id": f"finance-opening-import-{row_index}-{col}-{date_value}",
-      "accountCode": "" if row_type != "account" else slug(name),
-      "accountName": name,
-      "partyName": name,
-      "branch": current_section if row_type == "account" else "",
-      "group": current_section if row_type == "account" else name if row_type == "section" else current_section,
-      "rowType": row_type,
-      "rowOrder": row_index,
-      "openingDate": date_value,
-      "openingBalance": number_value(balance),
-      "availableBalance": number_value(available),
-      "source": "Excel - BALANSE",
-      "importedBy": member_name,
-      "importedAt": now,
-    })
-
-if "DEBIT ORDER BUDGET" in wb.sheetnames:
-  budget_ws = wb["DEBIT ORDER BUDGET"]
-  budget_values = list(budget_ws.iter_rows(values_only=True))
-  budget_dates = []
-  raw_budget_dates = []
-  previous_budget_month = None
-  max_budget_col = max((len(row) for row in budget_values), default=0)
-  for col in range(2, max_budget_col + 1):
-    parsed = parse_date_text(cell_value(budget_values, 4, col))
-    if not parsed:
-      continue
-    raw_budget_dates.append((col, parsed))
-  first_budget_explicit_year = next((item[1]["year"] for item in raw_budget_dates if isinstance(item[1], dict) and item[1].get("year")), year)
-  current_budget_year = first_budget_explicit_year
-  for col, parsed in raw_budget_dates:
-    if not isinstance(parsed, dict):
-      current_budget_year = parsed.year
-      previous_budget_month = parsed.month
-      budget_dates.append((col, parsed.isoformat()))
-      continue
-    if parsed.get("year"):
-      current_budget_year = parsed["year"]
-    elif current_budget_year is None:
-      current_budget_year = first_budget_explicit_year
-    elif previous_budget_month and parsed["month"] < previous_budget_month and previous_budget_month >= 11:
-      current_budget_year += 1
-    previous_budget_month = parsed["month"]
-    budget_dates.append((col, datetime(current_budget_year, parsed["month"], parsed["day"]).date().isoformat()))
-  for row_index in range(5, len(budget_values) + 1):
-    name = cell_value(budget_values, row_index, 1)
-    if name is None:
-      continue
-    name = str(name).strip()
-    if not name:
-      continue
-    for col, date_value in budget_dates:
-      balance = cell_value(budget_values, row_index, col)
-      available = cell_value(budget_values, row_index, col + 1)
-      if balance is None and available is None:
-        continue
-      debit_order_budget.append({
-        "id": f"finance-debit-budget-{row_index}-{col}-{date_value}",
-        "accountName": name,
-        "budgetDate": date_value,
-        "balance": number_value(balance),
-        "available": number_value(available),
-        "source": "Excel - DEBIT ORDER BUDGET",
-        "importedBy": member_name,
-        "importedAt": now,
-      })
-
-print(json.dumps({"rows": rows, "debitOrderBudget": debit_order_budget}))
-`;
-  const result = spawnSync(bundledPythonPath(), ["-", filePath, session.name || session.email || "Unknown", String(new Date().getFullYear())], {
-    input: script,
-    encoding: "utf8",
-    maxBuffer: 20 * 1024 * 1024,
+  res.writeHead(200, {
+    "Content-Type": mimeTypes[ext] || "application/octet-stream",
+    "Cache-Control": "no-store",
   });
-  if (result.status !== 0) {
-    throw new Error(result.stderr || "BALANSE workbook parser failed.");
-  }
-  return JSON.parse(result.stdout || "{\"rows\":[]}");
-}
-
-function parseEntityBalanceWorkbook(filePath) {
-  const script = `
-import json, re, sys
-from openpyxl import load_workbook
-
-path = sys.argv[1]
-wb = load_workbook(path, data_only=True, read_only=True)
-ws = wb[wb.sheetnames[0]]
-values = list(ws.iter_rows(values_only=True))
-
-def normalize(value):
-  return re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).strip()
-
-def number_value(value):
-  if value is None: return 0
-  if isinstance(value, (int, float)): return float(value)
-  text = str(value).strip().replace(" ", "")
-  negative = text.startswith("(") and text.endswith(")")
-  text = re.sub(r"[^0-9,.-]", "", text)
-  if "," in text and "." in text:
-    text = text.replace(",", "") if text.rfind(".") > text.rfind(",") else text.replace(".", "").replace(",", ".")
-  elif "," in text:
-    text = text.replace(",", ".")
-  try:
-    result = float(text) if text else 0
-    return -abs(result) if negative else result
-  except Exception:
-    return 0
-
-entity_aliases = ["entity", "entity name", "company", "branch", "name"]
-balance_aliases = ["current balance", "available balance", "bank balance", "balance", "available"]
-header_index = entity_col = balance_col = None
-for row_index, row in enumerate(values[:20]):
-  headers = [normalize(cell) for cell in row]
-  e = next((i for i, header in enumerate(headers) if header in entity_aliases or any(alias in header for alias in entity_aliases[:-1])), None)
-  b = next((i for i, header in enumerate(headers) if header in balance_aliases or any(alias in header for alias in balance_aliases[:3])), None)
-  if e is not None and b is not None and e != b:
-    header_index, entity_col, balance_col = row_index, e, b
-    break
-
-if header_index is None:
-  raise ValueError("The workbook needs Entity and Current Balance columns.")
-
-rows = []
-for row in values[header_index + 1:]:
-  name = row[entity_col] if entity_col < len(row) else None
-  balance = row[balance_col] if balance_col < len(row) else None
-  if name is None or str(name).strip() == "": continue
-  rows.append({"entityName": str(name).strip(), "balance": number_value(balance)})
-
-print(json.dumps({"rows": rows}))
-`;
-  const result = spawnSync(bundledPythonPath(), ["-", filePath], { input: script, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
-  if (result.status !== 0) throw new Error(result.stderr || "Entity balance workbook parser failed.");
-  return JSON.parse(result.stdout || "{\"rows\":[]}");
+  res.end(fs.readFileSync(filePath));
 }
 
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
-  // ── Login ─────────────────────────────────────────────────────────────────
+  // ── POST /api/auth/login ───────────────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
     const body = await readBody(req);
     const email = normalizeEmail(body.email);
     const password = String(body.password || "");
     if (!email || !password) return json(res, 400, { error: "Missing email or password" });
-
     const db = readDb();
     const settings = securitySettings(db);
-    let member = db.members.find((m) => normalizeEmail(m.email) === email);
+    let member = db.members.find((item) => normalizeEmail(item.email) === email);
     const now = new Date();
-    const hasPasswordUsers = db.members.some((m) => m.password_hash);
 
-    // Dev-only bootstrap: auto-create Super Admin on first login when no users exist
-    if (!member && !hasPasswordUsers && process.env.NODE_ENV !== "production") {
-      try {
-        member = {
-          id: email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
-          name: body.name || "System Admin",
-          email,
-          role: "Super Admin",
-          access: "Super Admin",
-          permissions: permissionKeys,
-          permissionsExplicit: true,
-          inviteStatus: "Active",
-          password_hash: hashPassword(password),
-          passwordAlgorithm: "bcrypt",
-          mustChangePassword: false,
-          failedLoginAttempts: 0,
-          lockedUntil: null,
-          mfaEnabled: false,
-          mfaRequired: false,
-          created_at: now.toISOString(),
-          updated_at: now.toISOString(),
-        };
-        db.members.push(member);
-        writeAudit(db, "Created bootstrap admin", member, "Authentication", email, "Development bootstrap only");
-        writeDb(db);
-      } catch (error) {
-        return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
-      }
-    }
-
-    if (!member) {
-      console.log(`[login] FAIL – no member found for email: ${email}`);
-      return json(res, 401, { error: "The email address or password is incorrect." });
-    }
-    const accountStatus = String(member.inviteStatus || member.status || "").toLowerCase();
-    if (["disabled", "archived", "deactivated"].includes(accountStatus)) {
-      console.log(`[login] FAIL – account disabled: ${email}`);
-      return json(res, 401, { error: "The email address or password is incorrect." });
-    }
+    if (!member || member.inviteStatus === "Disabled") return json(res, 401, { error: "The email address or password is incorrect." });
     if (member.lockedUntil && new Date(member.lockedUntil) > now) {
-      console.log(`[login] FAIL – account locked until ${member.lockedUntil}: ${email}`);
       return json(res, 423, { error: `Account locked until ${member.lockedUntil}`, code: "ACCOUNT_LOCKED", lockedUntil: member.lockedUntil });
     }
     if (!member.password_hash) {
-      console.log(`[login] FAIL – no password_hash on member: ${email}`);
       return json(res, 403, { error: "Password reset required before this account can sign in.", code: "PASSWORD_RESET_REQUIRED" });
     }
-
-    const passwordOk = verifyPassword(password, member.password_hash);
-    if (!passwordOk) {
+    if (!verifyPassword(password, member.password_hash)) {
       member.failedLoginAttempts = Number(member.failedLoginAttempts || 0) + 1;
       member.lastFailedLoginAt = now.toISOString();
-      const reason = `bcrypt mismatch – attempt ${member.failedLoginAttempts}/${settings.maxFailedLogins}`;
-      console.log(`[login] FAIL – ${reason}: ${email}`);
       if (member.failedLoginAttempts >= settings.maxFailedLogins) {
         member.lockedUntil = new Date(now.getTime() + settings.lockoutMinutes * 60 * 1000).toISOString();
         writeAudit(db, "Account locked", member, "Authentication", email, `${member.failedLoginAttempts} failed login attempts`);
       } else {
-        writeAudit(db, "Failed login", member, "Authentication", email, reason);
+        writeAudit(db, "Failed login", member, "Authentication", email, `${member.failedLoginAttempts} failed login attempts`);
       }
       writeDb(db);
-      return json(res, 401, {
-        error: "The email address or password is incorrect.",
-        remainingAttempts: Math.max(0, settings.maxFailedLogins - member.failedLoginAttempts),
-      });
+      return json(res, 401, { error: "The email address or password is incorrect.", remainingAttempts: Math.max(0, settings.maxFailedLogins - member.failedLoginAttempts) });
     }
-
     member.failedLoginAttempts = 0;
     member.lockedUntil = null;
     member.lastLoginAt = now.toISOString();
     member.updated_at = now.toISOString();
-    writeAudit(db, "Signed in", member, "Authentication", email,
-      member.mustChangePassword ? "Password change required" : "Successful login");
+    writeAudit(db, "Signed in", member, "Authentication", email, member.mustChangePassword ? "Password change required" : "Successful login");
     writeDb(db);
-
-    console.log(`[login] OK: ${email} role=${member.role}`);
     const session = saveSession(publicUser(member));
-    logAuthDebug("login-success", session);
     setCookie(res, "interactive_security_session", session.sid);
     return json(res, 200, {
       user: {
@@ -1267,717 +584,231 @@ async function handleApi(req, res) {
     });
   }
 
-  // ── Logout ────────────────────────────────────────────────────────────────
+  // ── POST /api/auth/logout ─────────────────────────────────────────────────
+  // FIX: server-side session invalidation so logout actually works
   if (req.method === "POST" && url.pathname === "/api/auth/logout") {
     const sid = parseCookies(req).interactive_security_session;
     if (sid) {
       const db = readDb();
-      const session = db.sessions.find((s) => s.sid === sid);
+      const session = db.sessions.find((item) => item.sid === sid);
       if (session) {
-        db.sessions = db.sessions.filter((s) => s.sid !== sid);
-        writeAudit(db, "Signed out", session, "Authentication", session.email, "User initiated logout");
+        writeAudit(db, "Signed out", session, "Authentication", session.email, "User-initiated logout");
+        db.sessions = db.sessions.filter((item) => item.sid !== sid);
         writeDb(db);
-        console.log(`[logout] OK: ${session.email}`);
       }
     }
     clearCookie(res, "interactive_security_session");
     return json(res, 200, { ok: true });
   }
 
-  // ── Change password ───────────────────────────────────────────────────────
+  // ── POST /api/auth/change-password ────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/auth/change-password") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
-
     const body = await readBody(req);
     const currentPassword = String(body.currentPassword || "");
     const newPassword = String(body.newPassword || "");
-
-    if (!newPassword) return json(res, 400, { error: "New password is required." });
-
-    // Always do a fresh DB read for security operations — never rely on in-memory state
     const db = readDb();
-
-    // Look up member by userId first (most reliable), then fall back to email
-    const member = db.members.find(
-      (m) => m.id === session.userId || normalizeEmail(m.email) === normalizeEmail(session.email)
-    );
-    if (!member) {
-      console.log(`[change-password] FAIL – member not found for session userId=${session.userId} email=${session.email}`);
-      return json(res, 404, { error: "Member not found." });
+    const member = db.members.find((item) => normalizeEmail(item.email) === normalizeEmail(session.email));
+    if (!member) return json(res, 404, { error: "Member not found" });
+    if (member.password_hash && !verifyPassword(currentPassword, member.password_hash)) {
+      writeAudit(db, "Failed password change", member, "Authentication", member.email, "Current password incorrect");
+      writeDb(db);
+      return json(res, 401, { error: "Current password is incorrect." });
     }
-
-    // If a password_hash already exists, the current password must be verified
-    if (member.password_hash) {
-      if (!currentPassword) {
-        return json(res, 400, { error: "Current password is required." });
-      }
-      if (!verifyPassword(currentPassword, member.password_hash)) {
-        console.log(`[change-password] FAIL – current password incorrect for: ${member.email}`);
-        writeAudit(db, "Failed password change", member, "Authentication", member.email, "Current password incorrect");
-        writeDb(db);
-        return json(res, 401, { error: "Current password is incorrect." });
-      }
-    }
-
-    // Hash and verify the new password
-    let newHash;
     try {
-      newHash = hashPassword(newPassword); // also does paranoia self-verify inside hashPassword
+      member.password_hash = hashPassword(newPassword);
     } catch (error) {
-      console.log(`[change-password] FAIL – weak password for: ${member.email} – ${error.message}`);
       return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
     }
-
-    // Write ONLY the password fields – do not touch any other member data
-    const hadTemporaryPassword = Boolean(member.temporaryPasswordCreatedAt) && !member.temporaryPasswordUsed;
-    member.password_hash = newHash;
     member.passwordAlgorithm = "bcrypt";
     member.mustChangePassword = false;
-    member.temporaryPasswordUsed = hadTemporaryPassword ? true : Boolean(member.temporaryPasswordUsed);
-    member.temporaryPasswordUsedAt = hadTemporaryPassword ? new Date().toISOString() : (member.temporaryPasswordUsedAt || "");
-    member.inviteStatus = "Active";
-    member.status = "Active";
     member.passwordChangedAt = new Date().toISOString();
     member.failedLoginAttempts = 0;
     member.lockedUntil = null;
-    member.updated_at = new Date().toISOString();
-
-    if (hadTemporaryPassword) {
-      writeAudit(db, "Temporary password used", member, "Authentication", member.email, "User signed in with temporary password and changed it");
-    }
     writeAudit(db, "Changed password", member, "Authentication", member.email, "Password changed successfully");
-    db.sessions = (db.sessions || []).map((existingSession) => (
-      existingSession.userId === member.id || normalizeEmail(existingSession.email) === normalizeEmail(member.email)
-        ? { ...existingSession, mustChangePassword: false }
-        : existingSession
-    ));
     writeDb(db);
-    console.log(`[change-password] OK: ${member.email}`);
     return json(res, 200, { ok: true });
   }
 
-  // ── Request password reset ────────────────────────────────────────────────
+  // ── POST /api/auth/request-password-reset ────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/auth/request-password-reset") {
     const body = await readBody(req);
     const email = normalizeEmail(body.email);
     const db = readDb();
-    const member = db.members.find((m) => normalizeEmail(m.email) === email);
-    const accountStatus = String(member?.inviteStatus || member?.status || "").toLowerCase();
-    const meta = requestMeta(req);
-    resetDebug("request received", { email, ip: meta.ip, userFound: Boolean(member), accountStatus });
-    if (member && !["disabled", "archived", "deactivated"].includes(accountStatus)) {
-      const diagnostics = emailProviderDiagnostics();
-      const permissions = persistentPermissionsForMember(member).permissions;
-      const hubs = [
-        permissions.includes("quotation_hub") ? "Quotation Hub" : "",
-        permissions.includes("finance_age_analysis") ? "Finance Balances and Age Analysis" : "",
-        permissions.includes("administration_governance") ? "Administration & Governance" : "",
-      ].filter(Boolean);
-      const requestRecord = {
+    const settings = securitySettings(db);
+    const member = db.members.find((item) => normalizeEmail(item.email) === email);
+    let resetToken = "";
+    if (member && member.inviteStatus !== "Disabled") {
+      resetToken = crypto.randomBytes(32).toString("base64url");
+      db.password_reset_tokens.push({
         id: crypto.randomUUID(),
+        token_hash: tokenHash(resetToken),
         user_id: member.id,
-        user_name: member.name || member.email,
-        user_email: member.email,
-        requested_at: new Date().toISOString(),
-        status: "Pending",
-        approved_by: "",
-        approved_at: "",
-        rejected_by: "",
-        rejected_at: "",
-        completed_at: "",
-        reset_token_id: "",
-        otp_id: "",
-        otp_generated_at: "",
-        otp_expires_at: "",
-        otp_used_at: "",
-        otp_attempts: 0,
-        requested_ip: meta.ip,
-        requested_device: meta.device,
-        hubs,
-      };
-      db.password_reset_requests.unshift(requestRecord);
-      resetDebug("request saved", { requestId: requestRecord.id, userId: member.id, email: member.email });
-      writeAudit(db, "Password reset requested", member, "Authentication", member.email, `Request ID: ${requestRecord.id}`);
-      const adminEmail = diagnostics.adminEmail;
-      const governanceQueueUrl = `${process.env.PUBLIC_BASE_URL || `http://localhost:${port}`}/hubs/administration-governance#security`;
-      const emailResult = await sendPlatformEmail(db, {
-        to: adminEmail,
-        subject: `Password Reset Request – ${requestRecord.user_name}`,
-        type: "password_reset_admin_notification",
-        reference: requestRecord.id,
-        text: [
-          "Password reset request received.",
-          "",
-          `User name: ${requestRecord.user_name}`,
-          `User email: ${requestRecord.user_email}`,
-          `Date and time: ${new Date(requestRecord.requested_at).toLocaleString("en-ZA")}`,
-          `Hub access: ${hubs.join(", ") || "No hub access assigned"}`,
-          `Password reset request ID: ${requestRecord.id}`,
-          `Administration & Governance queue: ${governanceQueueUrl}`,
-          "",
-          "Please open Administration & Governance > Login & Security Monitoring to approve or reject this request.",
-        ].join("\n"),
+        email: member.email,
+        expires_at: new Date(Date.now() + settings.passwordResetMinutes * 60 * 1000).toISOString(),
+        used_at: null,
+        created_at: new Date().toISOString(),
       });
-      requestRecord.admin_email_status = emailResult.ok ? "Sent" : "Failed";
-      requestRecord.admin_email_error = emailResult.error || "";
-      resetDebug(emailResult.ok ? "optional admin email sent" : "optional admin email failed", { requestId: requestRecord.id, to: adminEmail, error: emailResult.error || "" });
-      writeAudit(db, emailResult.ok ? "Password reset admin email sent" : "Password reset admin email failed", member, "Authentication", requestRecord.id, emailResult.ok ? `Sent to ${adminEmail}` : emailResult.error);
-      writeDb(db);
-    } else {
-      resetDebug("request not saved for inactive or unknown user", { email, userFound: Boolean(member), accountStatus });
-      writeAudit(db, "Password reset requested", { email, name: email || "Unknown user" }, "Authentication", email || "unknown", "No active matching user found; generic confirmation returned");
+      db.email_logs.push({
+        id: crypto.randomUUID(),
+        type: "password_reset",
+        to: member.email,
+        subject: "Interactive Security password reset",
+        status: process.env.NODE_ENV === "production" ? "Pending email provider" : "Development token generated",
+        created_at: new Date().toISOString(),
+      });
+      writeAudit(db, "Password reset requested", member, "Authentication", member.email, "Reset token generated");
       writeDb(db);
     }
     return json(res, 200, {
       ok: true,
-      message: "Your password reset request has been submitted. Please contact your administrator for your OTP.",
+      message: "If the account exists, a password reset link will be sent.",
+      // Only expose resetToken outside production for local dev/testing
+      resetToken: process.env.NODE_ENV === "production" ? undefined : resetToken,
     });
   }
 
-  // ── Consume password reset token ──────────────────────────────────────────
+  // ── POST /api/auth/reset-password ─────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/auth/reset-password") {
     const body = await readBody(req);
     const resetToken = String(body.token || "");
-    const email = normalizeEmail(body.email || "");
-    const otp = String(body.otp || "").trim();
     const newPassword = String(body.newPassword || "");
     const db = readDb();
-    if (email || otp) {
-      resetDebug("otp verification attempted", { email, hasOtp: Boolean(otp) });
-      const member = db.members.find((m) => normalizeEmail(m.email) === email);
-      const meta = requestMeta(req);
-      if (!member) {
-        resetDebug("otp verification failed - user not found", { email });
-        return json(res, 401, { error: "Email or OTP is incorrect." });
-      }
-      const accountStatus = String(member.inviteStatus || member.status || "").toLowerCase();
-      if (["disabled", "archived", "deactivated"].includes(accountStatus)) {
-        resetDebug("otp verification blocked - user deactivated", { email, accountStatus });
-        writeAudit(db, "OTP failed attempt", { email, name: member.name || email }, "Authentication", email, "Deactivated user attempted password reset");
-        writeDb(db);
-        return json(res, 403, { error: "This account cannot reset its password. Please contact an administrator." });
-      }
-      const requests = (db.password_reset_requests || [])
-        .filter((request) => request.user_id === member.id || normalizeEmail(request.user_email) === email)
-        .sort((a, b) => new Date(b.otp_generated_at || b.requested_at || 0) - new Date(a.otp_generated_at || a.requested_at || 0));
-      const requestRecord = requests.find((request) => request.otp_hash && !request.otp_used_at && !["Rejected", "Used", "Completed"].includes(request.status || ""));
-      if (!requestRecord) {
-        resetDebug("otp verification failed - no active otp", { email, requestCount: requests.length });
-        writeAudit(db, "OTP failed attempt", member, "Authentication", email, "No active OTP request found");
-        writeDb(db);
-        return json(res, 401, { error: "Email or OTP is incorrect." });
-      }
-      if (new Date(requestRecord.otp_expires_at || 0) <= new Date()) {
-        requestRecord.status = "Expired";
-        resetDebug("otp verification failed - expired", { email, requestId: requestRecord.id, expiresAt: requestRecord.otp_expires_at });
-        writeAudit(db, "OTP expired", member, "Authentication", email, `Request ID: ${requestRecord.id}`);
-        writeDb(db);
-        return json(res, 401, { error: "This OTP has expired. Please ask your administrator for a new OTP." });
-      }
-      if (Number(requestRecord.otp_attempts || 0) >= PASSWORD_RESET_OTP_MAX_ATTEMPTS) {
-        resetDebug("otp verification failed - attempt limit", { email, requestId: requestRecord.id, attempts: requestRecord.otp_attempts });
-        writeAudit(db, "OTP failed attempt", member, "Authentication", email, `Attempt limit reached for request ${requestRecord.id}`);
-        writeDb(db);
-        return json(res, 429, { error: "Too many incorrect OTP attempts. Please contact your administrator." });
-      }
-      if (!verifyOtp(otp, requestRecord.otp_hash)) {
-        requestRecord.otp_attempts = Number(requestRecord.otp_attempts || 0) + 1;
-        requestRecord.last_otp_attempt_at = new Date().toISOString();
-        requestRecord.last_otp_attempt_ip = meta.ip;
-        requestRecord.last_otp_attempt_device = meta.device;
-        resetDebug("otp verification failed - invalid otp", { email, requestId: requestRecord.id, attempts: requestRecord.otp_attempts });
-        writeAudit(db, "OTP failed attempt", member, "Authentication", email, `Request ID: ${requestRecord.id}; attempt ${requestRecord.otp_attempts}/${PASSWORD_RESET_OTP_MAX_ATTEMPTS}`);
-        writeDb(db);
-        return json(res, 401, { error: "Email or OTP is incorrect.", remainingAttempts: Math.max(0, PASSWORD_RESET_OTP_MAX_ATTEMPTS - requestRecord.otp_attempts) });
-      }
-
-      let newHash;
-      try {
-        newHash = hashPassword(newPassword);
-      } catch (error) {
-        return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
-      }
-
-      requestRecord.otp_used_at = new Date().toISOString();
-      requestRecord.otp_status = "Used";
-      requestRecord.status = "Completed";
-      requestRecord.completed_at = requestRecord.otp_used_at;
-      requestRecord.completed_ip = meta.ip;
-      requestRecord.completed_device = meta.device;
-      member.password_hash = newHash;
-      member.passwordAlgorithm = "bcrypt";
-      member.mustChangePassword = false;
-      member.failedLoginAttempts = 0;
-      member.lockedUntil = null;
-      member.passwordChangedAt = new Date().toISOString();
-      member.inviteStatus = "Active";
-      member.status = "Active";
-      member.updated_at = new Date().toISOString();
-      resetDebug("otp valid - password hash updated", { email, requestId: requestRecord.id, userId: member.id });
-      writeAudit(db, "OTP used successfully", member, "Authentication", email, `Request ID: ${requestRecord.id}`);
-      writeAudit(db, "Password reset completed", member, "Authentication", email, `OTP request completed from ${meta.ip || "unknown IP"}`);
-      writeDb(db);
-      return json(res, 200, { ok: true });
-    }
-    const record = db.password_reset_tokens.find((r) => r.token_hash === tokenHash(resetToken));
+    const record = db.password_reset_tokens.find((item) => item.token_hash === tokenHash(resetToken));
     if (!record || record.used_at || new Date(record.expires_at) <= new Date()) {
       return json(res, 401, { error: "Password reset link is invalid or expired." });
     }
-    const member = db.members.find(
-      (m) => m.id === record.user_id || normalizeEmail(m.email) === normalizeEmail(record.email)
-    );
-    if (!member) return json(res, 404, { error: "Member not found." });
-
-    let newHash;
+    const member = db.members.find((item) => item.id === record.user_id || normalizeEmail(item.email) === normalizeEmail(record.email));
+    if (!member) return json(res, 404, { error: "Member not found" });
     try {
-      newHash = hashPassword(newPassword);
+      member.password_hash = hashPassword(newPassword);
     } catch (error) {
       return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
     }
-
     record.used_at = new Date().toISOString();
-    member.password_hash = newHash;
     member.passwordAlgorithm = "bcrypt";
     member.mustChangePassword = false;
     member.failedLoginAttempts = 0;
     member.lockedUntil = null;
     member.passwordChangedAt = new Date().toISOString();
     member.inviteStatus = "Active";
-    member.updated_at = new Date().toISOString();
-    const linkedRequest = (db.password_reset_requests || []).find((request) => request.id === record.request_id);
-    if (linkedRequest) {
-      linkedRequest.status = "Completed";
-      linkedRequest.completed_at = new Date().toISOString();
-    }
-
-    writeAudit(db, "Password reset completed", member, "Authentication", member.email, "Reset token consumed");
+    writeAudit(db, "Password reset completed", member, "Authentication", member.email, "Password reset token consumed");
     writeDb(db);
-    console.log(`[reset-password] OK: ${member.email}`);
     return json(res, 200, { ok: true });
   }
 
-  // ── Session check ─────────────────────────────────────────────────────────
-  if (req.method === "GET" && url.pathname === "/api/auth/password-reset-requests") {
-    const session = getSession(req);
-    if (!hasPermission(session, "administration_governance")) return json(res, 403, { error: "Access denied" });
-    const db = readDb();
-    return json(res, 200, {
-      requests: (db.password_reset_requests || []).map((request) => ({ ...request, reset_link: undefined, otp_hash: undefined })),
-      emailDiagnostics: emailProviderDiagnostics(),
-    });
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/auth/password-reset-requests/action") {
-    const session = getSession(req);
-    if (!hasPermission(session, "administration_governance")) return json(res, 403, { error: "Access denied" });
-    const body = await readBody(req);
-    const requestId = String(body.requestId || "");
-    const action = String(body.action || "");
-    const db = readDb();
-    const settings = securitySettings(db);
-    resetDebug("admin action received", { requestId, action, admin: session.email });
-    const requestRecord = (db.password_reset_requests || []).find((request) => request.id === requestId);
-    if (!requestRecord) return json(res, 404, { error: "Password reset request not found." });
-    const member = db.members.find((m) => m.id === requestRecord.user_id || normalizeEmail(m.email) === normalizeEmail(requestRecord.user_email));
-    if (!member) return json(res, 404, { error: "Member not found." });
-    const accountStatus = String(member.inviteStatus || member.status || "").toLowerCase();
-    if (["disabled", "archived", "deactivated"].includes(accountStatus)) {
-      return json(res, 403, { error: "Deactivated users cannot receive password reset OTPs." });
-    }
-    if (action === "generate_otp") {
-      const otp = generateSixDigitOtp();
-      const now = new Date();
-      (db.password_reset_requests || []).forEach((request) => {
-        if ((request.user_id === member.id || normalizeEmail(request.user_email) === normalizeEmail(member.email)) && request.id !== requestRecord.id && request.otp_hash && !request.otp_used_at && !["Rejected", "Used", "Completed", "Expired"].includes(request.status || "")) {
-          request.status = "Expired";
-          request.expired_at = now.toISOString();
-        }
-      });
-      requestRecord.status = "OTP Generated";
-      requestRecord.approved_by = session.name || session.email;
-      requestRecord.approved_at = requestRecord.approved_at || now.toISOString();
-      requestRecord.otp_id = crypto.randomUUID();
-      requestRecord.otp_hash = hashOtp(otp);
-      requestRecord.otp_generated_at = now.toISOString();
-      requestRecord.otp_expires_at = new Date(now.getTime() + PASSWORD_RESET_OTP_MINUTES * 60 * 1000).toISOString();
-      requestRecord.otp_used_at = "";
-      requestRecord.otp_attempts = 0;
-      requestRecord.otp_generated_by = session.name || session.email;
-      requestRecord.otp_status = "Active";
-      resetDebug("otp generated and hash saved", { requestId, userId: member.id, email: member.email, expiresAt: requestRecord.otp_expires_at });
-      writeAudit(db, "OTP generated by admin", session, "Administration & Governance", requestRecord.user_email, `Request ID: ${requestId}; expires ${requestRecord.otp_expires_at}`);
-      writeDb(db);
-      return json(res, 200, {
-        ok: true,
-        request: { ...requestRecord, otp_hash: undefined },
-        otp,
-        expiresAt: requestRecord.otp_expires_at,
-      });
-    }
-    if (action === "reject") {
-      requestRecord.status = "Rejected";
-      requestRecord.rejected_by = session.name || session.email;
-      requestRecord.rejected_at = new Date().toISOString();
-      writeAudit(db, "Password reset rejected", session, "Administration & Governance", requestRecord.user_email, `Request ID: ${requestId}`);
-      writeDb(db);
-      return json(res, 200, { ok: true, request: requestRecord });
-    }
-    if (action === "mark_completed") {
-      requestRecord.status = "Used";
-      requestRecord.completed_at = requestRecord.completed_at || new Date().toISOString();
-      requestRecord.completed_by = session.name || session.email;
-      writeAudit(db, "Password reset marked completed", session, "Administration & Governance", requestRecord.user_email, `Request ID: ${requestId}`);
-      writeDb(db);
-      return json(res, 200, { ok: true, request: requestRecord });
-    }
-    if (action === "force_change") {
-      member.mustChangePassword = true;
-      member.passwordResetRequested = true;
-      member.updated_at = new Date().toISOString();
-      requestRecord.status = "Force Change Required";
-      requestRecord.approved_by = session.name || session.email;
-      requestRecord.approved_at = requestRecord.approved_at || new Date().toISOString();
-      writeAudit(db, "Forced password change", session, "Administration & Governance", requestRecord.user_email, `Request ID: ${requestId}`);
-      writeDb(db);
-      return json(res, 200, { ok: true, request: requestRecord });
-    }
-    if (action === "approve") {
-      requestRecord.status = "Approved";
-      requestRecord.approved_by = session.name || session.email;
-      requestRecord.approved_at = new Date().toISOString();
-      writeAudit(db, "Password reset approved", session, "Administration & Governance", requestRecord.user_email, `Request ID: ${requestId}`);
-      writeDb(db);
-      return json(res, 200, { ok: true, request: requestRecord });
-    }
-    if (action === "send_link") {
-      const resetToken = crypto.randomBytes(32).toString("base64url");
-      const tokenRecord = {
-        id: crypto.randomUUID(),
-        token_hash: tokenHash(resetToken),
-        user_id: member.id,
-        email: member.email,
-        request_id: requestRecord.id,
-        expires_at: new Date(Date.now() + settings.passwordResetMinutes * 60 * 1000).toISOString(),
-        used_at: null,
-        created_at: new Date().toISOString(),
-        created_by: session.email,
-      };
-      db.password_reset_tokens.push(tokenRecord);
-      requestRecord.status = "Reset Link Sent";
-      requestRecord.approved_by = requestRecord.approved_by || session.name || session.email;
-      requestRecord.approved_at = requestRecord.approved_at || new Date().toISOString();
-      requestRecord.reset_token_id = tokenRecord.id;
-      const resetUrl = `${process.env.PUBLIC_BASE_URL || `http://localhost:${port}`}/?resetToken=${encodeURIComponent(resetToken)}`;
-      const emailResult = await sendPlatformEmail(db, {
-        to: member.email,
-        subject: "Interactive Security password reset link",
-        type: "password_reset_user_link",
-        reference: requestRecord.id,
-        text: [
-          `Hello ${member.name || member.email},`,
-          "",
-          "Your password reset request has been approved.",
-          `Reset link: ${resetUrl}`,
-          `This link expires at: ${new Date(tokenRecord.expires_at).toLocaleString("en-ZA")}`,
-          "",
-          "If you did not request this reset, please contact an administrator immediately.",
-        ].join("\n"),
-      });
-      requestRecord.user_email_status = emailResult.ok ? "Sent" : "Failed";
-      requestRecord.user_email_error = emailResult.error || "";
-      writeAudit(db, emailResult.ok ? "Password reset link sent" : "Password reset link email failed", session, "Administration & Governance", requestRecord.user_email, emailResult.ok ? "User reset link sent" : emailResult.error);
-      writeDb(db);
-      return json(res, 200, {
-        ok: true,
-        request: requestRecord,
-        resetLink: process.env.NODE_ENV === "production" ? undefined : resetUrl,
-      });
-    }
-    return json(res, 400, { error: "Unknown password reset action." });
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/auth/password-reset-requests/generate-otp") {
-    const session = getSession(req);
-    if (!hasPermission(session, "administration_governance")) return json(res, 403, { error: "Access denied" });
-    const body = await readBody(req);
-    const userId = String(body.userId || "");
-    const db = readDb();
-    const member = db.members.find((m) => m.id === userId || normalizeEmail(m.email) === normalizeEmail(body.email || ""));
-    if (!member) return json(res, 404, { error: "Member not found." });
-    resetDebug("direct admin otp requested", { userId, email: member.email, admin: session.email });
-    const accountStatus = String(member.inviteStatus || member.status || "").toLowerCase();
-    if (["disabled", "archived", "deactivated"].includes(accountStatus)) {
-      return json(res, 403, { error: "Deactivated users cannot receive password reset OTPs." });
-    }
-    const permissions = persistentPermissionsForMember(member).permissions;
-    const hubs = [
-      permissions.includes("quotation_hub") ? "Quotation Hub" : "",
-      permissions.includes("finance_age_analysis") ? "Finance Balances and Age Analysis" : "",
-      permissions.includes("administration_governance") ? "Administration & Governance" : "",
-    ].filter(Boolean);
-    const otp = generateSixDigitOtp();
-    const now = new Date();
-    (db.password_reset_requests || []).forEach((request) => {
-      if ((request.user_id === member.id || normalizeEmail(request.user_email) === normalizeEmail(member.email)) && request.otp_hash && !request.otp_used_at && !["Rejected", "Used", "Completed", "Expired"].includes(request.status || "")) {
-        request.status = "Expired";
-        request.expired_at = now.toISOString();
-      }
-    });
-    const requestRecord = {
-      id: crypto.randomUUID(),
-      user_id: member.id,
-      user_name: member.name || member.email,
-      user_email: member.email,
-      requested_at: now.toISOString(),
-      status: "OTP Generated",
-      approved_by: session.name || session.email,
-      approved_at: now.toISOString(),
-      rejected_by: "",
-      rejected_at: "",
-      completed_at: "",
-      reset_token_id: "",
-      otp_id: crypto.randomUUID(),
-      otp_hash: hashOtp(otp),
-      otp_generated_at: now.toISOString(),
-      otp_expires_at: new Date(now.getTime() + PASSWORD_RESET_OTP_MINUTES * 60 * 1000).toISOString(),
-      otp_used_at: "",
-      otp_attempts: 0,
-      otp_generated_by: session.name || session.email,
-      otp_status: "Active",
-      requested_ip: "",
-      requested_device: "Admin generated from user profile",
-      hubs,
-    };
-    db.password_reset_requests.unshift(requestRecord);
-    member.passwordResetRequested = true;
-    member.updated_at = now.toISOString();
-    resetDebug("direct admin otp generated and hash saved", { requestId: requestRecord.id, userId: member.id, email: member.email, expiresAt: requestRecord.otp_expires_at });
-    writeAudit(db, "OTP generated by admin", session, "Administration & Governance", member.email, `Direct user profile OTP; request ID: ${requestRecord.id}`);
-    writeDb(db);
-    return json(res, 200, {
-      ok: true,
-      request: { ...requestRecord, otp_hash: undefined },
-      otp,
-      expiresAt: requestRecord.otp_expires_at,
-    });
-  }
-
+  // ── GET /api/auth/session ──────────────────────────────────────────────────
   if (req.method === "GET" && url.pathname === "/api/auth/session") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
     return json(res, 200, { user: session });
   }
 
-  // ── Member search ─────────────────────────────────────────────────────────
+  // ── GET /api/members ──────────────────────────────────────────────────────
+  // FIX: expose member list to admin UI so it doesn't depend solely on localStorage
+  if (req.method === "GET" && url.pathname === "/api/members") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "member_access_management") && !["Super Admin", "Admin"].includes(session.role)) {
+      return json(res, 403, { error: "Access denied" });
+    }
+    const db = readDb();
+    // Include disabled members (for audit display) but never expose password hashes
+    const members = db.members.map(publicMemberForList);
+    return json(res, 200, { members });
+  }
+
+  // ── GET /api/members/search ───────────────────────────────────────────────
   if (req.method === "GET" && url.pathname === "/api/members/search") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
-    if (!["sales_quotation_requests", "build_quotation", "approval", "setup"].some((p) => hasPermission(session, p))) {
+    if (!["sales_quotation_requests", "build_quotation", "approval", "setup"].some((permission) => hasPermission(session, permission))) {
       return json(res, 403, { error: "Access denied" });
     }
     const query = (url.searchParams.get("query") || "").trim().toLowerCase();
     const db = readDb();
     const activeMembers = db.members
-      .filter((m) => (m.inviteStatus || "Active") !== "Disabled")
-      .filter((m) => !query || [m.name, m.email, m.phone, m.branch, m.department].filter(Boolean).join(" ").toLowerCase().includes(query))
+      .filter((member) => (member.inviteStatus || "Active") !== "Disabled")
+      .filter((member) => !query || [member.name, member.email, member.phone, member.branch, member.department].filter(Boolean).join(" ").toLowerCase().includes(query))
       .slice(0, 20)
-      .map((m) => ({ id: m.id, name: m.name, email: m.email, phone: m.phone || "", branch: m.branch || "", department: m.department || "" }));
+      .map((member) => ({
+        id: member.id,
+        name: member.name,
+        email: member.email,
+        phone: member.phone || "",
+        branch: member.branch || "",
+        department: member.department || "",
+      }));
     return json(res, 200, { members: activeMembers });
   }
 
-  // ── Save member ───────────────────────────────────────────────────────────
+  // ── POST /api/members ─────────────────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/members") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
     if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
-
     const body = await readBody(req);
     const email = normalizeEmail(body.email);
     const tempPassword = String(body.temporaryPassword || "");
     if (!email || !body.name) return json(res, 400, { error: "Member name and email are required." });
-
     const db = readDb();
-    const existing = db.members.find((m) => normalizeEmail(m.email) === email && m.id !== body.id);
+    const existing = db.members.find((item) => normalizeEmail(item.email) === email && item.id !== body.id);
     if (existing) return json(res, 409, { error: "A member with this email address already exists." });
-
     let password_hash = "";
     if (tempPassword) {
-      try { password_hash = hashPassword(tempPassword); }
-      catch (error) { return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] }); }
+      try {
+        password_hash = hashPassword(tempPassword);
+      } catch (error) {
+        return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
+      }
     }
-
     const now = new Date().toISOString();
     const id = body.id || email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    const index = db.members.findIndex((m) => m.id === id || normalizeEmail(m.email) === email);
+    const index = db.members.findIndex((item) => item.id === id || normalizeEmail(item.email) === email);
     const previous = index >= 0 ? db.members[index] : {};
     const role = normalizeRole(body.role || body.access || previous.role || "Sales Representative");
     const permissions = sanitizePermissions(Array.isArray(body.permissions) ? body.permissions : (previous.permissions || defaultPermissionsForRole(role)));
-
     const member = {
       ...previous,
       id,
       name: String(body.name || previous.name || email),
       email,
-      phone: body.phone !== undefined ? body.phone : (previous.phone || ""),
-      branch: body.branch !== undefined ? body.branch : (previous.branch || ""),
-      department: body.department !== undefined ? body.department : (previous.department || ""),
+      phone: body.phone || previous.phone || "",
+      branch: body.branch || previous.branch || "",
+      department: body.department || previous.department || "",
       role,
       access: role,
       permissions,
       permissionsExplicit: true,
-      inviteStatus: body.inviteStatus || body.status || previous.inviteStatus || previous.status || "Invite Sent",
-      status: body.status || body.inviteStatus || previous.status || previous.inviteStatus || "Invite Sent",
+      inviteStatus: body.inviteStatus || previous.inviteStatus || "Invite Sent",
       mustChangePassword: password_hash ? true : Boolean(previous.mustChangePassword),
-      // Only update password_hash if a new one was provided; preserve existing otherwise
+      // FIX: only update password_hash if a new temp password was given
       password_hash: password_hash || previous.password_hash || "",
-      passwordAlgorithm: password_hash ? "bcrypt" : (previous.passwordAlgorithm || ""),
-      failedLoginAttempts: previous.failedLoginAttempts || 0,
-      lockedUntil: previous.lockedUntil || null,
+      passwordAlgorithm: password_hash ? "bcrypt" : previous.passwordAlgorithm || "",
+      failedLoginAttempts: 0,
+      lockedUntil: null,
       mfaEnabled: Boolean(previous.mfaEnabled),
       mfaRequired: Boolean(previous.mfaRequired),
       created_at: previous.created_at || now,
       updated_at: now,
     };
-
     if (index >= 0) db.members[index] = member;
     else db.members.push(member);
-
-    const previousSummary = previous.email
-      ? `${normalizeRole(previous.role || previous.access)}: ${(previous.permissions || []).join(", ") || "role defaults"}`
-      : "new member";
+    const previousSummary = previous.email ? `${normalizeRole(previous.role || previous.access)}: ${(previous.permissions || []).join(", ") || "role defaults"}` : "new member";
     const newSummary = `${role}: ${permissions.join(", ") || "no modules selected"}`;
     writeAudit(db, index >= 0 ? "Updated member access" : "Member invite sent", session, "Setup - Member access", email, `${previousSummary} -> ${newSummary}`);
     writeDb(db);
-    return json(res, 200, { member: publicUser(member) });
+    return json(res, 200, { member: publicMemberForList(member) });
   }
 
-  // ── SSO create token ──────────────────────────────────────────────────────
-  if (req.method === "POST" && url.pathname === "/api/members/remove") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
-    const body = await readBody(req);
-    const memberId = String(body.memberId || "");
-    const db = readDb();
-    const member = db.members.find((m) => m.id === memberId || normalizeEmail(m.email) === normalizeEmail(body.email || ""));
-    if (!member) return json(res, 404, { error: "Member not found." });
-    if (normalizeRole(member.role || member.access) === "Super Admin" && normalizeRole(session.role) !== "Super Admin") {
-      return json(res, 403, { error: "Only Super Admin users may remove Super Admin accounts." });
-    }
-    const oldStatus = member.inviteStatus || member.status || "Active";
-    const now = new Date().toISOString();
-    member.inviteStatus = "Archived";
-    member.status = "Archived";
-    member.archivedAt = now;
-    member.archivedBy = session.name || session.email;
-    member.deactivatedAt = member.deactivatedAt || now;
-    member.deactivatedBy = member.deactivatedBy || session.name || session.email;
-    member.removedAt = now;
-    member.removedBy = session.name || session.email;
-    member.loginRevokedAt = now;
-    member.updated_at = now;
-    db.sessions = (db.sessions || []).filter((s) => s.userId !== member.id && normalizeEmail(s.email) !== normalizeEmail(member.email));
-    writeAudit(db, "Member removed", session, "Administration & Governance", member.email, `${oldStatus} -> Archived`);
-    writeDb(db);
-    return json(res, 200, { ok: true, member: publicMemberRecord(member) });
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/members/readd") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
-    const body = await readBody(req);
-    const email = normalizeEmail(body.email);
-    const name = String(body.name || "").trim();
-    if (!email || !name) return json(res, 400, { error: "Member name and email are required." });
-    const db = readDb();
-    const now = new Date().toISOString();
-    const role = normalizeRole(body.role || body.access || "Read Only");
-    const permissions = sanitizePermissions(Array.isArray(body.permissions) ? body.permissions : defaultPermissionsForRole(role));
-    const index = db.members.findIndex((m) => normalizeEmail(m.email) === email || m.id === body.id);
-    const previous = index >= 0 ? db.members[index] : {};
-    const tempPassword = generateTemporaryPassword();
-    let password_hash;
-    try { password_hash = hashPassword(tempPassword); }
-    catch (error) { return json(res, 500, { error: "Temporary password could not be generated." }); }
-    const id = previous.id || body.id || email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    const oldStatus = previous.inviteStatus || previous.status || "New";
-    const member = {
-      ...previous,
-      id,
-      name,
-      email,
-      position: body.position !== undefined ? String(body.position || "") : (previous.position || ""),
-      department: body.department !== undefined ? String(body.department || "") : (previous.department || ""),
-      phone: body.phone !== undefined ? String(body.phone || "") : (previous.phone || ""),
-      branch: body.branch !== undefined ? String(body.branch || "") : (previous.branch || ""),
-      role,
-      access: role,
-      permissions,
-      permissionsExplicit: true,
-      inviteStatus: "Active",
-      status: "Active",
-      password_hash,
-      passwordAlgorithm: "bcrypt",
-      mustChangePassword: true,
-      temporaryPasswordCreatedAt: now,
-      temporaryPasswordCreatedBy: session.name || session.email,
-      temporaryPasswordUsed: false,
-      failedLoginAttempts: 0,
-      lockedUntil: null,
-      readdedAt: now,
-      readdedBy: session.name || session.email,
-      removedAt: "",
-      removedBy: "",
-      archivedAt: "",
-      archivedBy: "",
-      deactivatedAt: "",
-      deactivatedBy: "",
-      created_at: previous.created_at || now,
-      updated_at: now,
-    };
-    if (index >= 0) db.members[index] = member;
-    else db.members.push(member);
-    writeAudit(db, index >= 0 ? "Member re-added" : "Member added", session, "Administration & Governance", email, `${oldStatus} -> Active`);
-    writeAudit(db, "Temporary password generated", session, "Administration & Governance", email, "One-time password generated and hashed");
-    writeAudit(db, "Hub permissions assigned", session, "Administration & Governance", email, permissions.join(", ") || "No permissions selected");
-    const loginUrl = process.env.PUBLIC_BASE_URL || `http://localhost:${port}`;
-    const emailResult = await sendPlatformEmail(db, {
-      to: email,
-      subject: "Your Interactive Security Hub temporary password",
-      type: "member_temporary_password",
-      reference: email,
-      text: [
-        `Hello ${name},`,
-        "",
-        "Your Interactive Security Hub account has been created.",
-        `Login URL: ${loginUrl}`,
-        `Temporary one-time password: ${tempPassword}`,
-        "",
-        "You must change this password immediately after login.",
-        "This temporary password can only be used for the first login and will not be shown again.",
-      ].join("\n"),
-    });
-    member.temporaryPasswordEmailStatus = emailResult.ok ? "Sent" : "Failed";
-    member.temporaryPasswordEmailError = emailResult.error || "";
-    writeAudit(db, emailResult.ok ? "Temporary password email sent" : "Temporary password email failed", session, "Administration & Governance", email, emailResult.ok ? "Temporary password sent to user email" : emailResult.error);
-    writeDb(db);
-    return json(res, 200, {
-      ok: true,
-      member: publicMemberRecord(member),
-      emailStatus: member.temporaryPasswordEmailStatus,
-      emailError: member.temporaryPasswordEmailError,
-      temporaryPassword: emailResult.ok ? undefined : tempPassword,
-    });
-  }
-
+  // ── POST /api/sso/create-token ────────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/sso/create-token") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
     const body = await readBody(req);
     const hubSlug = body.hubSlug;
-    console.log("[sso] create-token requested", { userId: session.userId, hubSlug });
+    console.log("SSO create-token requested", { userId: session.userId, hubSlug });
     if (!canAccessHub(session, hubSlug)) return json(res, 403, { error: "Access denied" });
     const db = readDb();
     const token = crypto.randomBytes(48).toString("base64url");
@@ -2001,27 +832,27 @@ async function handleApi(req, res) {
     db.sso_tokens.push(record);
     writeDb(db);
     const redirectUrl = `${url.origin}/hubs/${hubSlug}/sso-login?token=${encodeURIComponent(token)}`;
-    console.log("[sso] token created", { userId: session.userId, hubSlug });
+    console.log("SSO token created", { userId: session.userId, hubSlug, redirectUrl });
     return json(res, 200, { redirectUrl });
   }
 
-  // ── SSO consume token ─────────────────────────────────────────────────────
+  // ── POST /api/sso/consume-token ───────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/sso/consume-token") {
     const body = await readBody(req);
     const token = body.token;
     const hubSlug = body.hubSlug;
     const db = readDb();
-    const record = db.sso_tokens.find((r) => r.token === token);
-    console.log("[sso] consume-token", { hubSlug });
-    if (!record)                                         return json(res, 401, { error: "Token not found." });
-    if (record.hub_slug !== hubSlug)                     return json(res, 401, { error: "Hub mismatch." });
-    if (record.used_at)                                  return json(res, 401, { error: "Token already used." });
-    if (new Date(record.expires_at) <= new Date())       return json(res, 401, { error: "Token expired." });
+    const record = db.sso_tokens.find((item) => item.token === token);
+    console.log("SSO token received by hub", { hubSlug });
+    if (!record) return json(res, 401, { error: "token not found" });
+    if (record.hub_slug !== hubSlug) return json(res, 401, { error: "hub mismatch" });
+    if (record.used_at) return json(res, 401, { error: "token used already" });
+    if (new Date(record.expires_at) <= new Date()) return json(res, 401, { error: "token expired" });
     record.used_at = new Date().toISOString();
     writeDb(db);
     const session = saveSession(record.user);
     setCookie(res, "interactive_security_session", session.sid);
-    console.log("[sso] session created", { userId: session.userId, hubSlug });
+    console.log("SSO validation passed and hub session created", { userId: session.userId, hubSlug });
     return json(res, 200, {
       user: {
         userId: session.userId,
@@ -2034,11 +865,10 @@ async function handleApi(req, res) {
     });
   }
 
-  // ── Permissions (get) ─────────────────────────────────────────────────────
+  // ── GET /api/permissions ──────────────────────────────────────────────────
   if (req.method === "GET" && url.pathname === "/api/permissions") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
-    if (session.mustChangePassword) return json(res, 403, { error: "Password change required before accessing platform permissions.", code: "PASSWORD_CHANGE_REQUIRED" });
     return json(res, 200, {
       userId: session.userId,
       role: session.role,
@@ -2047,7 +877,7 @@ async function handleApi(req, res) {
     });
   }
 
-  // ── Permissions (set) ─────────────────────────────────────────────────────
+  // ── POST /api/permissions ─────────────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/permissions") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
@@ -2056,148 +886,46 @@ async function handleApi(req, res) {
     const db = readDb();
     const now = new Date().toISOString();
     const previous = db.user_permissions
-      .filter((p) => p.user_id === body.userId && p.can_access)
-      .map((p) => p.permission_key);
+      .filter((item) => item.user_id === body.userId && item.can_access)
+      .map((item) => item.permission_key);
     const requestedPermissions = sanitizePermissions(body.permissions || []);
-    db.user_permissions = db.user_permissions.filter((p) => p.user_id !== body.userId);
+    db.user_permissions = db.user_permissions.filter((item) => item.user_id !== body.userId);
     requestedPermissions.forEach((permissionKey) => {
-      db.user_permissions.push({ id: crypto.randomUUID(), user_id: body.userId, permission_key: permissionKey, can_access: true, created_at: now, updated_at: now });
+      db.user_permissions.push({
+        id: crypto.randomUUID(),
+        user_id: body.userId,
+        permission_key: permissionKey,
+        can_access: true,
+        created_at: now,
+        updated_at: now,
+      });
     });
-    const member = db.members.find(
-      (m) => m.id === body.userId || normalizeEmail(m.email) === normalizeEmail(body.userEmail || "")
-    );
-    if (member) { member.permissions = requestedPermissions; member.permissionsExplicit = true; }
-    writeAudit(db, "Changed member permissions", session, "Setup - Member access",
-      body.userId || body.userEmail || "",
-      `Previous: ${previous.join(", ") || "none"} | New: ${requestedPermissions.join(", ") || "none"}`);
+    const member = db.members.find((item) => item.id === body.userId || normalizeEmail(item.email) === normalizeEmail(body.userEmail || ""));
+    if (member) {
+      member.permissions = requestedPermissions;
+      member.permissionsExplicit = true;
+    }
+    writeAudit(db, "Changed member permissions", session, "Setup - Member access", body.userId || body.userEmail || "", `Previous: ${previous.join(", ") || "none"} | New: ${requestedPermissions.join(", ") || "none"}`);
     writeDb(db);
     return json(res, 200, { ok: true });
-  }
-
-  // ── First-time setup routes ───────────────────────────────────────────────
-  // Permanently disabled once any member with a password_hash exists.
-
-  if (req.method === "GET" && url.pathname === "/api/setup/status") {
-    const db = readDb();
-    const hasSuperAdmin = db.members && db.members.some((m) => m.password_hash && normalizeRole(m.role || m.access) === "Super Admin");
-    return json(res, 200, { setupRequired: !hasSuperAdmin });
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/setup/create-admin") {
-    const db = readDb();
-    const hasSuperAdmin = db.members && db.members.some((m) => m.password_hash && normalizeRole(m.role || m.access) === "Super Admin");
-    if (hasSuperAdmin) return json(res, 403, { error: "Setup has already been completed." });
-
-    const body = await readBody(req);
-    const email = normalizeEmail(body.email);
-    const name  = String(body.name || "").trim();
-    const password = String(body.password || "");
-    if (!email || !name || !password) return json(res, 400, { error: "Name, email and password are required." });
-
-    let password_hash;
-    try { password_hash = hashPassword(password); }
-    catch (error) { return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] }); }
-
-    const now = new Date().toISOString();
-    const id  = email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    const member = {
-      id, name, email,
-      role: "Super Admin", access: "Super Admin",
-      permissions: permissionKeys, permissionsExplicit: true,
-      inviteStatus: "Active",
-      password_hash, passwordAlgorithm: "bcrypt",
-      mustChangePassword: false, failedLoginAttempts: 0, lockedUntil: null,
-      mfaEnabled: false, mfaRequired: false,
-      created_at: now, updated_at: now,
-    };
-    db.members.push(member);
-    writeAudit(db, "Created first Super Admin via setup route", member, "Authentication", email, "One-time production setup");
-    writeDb(db);
-    console.log(`[setup] Super Admin created: ${email}`);
-    return json(res, 200, { ok: true, email });
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/cost/import-entity-balances") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-    if (!hasPermission(session, "cost_hub")) return json(res, 403, { error: "Access denied" });
-    const fileName = path.basename(url.searchParams.get("fileName") || "entity-balances.xlsx");
-    if (!/\.xlsx$/i.test(fileName)) return json(res, 400, { error: "Please upload an .xlsx Excel workbook or use CSV." });
-    const uploadsDir = path.join(dataDir, "uploads");
-    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-    const tempPath = path.join(uploadsDir, `${crypto.randomUUID()}-${fileName}`);
-    try {
-      fs.writeFileSync(tempPath, await readRawBody(req));
-      const parsed = parseEntityBalanceWorkbook(tempPath);
-      const db = readDb();
-      writeAudit(db, "Entity balances workbook parsed", session, "Cost Hub", fileName, `${parsed.rows.length} rows parsed`);
-      writeDb(db);
-      return json(res, 200, parsed);
-    } catch (error) {
-      return json(res, 500, { error: error.message || "Entity balance workbook could not be imported." });
-    } finally {
-      try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch {}
-    }
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/finance/import-opening-balances") {
-    const session = getSession(req);
-    if (!session) return json(res, 401, { error: "Not signed in" });
-    if (!hasPermission(session, "finance_age_analysis")) return json(res, 403, { error: "Access denied" });
-    const fileName = path.basename(url.searchParams.get("fileName") || "BALANSE.xlsx");
-    if (!/\.(xlsx|xls)$/i.test(fileName)) return json(res, 400, { error: "Please upload the BALANSE Excel workbook." });
-    const uploadsDir = path.join(dataDir, "uploads");
-    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-    const tempPath = path.join(uploadsDir, `${crypto.randomUUID()}-${fileName}`);
-    try {
-      const buffer = await readRawBody(req);
-      fs.writeFileSync(tempPath, buffer);
-      const parsed = parseBalanseWorkbook(tempPath, session);
-      const db = readDb();
-      writeAudit(db, "Balance imported", session, "Finance Balances and Age Analysis", fileName, `${parsed.rows.length} BALANSE rows parsed`);
-      writeDb(db);
-      return json(res, 200, parsed);
-    } catch (error) {
-      return json(res, 500, { error: error.message || "BALANSE workbook could not be imported." });
-    } finally {
-      try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch {}
-    }
   }
 
   return json(res, 404, { error: "API route not found" });
 }
 
-// ── HTTP server ───────────────────────────────────────────────────────────────
-
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res);
-    if (url.pathname.startsWith("/hubs/")) {
-      const hubMatch = url.pathname.match(/^\/hubs\/([^/]+)/);
-      const hubSlug = hubMatch ? hubMatch[1] : "";
-      const isSsoLogin = url.pathname.includes("/sso-login");
-      if (hubSlug && !isSsoLogin) {
-        const session = getSession(req);
-        if (session && !canAccessHub(session, hubSlug)) {
-          res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
-          res.end("Access denied");
-          return;
-        }
-      }
-      return serveIndex(res);
-    }
-    if (url.pathname === "/reset-password") return serveIndex(res);
-    if (url.pathname === "/setup") return serveSetup(res);
+    if (url.pathname.startsWith("/hubs/")) return serveIndex(res);
     return serveStatic(req, res);
   } catch (error) {
-    console.error("[server error]", error);
+    console.error(error);
     json(res, 500, { error: "Server error" });
   }
 });
 
 server.listen(port, () => {
   ensureDb();
-  console.log(`\n✓ Interactive Security Hub running at http://localhost:${port}`);
-  console.log(`  NODE_ENV: ${process.env.NODE_ENV || "development"}`);
+  console.log(`Interactive Security Hub running at http://localhost:${port}`);
 });
