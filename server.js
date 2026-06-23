@@ -1000,6 +1000,7 @@ async function handleApi(req, res) {
     return json(res, 200, { ok: true });
   }
 
+  console.log(`[404] Unhandled API route: ${req.method} ${url.pathname}`);
   return json(res, 404, { error: "API route not found" });
 }
 
