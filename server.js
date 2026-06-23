@@ -137,7 +137,7 @@ function ensureDb() {
         const hash = bcrypt.hashSync(BOOTSTRAP_PASSWORD, BCRYPT_ROUNDS);
         const now = new Date().toISOString();
         const newAdmin = {
-          id: BOOTSTRAP_EMAIL.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+          id: crypto.randomUUID(),
           name: BOOTSTRAP_NAME,
           email: BOOTSTRAP_EMAIL,
           role: "Super Admin",
@@ -197,6 +197,14 @@ function ensureDb() {
   }
   db.members = db.members.map((member) => {
     let updated = member;
+    // Backfill id for members created before the id field was added
+    if (!updated.id) {
+      updated = {
+        ...updated,
+        id: crypto.randomUUID(),
+      };
+      changed = true;
+    }
     const normalizedRole = normalizeRole(updated.role || updated.access || "Read Only");
     const normalizedPermissions = sanitizePermissions(updated.permissions);
     if (updated.role !== normalizedRole || updated.access !== normalizedRole) {
