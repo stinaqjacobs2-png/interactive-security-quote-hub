@@ -249,6 +249,26 @@ function ensureDb() {
       updated_at: request.updated_at || new Date().toISOString(),
     };
   });
+  // Deduplicate members by email — keep the one with the most data (Super Admin first, then most recent)
+  const seen = new Map();
+  db.members.forEach((m) => {
+    const key = normalizeEmail(m.email || "");
+    if (!key) return;
+    const existing = seen.get(key);
+    if (!existing) { seen.set(key, m); return; }
+    // Prefer Super Admin role, then more recently updated
+    const mIsSuperAdmin = (m.role || m.access || "").toLowerCase().includes("super");
+    const eIsSuperAdmin = (existing.role || existing.access || "").toLowerCase().includes("super");
+    if (mIsSuperAdmin && !eIsSuperAdmin) { seen.set(key, m); changed = true; }
+    else if (!mIsSuperAdmin && !eIsSuperAdmin && (m.updated_at || "") > (existing.updated_at || "")) { seen.set(key, m); changed = true; }
+    else changed = true; // duplicate found, will be removed
+  });
+  if (db.members.length !== seen.size) {
+    db.members = Array.from(seen.values());
+    changed = true;
+    console.log(`[startup] Deduplicated members: ${db.members.length} unique members remaining`);
+  }
+
   if (changed) fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
 }
 
@@ -793,12 +813,13 @@ async function handleApi(req, res) {
     if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
     const body = await readBody(req);
     const email = normalizeEmail(body.email);
-    const tempPassword = String(body.temporaryPassword || "");
-    if (!email || !body.name) return json(res, 400, { error: "Member name and email are required." });
+    const tempPassword = String(body.temporaryPassword || body.tempPassword || body.password || "");
+    if (!email) return json(res, 400, { error: "Member email is required." });
     const db = readDb();
-    const existing = db.members.find((item) => normalizeEmail(item.email) === email && item.id !== body.id);
-    if (existing) return json(res, 409, { error: "A member with this email address already exists." });
-    let password_hash = "";
+    // Always upsert by email — never create duplicates regardless of what id is sent
+    const index = db.members.findIndex((item) => normalizeEmail(item.email) === email);
+    const previous = index >= 0 ? db.members[index] : {};
+    let password_hash = previous.password_hash || "";
     if (tempPassword) {
       try {
         password_hash = hashPassword(tempPassword);
@@ -807,9 +828,8 @@ async function handleApi(req, res) {
       }
     }
     const now = new Date().toISOString();
-    const id = body.id || email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    const index = db.members.findIndex((item) => item.id === id || normalizeEmail(item.email) === email);
-    const previous = index >= 0 ? db.members[index] : {};
+    // Always keep existing UUID id; generate new one only for truly new members
+    const id = previous.id || crypto.randomUUID();
     const role = normalizeRole(body.role || body.access || previous.role || "Sales Representative");
     const permissions = sanitizePermissions(Array.isArray(body.permissions) ? body.permissions : (previous.permissions || defaultPermissionsForRole(role)));
     const member = {
@@ -825,9 +845,8 @@ async function handleApi(req, res) {
       permissions,
       permissionsExplicit: true,
       inviteStatus: body.inviteStatus || previous.inviteStatus || "Invite Sent",
-      mustChangePassword: password_hash ? true : Boolean(previous.mustChangePassword),
-      // FIX: only update password_hash if a new temp password was given
-      password_hash: password_hash || previous.password_hash || "",
+      mustChangePassword: password_hash && !previous.password_hash ? true : Boolean(previous.mustChangePassword),
+      password_hash,
       passwordAlgorithm: password_hash ? "bcrypt" : previous.passwordAlgorithm || "",
       failedLoginAttempts: 0,
       lockedUntil: null,
