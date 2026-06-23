@@ -835,6 +835,64 @@ async function handleApi(req, res) {
   }
 
   // ── POST /api/sso/create-token ────────────────────────────────────────────
+  // ── DELETE /api/members/:id ───────────────────────────────────────────────
+  // Soft-delete: sets inviteStatus to "Disabled" and expires all sessions
+  if (req.method === "DELETE" && url.pathname.startsWith("/api/members/")) {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
+    const memberId = decodeURIComponent(url.pathname.replace("/api/members/", "").trim());
+    if (!memberId) return json(res, 400, { error: "Member ID required" });
+    const db = readDb();
+    const index = db.members.findIndex((m) => m.id === memberId || normalizeEmail(m.email) === normalizeEmail(memberId));
+    if (index < 0) return json(res, 404, { error: "Member not found" });
+    const target = db.members[index];
+    // Prevent removing yourself
+    if (normalizeEmail(target.email) === normalizeEmail(session.email)) {
+      return json(res, 400, { error: "You cannot remove your own account." });
+    }
+    db.members[index] = { ...target, inviteStatus: "Disabled", updated_at: new Date().toISOString() };
+    // Expire all active sessions for the removed member
+    db.sessions = db.sessions.filter((s) => normalizeEmail(s.email) !== normalizeEmail(target.email));
+    writeAudit(db, "Member removed", session, "Setup - Member access", target.email, `Disabled by ${session.email}`);
+    writeDb(db);
+    return json(res, 200, { ok: true, member: publicMemberForList(db.members[index]) });
+  }
+
+  // ── PATCH /api/members/:id ────────────────────────────────────────────────
+  // Update a single member field (e.g. re-enable, change role)
+  if (req.method === "PATCH" && url.pathname.startsWith("/api/members/")) {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
+    const memberId = decodeURIComponent(url.pathname.replace("/api/members/", "").trim());
+    const body = await readBody(req);
+    const db = readDb();
+    const index = db.members.findIndex((m) => m.id === memberId || normalizeEmail(m.email) === normalizeEmail(memberId));
+    if (index < 0) return json(res, 404, { error: "Member not found" });
+    const previous = db.members[index];
+    const role = body.role ? normalizeRole(body.role) : normalizeRole(previous.role || previous.access || "Read Only");
+    const permissions = Array.isArray(body.permissions) ? sanitizePermissions(body.permissions) : previous.permissions;
+    const updated = {
+      ...previous,
+      ...(body.name !== undefined && { name: String(body.name) }),
+      ...(body.role !== undefined && { role, access: role }),
+      ...(body.permissions !== undefined && { permissions, permissionsExplicit: true }),
+      ...(body.inviteStatus !== undefined && { inviteStatus: body.inviteStatus }),
+      ...(body.phone !== undefined && { phone: body.phone }),
+      ...(body.branch !== undefined && { branch: body.branch }),
+      ...(body.department !== undefined && { department: body.department }),
+      updated_at: new Date().toISOString(),
+    };
+    db.members[index] = updated;
+    if (body.inviteStatus === "Disabled") {
+      db.sessions = db.sessions.filter((s) => normalizeEmail(s.email) !== normalizeEmail(previous.email));
+    }
+    writeAudit(db, "Member updated", session, "Setup - Member access", previous.email, `Updated by ${session.email}`);
+    writeDb(db);
+    return json(res, 200, { member: publicMemberForList(updated) });
+  }
+
   if (req.method === "POST" && url.pathname === "/api/sso/create-token") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
