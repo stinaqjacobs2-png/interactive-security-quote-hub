@@ -24,6 +24,7 @@ const BOOTSTRAP_PASSWORD = (process.env.SUPER_ADMIN_PASSWORD || "").trim();
 const BOOTSTRAP_NAME = (process.env.SUPER_ADMIN_NAME || "Super Admin").trim();
 
 const permissionKeys = [
+  "projections",
   "dashboard",
   "build_quotation",
   "build_guarding_quotation",
@@ -37,6 +38,19 @@ const permissionKeys = [
   "supplier_prices",
   "member_access_management",
   "quotation_hub",
+  "cost_hub",
+  "finance_age_analysis",
+  "fleet_hub",
+  "living_resources",
+  "accounts_sales",
+  "hr_hub",
+  "technical_maintenance",
+  "payroll_hub",
+  "overtime_hub",
+  "control_room_it",
+  "uniforms_stores",
+  "employee_files",
+  "administration_governance",
   "sales_quotation_requests",
 ];
 
@@ -483,8 +497,26 @@ function saveSession(user) {
 }
 
 function canAccessHub(session, hubSlug) {
-  if (!session || hubSlug !== "quotation-hub") return false;
-  return hasPermission(session, "quotation_hub");
+  if (!session) return false;
+  const hubPermissionMap = {
+    "quotation-hub": "quotation_hub",
+    "cost-hub": "cost_hub",
+    "finance-age-analysis": "finance_age_analysis",
+    "fleet": "fleet_hub",
+    "living-resources": "living_resources",
+    "accounts-sales": "accounts_sales",
+    "hr": "hr_hub",
+    "technical-maintenance": "technical_maintenance",
+    "payroll": "payroll_hub",
+    "overtime": "overtime_hub",
+    "control-room-it": "control_room_it",
+    "uniforms-stores": "uniforms_stores",
+    "employee-files": "employee_files",
+    "administration-governance": "administration_governance",
+  };
+  const permKey = hubPermissionMap[hubSlug];
+  if (!permKey) return false;
+  return hasPermission(session, permKey);
 }
 
 function hasPermission(session, permissionKey) {
