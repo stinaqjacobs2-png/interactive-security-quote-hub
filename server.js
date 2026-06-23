@@ -845,6 +845,58 @@ async function handleApi(req, res) {
     return json(res, 200, { member: publicMemberForList(member) });
   }
 
+  // ── Helper: find member by any identifier ────────────────────────────────
+  function findMemberIndex(db, urlSegment, body) {
+    const seg = (urlSegment || "").trim();
+    const bodyId = String(body.id || body.userId || body.memberId || "").trim();
+    const bodyEmail = normalizeEmail(body.email || "");
+    // Known action words that are NOT member ids
+    const actionWords = new Set(["disable","remove","enable","re-enable","reactivate","readd","update","save","invite","unlock","reset-password","search"]);
+    const segIsId = seg && !actionWords.has(seg.toLowerCase());
+    return db.members.findIndex((m) =>
+      (segIsId && (m.id === seg || normalizeEmail(m.email) === normalizeEmail(seg))) ||
+      (bodyId && m.id === bodyId) ||
+      (bodyEmail && normalizeEmail(m.email) === bodyEmail)
+    );
+  }
+
+  // ── POST /api/members/disable  (action-style remove) ─────────────────────
+  if ((req.method === "POST" || req.method === "DELETE") &&
+      (url.pathname === "/api/members/disable" || url.pathname === "/api/members/remove" || url.pathname === "/api/members/deactivate")) {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
+    const body = await readBody(req);
+    const db = readDb();
+    console.log(`[members/disable] body=${JSON.stringify(body)}`);
+    const index = findMemberIndex(db, "", body);
+    if (index < 0) return json(res, 404, { error: "Member not found" });
+    const target = db.members[index];
+    if (normalizeEmail(target.email) === normalizeEmail(session.email)) return json(res, 400, { error: "You cannot remove your own account." });
+    db.members[index] = { ...target, inviteStatus: "Disabled", updated_at: new Date().toISOString() };
+    db.sessions = db.sessions.filter((s) => normalizeEmail(s.email) !== normalizeEmail(target.email));
+    writeAudit(db, "Member disabled", session, "Administration", target.email, `Disabled by ${session.email}`);
+    writeDb(db);
+    return json(res, 200, { ok: true, member: publicMemberForList(db.members[index]) });
+  }
+
+  // ── POST /api/members/enable  (action-style re-enable) ───────────────────
+  if ((req.method === "POST" || req.method === "PUT") &&
+      (url.pathname === "/api/members/enable" || url.pathname === "/api/members/re-enable" || url.pathname === "/api/members/reactivate" || url.pathname === "/api/members/restore")) {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
+    const body = await readBody(req);
+    const db = readDb();
+    console.log(`[members/enable] body=${JSON.stringify(body)}`);
+    const index = findMemberIndex(db, "", body);
+    if (index < 0) return json(res, 404, { error: "Member not found" });
+    db.members[index] = { ...db.members[index], inviteStatus: "Active", failedLoginAttempts: 0, lockedUntil: null, updated_at: new Date().toISOString() };
+    writeAudit(db, "Member re-enabled", session, "Administration", db.members[index].email, `Re-enabled by ${session.email}`);
+    writeDb(db);
+    return json(res, 200, { ok: true, member: publicMemberForList(db.members[index]) });
+  }
+
   // ── POST /api/sso/create-token ────────────────────────────────────────────
   // ── DELETE /api/members/:id ───────────────────────────────────────────────
   // Soft-delete: sets inviteStatus to "Disabled" and expires all sessions
@@ -852,10 +904,12 @@ async function handleApi(req, res) {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
     if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
-    const memberId = decodeURIComponent(url.pathname.replace("/api/members/", "").trim());
-    if (!memberId) return json(res, 400, { error: "Member ID required" });
+    // Extract only the first path segment after /api/members/ (the id)
+    const memberId = decodeURIComponent((url.pathname.split("/")[3] || "").trim());
+    const delBody = await readBody(req);
     const db = readDb();
-    const index = db.members.findIndex((m) => m.id === memberId || normalizeEmail(m.email) === normalizeEmail(memberId));
+    console.log(`[DELETE /api/members/${memberId}] body=${JSON.stringify(delBody)} members=${db.members.map(m=>`${m.id}|${m.email}`).join("; ")}`);
+    const index = findMemberIndex(db, memberId, delBody);
     if (index < 0) return json(res, 404, { error: "Member not found" });
     const target = db.members[index];
     // Prevent removing yourself
@@ -876,10 +930,10 @@ async function handleApi(req, res) {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
     if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
-    const memberId = decodeURIComponent(url.pathname.replace("/api/members/", "").trim());
+    const memberId = decodeURIComponent((url.pathname.split("/")[3] || "").trim());
     const body = await readBody(req);
     const db = readDb();
-    const index = db.members.findIndex((m) => m.id === memberId || normalizeEmail(m.email) === normalizeEmail(memberId));
+    const index = findMemberIndex(db, memberId, body);
     if (index < 0) return json(res, 404, { error: "Member not found" });
     const previous = db.members[index];
     const role = body.role ? normalizeRole(body.role) : normalizeRole(previous.role || previous.access || "Read Only");
@@ -1211,4 +1265,9 @@ const server = http.createServer(async (req, res) => {
     console.error(error);
     json(res, 500, { error: "Server error" });
   }
+});
+
+server.listen(port, () => {
+  ensureDb();
+  console.log(`Interactive Security Hub running at http://localhost:${port}`);
 });
