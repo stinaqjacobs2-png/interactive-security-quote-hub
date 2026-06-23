@@ -571,6 +571,9 @@ function serveStatic(req, res) {
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
+  // Log ALL API requests so we can diagnose exactly what the hub calls
+  console.log(`[API] ${req.method} ${url.pathname}`);
+
   // ── POST /api/auth/login ───────────────────────────────────────────────────
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
     const body = await readBody(req);
@@ -1208,9 +1211,4 @@ const server = http.createServer(async (req, res) => {
     console.error(error);
     json(res, 500, { error: "Server error" });
   }
-});
-
-server.listen(port, () => {
-  ensureDb();
-  console.log(`Interactive Security Hub running at http://localhost:${port}`);
 });
