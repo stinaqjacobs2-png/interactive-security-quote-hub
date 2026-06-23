@@ -1000,6 +1000,192 @@ async function handleApi(req, res) {
     return json(res, 200, { ok: true });
   }
 
+  // ── GET /api/setup/status ─────────────────────────────────────────────────
+  if (req.method === "GET" && url.pathname === "/api/setup/status") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    const db = readDb();
+    const activeMembers = db.members.filter((m) => m.inviteStatus !== "Disabled");
+    const settings = securitySettings(db);
+    return json(res, 200, {
+      ok: true,
+      memberCount: activeMembers.length,
+      hasPasswordUsers: activeMembers.some((m) => m.password_hash),
+      settings,
+      auditCount: (db.audit_trail || []).length,
+      sessionCount: (db.sessions || []).length,
+    });
+  }
+
+  // ── POST /api/members/readd ───────────────────────────────────────────────
+  // Re-enables a previously disabled member
+  if (req.method === "POST" && url.pathname === "/api/members/readd") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
+    const body = await readBody(req);
+    const memberId = body.id || body.memberId || body.userId;
+    const memberEmail = normalizeEmail(body.email || "");
+    if (!memberId && !memberEmail) return json(res, 400, { error: "Member ID or email required" });
+    const db = readDb();
+    const index = db.members.findIndex((m) =>
+      (memberId && m.id === memberId) ||
+      (memberEmail && normalizeEmail(m.email) === memberEmail)
+    );
+    if (index < 0) return json(res, 404, { error: "Member not found" });
+    db.members[index] = {
+      ...db.members[index],
+      inviteStatus: "Active",
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+      updated_at: new Date().toISOString(),
+    };
+    writeAudit(db, "Member re-enabled", session, "Setup - Member access", db.members[index].email, `Re-enabled by ${session.email}`);
+    writeDb(db);
+    return json(res, 200, { ok: true, member: publicMemberForList(db.members[index]) });
+  }
+
+  // ── GET /api/security-settings ───────────────────────────────────────────
+  if (req.method === "GET" && url.pathname === "/api/security-settings") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    const db = readDb();
+    return json(res, 200, { settings: securitySettings(db) });
+  }
+
+  // ── POST /api/security-settings ──────────────────────────────────────────
+  if (req.method === "POST" && url.pathname === "/api/security-settings") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!["Super Admin", "Admin"].includes(session.role)) return json(res, 403, { error: "Access denied" });
+    const body = await readBody(req);
+    const db = readDb();
+    db.security_settings = {
+      ...db.security_settings,
+      ...(body.maxFailedLogins !== undefined && { maxFailedLogins: Number(body.maxFailedLogins) }),
+      ...(body.lockoutMinutes !== undefined && { lockoutMinutes: Number(body.lockoutMinutes) }),
+      ...(body.sessionIdleMinutes !== undefined && { sessionIdleMinutes: Number(body.sessionIdleMinutes) }),
+      ...(body.sessionAbsoluteHours !== undefined && { sessionAbsoluteHours: Number(body.sessionAbsoluteHours) }),
+      ...(body.passwordResetMinutes !== undefined && { passwordResetMinutes: Number(body.passwordResetMinutes) }),
+      ...(body.mfaEnabled !== undefined && { mfaEnabled: Boolean(body.mfaEnabled) }),
+    };
+    writeAudit(db, "Security settings updated", session, "Administration", "security_settings", `Updated by ${session.email}`);
+    writeDb(db);
+    return json(res, 200, { ok: true, settings: securitySettings(db) });
+  }
+
+  // ── GET /api/sessions ─────────────────────────────────────────────────────
+  if (req.method === "GET" && url.pathname === "/api/sessions") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!["Super Admin", "Admin"].includes(session.role)) return json(res, 403, { error: "Access denied" });
+    const db = readDb();
+    const now = new Date();
+    const activeSessions = db.sessions
+      .filter((s) => new Date(s.expiresAt) > now)
+      .map((s) => ({ sid: s.sid, email: s.email, name: s.name, role: s.role, createdAt: s.createdAt, lastActivityAt: s.lastActivityAt, expiresAt: s.expiresAt }));
+    return json(res, 200, { sessions: activeSessions });
+  }
+
+  // ── DELETE /api/sessions/:sid ─────────────────────────────────────────────
+  if (req.method === "DELETE" && url.pathname.startsWith("/api/sessions/")) {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!["Super Admin", "Admin"].includes(session.role)) return json(res, 403, { error: "Access denied" });
+    const targetSid = decodeURIComponent(url.pathname.replace("/api/sessions/", "").trim());
+    const db = readDb();
+    const target = db.sessions.find((s) => s.sid === targetSid);
+    if (!target) return json(res, 404, { error: "Session not found" });
+    db.sessions = db.sessions.filter((s) => s.sid !== targetSid);
+    writeAudit(db, "Session revoked", session, "Administration", target.email, `Revoked by ${session.email}`);
+    writeDb(db);
+    return json(res, 200, { ok: true });
+  }
+
+  // ── POST /api/members/:id/unlock ──────────────────────────────────────────
+  if (req.method === "POST" && url.pathname.match(/^\/api\/members\/[^/]+\/unlock$/)) {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
+    const memberId = decodeURIComponent(url.pathname.split("/")[3]);
+    const db = readDb();
+    const index = db.members.findIndex((m) => m.id === memberId || normalizeEmail(m.email) === normalizeEmail(memberId));
+    if (index < 0) return json(res, 404, { error: "Member not found" });
+    db.members[index] = { ...db.members[index], failedLoginAttempts: 0, lockedUntil: null, updated_at: new Date().toISOString() };
+    writeAudit(db, "Account unlocked", session, "Administration", db.members[index].email, `Unlocked by ${session.email}`);
+    writeDb(db);
+    return json(res, 200, { ok: true, member: publicMemberForList(db.members[index]) });
+  }
+
+  // ── POST /api/members/:id/reset-password ──────────────────────────────────
+  if (req.method === "POST" && url.pathname.match(/^\/api\/members\/[^/]+\/reset-password$/)) {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
+    const memberId = decodeURIComponent(url.pathname.split("/")[3]);
+    const body = await readBody(req);
+    const newPassword = String(body.newPassword || body.temporaryPassword || "");
+    if (!newPassword) return json(res, 400, { error: "New password is required" });
+    const db = readDb();
+    const index = db.members.findIndex((m) => m.id === memberId || normalizeEmail(m.email) === normalizeEmail(memberId));
+    if (index < 0) return json(res, 404, { error: "Member not found" });
+    let password_hash;
+    try {
+      password_hash = hashPassword(newPassword);
+    } catch (error) {
+      return json(res, 400, { error: error.message, code: error.code, details: error.details || [] });
+    }
+    db.members[index] = { ...db.members[index], password_hash, passwordAlgorithm: "bcrypt", mustChangePassword: true, failedLoginAttempts: 0, lockedUntil: null, updated_at: new Date().toISOString() };
+    db.sessions = db.sessions.filter((s) => normalizeEmail(s.email) !== normalizeEmail(db.members[index].email));
+    writeAudit(db, "Password reset by admin", session, "Administration", db.members[index].email, `Reset by ${session.email}`);
+    writeDb(db);
+    return json(res, 200, { ok: true });
+  }
+
+  // ── GET /api/audit-trail ──────────────────────────────────────────────────
+  if (req.method === "GET" && (url.pathname === "/api/audit-trail" || url.pathname === "/api/audit")) {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!hasPermission(session, "audit_trail") && !["Super Admin", "Admin"].includes(session.role)) return json(res, 403, { error: "Access denied" });
+    const db = readDb();
+    const limit = Math.min(Number(url.searchParams.get("limit") || 500), 2000);
+    const offset = Number(url.searchParams.get("offset") || 0);
+    const member = url.searchParams.get("member") || "";
+    const module = url.searchParams.get("module") || "";
+    let records = db.audit_trail || [];
+    if (member) records = records.filter((r) => normalizeEmail(r.user) === normalizeEmail(member) || normalizeEmail(r.reference) === normalizeEmail(member));
+    if (module) records = records.filter((r) => (r.module || "").toLowerCase().includes(module.toLowerCase()));
+    return json(res, 200, { records: records.slice(offset, offset + limit), total: records.length });
+  }
+
+  // ── GET /api/hub-permissions ──────────────────────────────────────────────
+  if (req.method === "GET" && url.pathname === "/api/hub-permissions") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!["Super Admin", "Admin"].includes(session.role)) return json(res, 403, { error: "Access denied" });
+    const db = readDb();
+    const members = db.members.map(publicMemberForList);
+    return json(res, 200, { members });
+  }
+
+  // ── POST /api/hub-permissions ─────────────────────────────────────────────
+  if (req.method === "POST" && url.pathname === "/api/hub-permissions") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (!["Super Admin", "Admin"].includes(session.role)) return json(res, 403, { error: "Access denied" });
+    const body = await readBody(req);
+    const db = readDb();
+    const email = normalizeEmail(body.email || "");
+    const memberId = body.id || body.memberId || body.userId;
+    const index = db.members.findIndex((m) => (memberId && m.id === memberId) || (email && normalizeEmail(m.email) === email));
+    if (index < 0) return json(res, 404, { error: "Member not found" });
+    const permissions = sanitizePermissions(body.permissions || []);
+    db.members[index] = { ...db.members[index], permissions, permissionsExplicit: true, updated_at: new Date().toISOString() };
+    writeAudit(db, "Hub permissions updated", session, "Administration", db.members[index].email, `Updated by ${session.email}`);
+    writeDb(db);
+    return json(res, 200, { ok: true, member: publicMemberForList(db.members[index]) });
+  }
+
   console.log(`[404] Unhandled API route: ${req.method} ${url.pathname}`);
   return json(res, 404, { error: "API route not found" });
 }
