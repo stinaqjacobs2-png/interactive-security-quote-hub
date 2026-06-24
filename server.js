@@ -828,8 +828,12 @@ async function handleApi(req, res) {
       }
     }
     const now = new Date().toISOString();
-    // Always keep existing UUID id; generate new one only for truly new members
-    const id = previous.id || crypto.randomUUID();
+    // CRITICAL: preserve whatever id the hub sent (it uses this same id for delete/edit later).
+    // Fall back to existing stored id, then to email-slug (matching hub's own id generation),
+    // and only use a UUID as last resort for members with no id at all.
+    const bodyId = String(body.id || body.userId || body.memberId || "").trim();
+    const emailSlug = email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const id = previous.id || bodyId || emailSlug || crypto.randomUUID();
     const role = normalizeRole(body.role || body.access || previous.role || "Sales Representative");
     const permissions = sanitizePermissions(Array.isArray(body.permissions) ? body.permissions : (previous.permissions || defaultPermissionsForRole(role)));
     const member = {
@@ -865,6 +869,9 @@ async function handleApi(req, res) {
   }
 
   // ── Helper: find member by any identifier ────────────────────────────────
+  function emailToSlug(e) {
+    return normalizeEmail(e).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  }
   function findMemberIndex(db, urlSegment, body) {
     const seg = (urlSegment || "").trim();
     const bodyId = String(body.id || body.userId || body.memberId || "").trim();
@@ -872,11 +879,20 @@ async function handleApi(req, res) {
     // Known action words that are NOT member ids
     const actionWords = new Set(["disable","remove","enable","re-enable","reactivate","readd","update","save","invite","unlock","reset-password","search"]);
     const segIsId = seg && !actionWords.has(seg.toLowerCase());
-    return db.members.findIndex((m) =>
-      (segIsId && (m.id === seg || normalizeEmail(m.email) === normalizeEmail(seg))) ||
-      (bodyId && m.id === bodyId) ||
-      (bodyEmail && normalizeEmail(m.email) === bodyEmail)
-    );
+    return db.members.findIndex((m) => {
+      const mSlug = emailToSlug(m.email || "");
+      if (segIsId) {
+        if (m.id === seg) return true;                              // exact id match
+        if (normalizeEmail(m.email) === normalizeEmail(seg)) return true; // email match
+        if (mSlug && mSlug === seg) return true;                    // email-slug match
+      }
+      if (bodyId) {
+        if (m.id === bodyId) return true;
+        if (mSlug && mSlug === bodyId) return true;
+      }
+      if (bodyEmail && normalizeEmail(m.email) === bodyEmail) return true;
+      return false;
+    });
   }
 
   // ── POST /api/members/disable  (action-style remove) ─────────────────────
@@ -927,7 +943,7 @@ async function handleApi(req, res) {
     const memberId = decodeURIComponent((url.pathname.split("/")[3] || "").trim());
     const delBody = await readBody(req);
     const db = readDb();
-    console.log(`[DELETE /api/members/${memberId}] body=${JSON.stringify(delBody)} members=${db.members.map(m=>`${m.id}|${m.email}`).join("; ")}`);
+    console.log(`[DELETE /api/members] id="${memberId}" body=${JSON.stringify(delBody)} stored=${db.members.map(m=>`id:${m.id} email:${m.email} slug:${emailToSlug(m.email)}`).join(" | ")}`);
     const index = findMemberIndex(db, memberId, delBody);
     if (index < 0) return json(res, 404, { error: "Member not found" });
     const target = db.members[index];
