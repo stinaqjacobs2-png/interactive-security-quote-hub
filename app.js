@@ -5966,7 +5966,23 @@ function governanceTabFromHash() {
   return governanceTabs.some((item) => item.key === key) ? key : activeGovernanceTab;
 }
 
-function renderGovernanceHub(tab = activeGovernanceTab) {
+function renderGovernanceHub(tab = activeGovernanceTab) {async function emergencyResetMembers() {
+  const confirmed = confirm(
+    "This will remove ALL old members, archived users, duplicate users, permissions and invites.\n" +
+    "Only your current Super Admin account will remain.\n\nContinue?"
+  );
+  if (!confirmed) return;
+  const res = await fetch("/api/admin/reset-members", { method: "POST" });
+  const data = await res.json();
+  if (data.ok) {
+    alert("Reset complete. Removed " + data.membersRemoved + " member(s). Only you remain.");
+    // reload both member tables — replace these with whatever your app uses
+    if (typeof loadMembers === "function") loadMembers();
+    if (typeof loadArchivedMembers === "function") loadArchivedMembers();
+  } else {
+    alert("Reset failed: " + (data.error || "Unknown error"));
+  }
+}
   activeGovernanceTab = tab;
   if (tab === "security" && !governancePasswordResetRequestsLoaded && !governancePasswordResetRequestsLoading) {
     loadGovernancePasswordResetRequests().then(() => renderGovernanceHub("security"));
@@ -5983,7 +5999,10 @@ function renderGovernanceHub(tab = activeGovernanceTab) {
     history: renderGovernanceHistory(),
   }[tab] || renderGovernanceDashboard();
   portalHubGrid.innerHTML = `<section class="finance-hub-shell governance-hub-shell"><aside class="finance-sidebar"><div class="brand"><img class="brand-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" /><div><strong>${escapeHtml(hub.name)}</strong><small>System governance</small></div></div><nav>${governanceTabs.map((item) => `<button class="nav-item ${item.key === tab ? "active" : ""}" type="button" data-governance-tab="${item.key}">${escapeHtml(item.label)}</button>`).join("")}</nav><div class="finance-user-panel"><small>Signed in as</small><strong>${escapeHtml(currentUserName())}</strong><span>${escapeHtml(currentMember().access || "Member")}</span><button class="secondary-btn" type="button" data-finance-logout>Logout</button></div></aside><main class="finance-main"><div class="panel-heading"><div><p class="eyebrow">Administration & Governance</p><h1>${escapeHtml(governanceTabs.find((item) => item.key === tab)?.label || "System Dashboard")}</h1></div><strong class="finance-active-date">${escapeHtml(isSuperAdmin() ? "Super Admin" : "Admin view")}</strong></div>${content}</main></section>`;
-  writeAudit("Opened governance tab", tab, "Administration & Governance", tab, currentUserName());
+  writeAudit("Opened governance tab", tab, "Administration & Governance", tab, currentUserName());<button onclick="emergencyResetMembers()" 
+  style="background:#dc2626;color:white;padding:8px 16px;border:none;border-radius:6px;cursor:pointer;font-weight:bold;">
+  🚨 Emergency Reset Members
+</button>
 }
 
 function financeTabFromHash() {
