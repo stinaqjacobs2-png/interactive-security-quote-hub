@@ -123,21 +123,22 @@ function ensureDb() {
     }, null, 2));
   }
 
-  // ── Env-var bootstrap: seed Super Admin if no members exist ─────────────────
-  // Only runs when SUPER_ADMIN_EMAIL + SUPER_ADMIN_PASSWORD are set AND the
-  // members table is empty. Safe to run every startup — it's a no-op after.
+  // ── Env-var bootstrap: seed Super Admin ────────────────────────────────────
+  // Uses email-slug as the canonical ID so it matches what the frontend generates.
+  // Checks by email (case-insensitive) — safe to run every startup.
   if (BOOTSTRAP_EMAIL && BOOTSTRAP_PASSWORD) {
     const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
     if (!Array.isArray(db.members)) db.members = [];
+    const bootstrapId = BOOTSTRAP_EMAIL.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     const alreadyExists = db.members.some(
-      (m) => (m.email || "").toLowerCase() === BOOTSTRAP_EMAIL
+      (m) => normalizeEmail(m.email) === BOOTSTRAP_EMAIL
     );
     if (!alreadyExists) {
       try {
         const hash = bcrypt.hashSync(BOOTSTRAP_PASSWORD, BCRYPT_ROUNDS);
         const now = new Date().toISOString();
-        const newAdmin = {
-          id: crypto.randomUUID(),
+        db.members.push({
+          id: bootstrapId,
           name: BOOTSTRAP_NAME,
           email: BOOTSTRAP_EMAIL,
           role: "Super Admin",
@@ -154,24 +155,22 @@ function ensureDb() {
           mfaRequired: false,
           created_at: now,
           updated_at: now,
-        };
-        db.members.push(newAdmin);
-        if (!Array.isArray(db.audit_trail)) db.audit_trail = [];
-        db.audit_trail.unshift({
-          id: crypto.randomUUID(),
-          action: "Bootstrap Super Admin created",
-          detail: BOOTSTRAP_EMAIL,
-          module: "Authentication",
-          reference: BOOTSTRAP_EMAIL,
-          notes: "Created from SUPER_ADMIN_EMAIL env var",
-          user: "system",
-          userName: "System",
-          timestamp: now,
         });
+        if (!Array.isArray(db.audit_trail)) db.audit_trail = [];
+        db.audit_trail.unshift({ id: crypto.randomUUID(), action: "Bootstrap Super Admin created", module: "Authentication", reference: BOOTSTRAP_EMAIL, user: "system", userName: "System", timestamp: now });
         fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
-        console.log(`Bootstrap Super Admin created: ${BOOTSTRAP_EMAIL}`);
+        console.log(`[bootstrap] Super Admin created: ${BOOTSTRAP_EMAIL} (id: ${bootstrapId})`);
       } catch (err) {
-        console.error("Bootstrap admin creation failed:", err.message);
+        console.error("[bootstrap] Failed:", err.message);
+      }
+    } else {
+      // Ensure existing bootstrap admin has the right id format (fix legacy UUID)
+      const db2 = JSON.parse(fs.readFileSync(dbPath, "utf8"));
+      const idx = db2.members.findIndex((m) => normalizeEmail(m.email) === BOOTSTRAP_EMAIL);
+      if (idx >= 0 && db2.members[idx].id !== bootstrapId) {
+        db2.members[idx].id = bootstrapId;
+        fs.writeFileSync(dbPath, JSON.stringify(db2, null, 2));
+        console.log(`[bootstrap] Fixed Super Admin id to: ${bootstrapId}`);
       }
     }
   }
@@ -397,6 +396,65 @@ function writeAudit(db, action, user, module = "Authentication", reference = use
     timestamp: new Date().toISOString(),
   });
   db.audit_trail = db.audit_trail.slice(0, 5000);
+}
+
+// ── Module-level member helpers ────────────────────────────────────────────
+function emailToSlug(e) {
+  return normalizeEmail(e).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+// Find a member by any combination of identifiers sent by the hub.
+// The hub may send: UUID, email-slug, email address, or include them in the body.
+const ACTION_WORDS = new Set(["disable","remove","enable","re-enable","reactivate","readd","re-add",
+  "update","save","invite","unlock","reset-password","search","cleanup-duplicates"]);
+
+function findMemberIndex(db, urlSegment, body) {
+  const seg = (urlSegment || "").trim();
+  const bodyId    = String(body.id || body.userId || body.memberId || "").trim();
+  const bodyEmail = normalizeEmail(body.email || "");
+  const segIsId   = seg && !ACTION_WORDS.has(seg.toLowerCase());
+
+  return db.members.findIndex((m) => {
+    const mSlug = emailToSlug(m.email || "");
+    const mEmail = normalizeEmail(m.email || "");
+    if (segIsId) {
+      if (m.id === seg)                          return true; // exact stored id
+      if (mEmail && mEmail === normalizeEmail(seg)) return true; // email in URL
+      if (mSlug  && mSlug  === seg)              return true; // email-slug in URL
+    }
+    if (bodyId) {
+      if (m.id   === bodyId)                     return true;
+      if (mSlug  && mSlug  === bodyId)           return true;
+      if (mEmail && mEmail === normalizeEmail(bodyId)) return true;
+    }
+    if (bodyEmail && mEmail === bodyEmail)        return true;
+    return false;
+  });
+}
+
+// Deduplication helper — returns cleaned array and list of removed emails
+function deduplicateMembers(members) {
+  const seen = new Map();
+  const removed = [];
+  members.forEach((m) => {
+    const key = normalizeEmail(m.email || "");
+    if (!key) return; // skip blank-email records entirely
+    const existing = seen.get(key);
+    if (!existing) { seen.set(key, m); return; }
+    function score(r) {
+      const isSA = (r.role || r.access || "").toLowerCase().includes("super");
+      const isActive = (r.inviteStatus || "Active") !== "Disabled";
+      return (isSA ? 100 : 0) + (isActive ? 10 : 0);
+    }
+    const ms = score(m), es = score(existing);
+    if (ms > es || (ms === es && (m.updated_at || "") > (existing.updated_at || ""))) {
+      removed.push({ kept: m.id, removed: existing.id, email: key });
+      seen.set(key, m);
+    } else {
+      removed.push({ kept: existing.id, removed: m.id, email: key });
+    }
+  });
+  return { members: Array.from(seen.values()), removed };
 }
 
 function json(res, status, payload) {
@@ -894,33 +952,6 @@ async function handleApi(req, res) {
     return json(res, 200, { member: publicMemberForList(member) });
   }
 
-  // ── Helper: find member by any identifier ────────────────────────────────
-  function emailToSlug(e) {
-    return normalizeEmail(e).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-  }
-  function findMemberIndex(db, urlSegment, body) {
-    const seg = (urlSegment || "").trim();
-    const bodyId = String(body.id || body.userId || body.memberId || "").trim();
-    const bodyEmail = normalizeEmail(body.email || "");
-    // Known action words that are NOT member ids
-    const actionWords = new Set(["disable","remove","enable","re-enable","reactivate","readd","update","save","invite","unlock","reset-password","search"]);
-    const segIsId = seg && !actionWords.has(seg.toLowerCase());
-    return db.members.findIndex((m) => {
-      const mSlug = emailToSlug(m.email || "");
-      if (segIsId) {
-        if (m.id === seg) return true;                              // exact id match
-        if (normalizeEmail(m.email) === normalizeEmail(seg)) return true; // email match
-        if (mSlug && mSlug === seg) return true;                    // email-slug match
-      }
-      if (bodyId) {
-        if (m.id === bodyId) return true;
-        if (mSlug && mSlug === bodyId) return true;
-      }
-      if (bodyEmail && normalizeEmail(m.email) === bodyEmail) return true;
-      return false;
-    });
-  }
-
   // ── POST /api/members/disable  (action-style remove) ─────────────────────
   if ((req.method === "POST" || req.method === "DELETE") &&
       (url.pathname === "/api/members/disable" || url.pathname === "/api/members/remove" || url.pathname === "/api/members/deactivate")) {
@@ -1217,6 +1248,50 @@ async function handleApi(req, res) {
       writeDb(db);
     }
     return json(res, 200, { ok: true, removed, remaining: db.members.length });
+  }
+
+  // ── POST /api/admin/cleanup-duplicate-users ──────────────────────────────
+  // Super Admin only — full dedup with detailed report
+  if (req.method === "POST" && url.pathname === "/api/admin/cleanup-duplicate-users") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (session.role !== "Super Admin") return json(res, 403, { error: "Super Admin only" });
+    const db = readDb();
+
+    // Phase 1: deduplicate members using scoring
+    const { members: dedupedMembers, removed: removedList } = deduplicateMembers(db.members);
+    const dupCount = removedList.length;
+    const emailsCleaned = [...new Set(removedList.map((r) => r.email))];
+
+    // Phase 2: clean orphaned permission records
+    // permissions may be stored separately under db.permissions keyed by memberId
+    let orphanedPermissions = 0;
+    if (db.permissions && typeof db.permissions === "object") {
+      const validIds = new Set(dedupedMembers.map((m) => m.id));
+      const orphanKeys = Object.keys(db.permissions).filter((k) => !validIds.has(k));
+      orphanKeys.forEach((k) => { delete db.permissions[k]; });
+      orphanedPermissions = orphanKeys.length;
+    }
+
+    db.members = dedupedMembers;
+
+    if (dupCount > 0 || orphanedPermissions > 0) {
+      writeAudit(db, "Admin cleanup-duplicate-users", session, "Administration", "cleanup",
+        `${dupCount} duplicate(s) removed, ${orphanedPermissions} orphaned permission record(s) removed by ${session.email}. Emails: ${emailsCleaned.join(", ") || "none"}`);
+      writeDb(db);
+    }
+
+    console.log(`[cleanup-duplicate-users] duplicates=${dupCount} orphaned_permissions=${orphanedPermissions} remaining=${db.members.length}`);
+
+    return json(res, 200, {
+      ok: true,
+      duplicatesFound: dupCount,
+      duplicatesRemoved: dupCount,
+      emailsCleaned,
+      orphanedPermissionsRemoved: orphanedPermissions,
+      membersRemaining: db.members.length,
+      detail: removedList,
+    });
   }
 
   // ── GET /api/security-settings ───────────────────────────────────────────
