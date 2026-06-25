@@ -165,13 +165,36 @@ function ensureDb() {
         console.error("[bootstrap] Failed:", err.message);
       }
     } else {
-      // Ensure existing bootstrap admin has the right id format (fix legacy UUID)
+      // Admin already exists — ALWAYS update password + status on startup.
+      // This means: change SUPER_ADMIN_PASSWORD in Render env vars → redeploy → you can log in again.
       const db2 = JSON.parse(fs.readFileSync(dbPath, "utf8"));
       const idx = db2.members.findIndex((m) => normalizeEmail(m.email) === BOOTSTRAP_EMAIL);
-      if (idx >= 0 && db2.members[idx].id !== bootstrapId) {
-        db2.members[idx].id = bootstrapId;
-        fs.writeFileSync(dbPath, JSON.stringify(db2, null, 2));
-        console.log(`[bootstrap] Fixed Super Admin id to: ${bootstrapId}`);
+      if (idx >= 0) {
+        try {
+          const hash = bcrypt.hashSync(BOOTSTRAP_PASSWORD, BCRYPT_ROUNDS);
+          db2.members[idx] = {
+            ...db2.members[idx],
+            id: bootstrapId,                  // fix legacy UUID ids
+            role: "Super Admin",
+            access: "Super Admin",
+            permissions: permissionKeys,
+            permissionsExplicit: true,
+            inviteStatus: "Active",
+            archived: false,
+            deactivated: false,
+            deleted: false,
+            password_hash: hash,
+            passwordAlgorithm: "bcrypt",
+            mustChangePassword: false,
+            failedLoginAttempts: 0,
+            lockedUntil: null,
+            updated_at: new Date().toISOString(),
+          };
+          fs.writeFileSync(dbPath, JSON.stringify(db2, null, 2));
+          console.log(`[bootstrap] Super Admin refreshed on startup: ${BOOTSTRAP_EMAIL} (id: ${bootstrapId})`);
+        } catch (err) {
+          console.error("[bootstrap] Failed to refresh Super Admin:", err.message);
+        }
       }
     }
   }
