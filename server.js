@@ -130,6 +130,7 @@ function ensureDb() {
     const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
     if (!Array.isArray(db.members)) db.members = [];
     const bootstrapId = BOOTSTRAP_EMAIL.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    // Only create if THIS email doesn't already exist (never duplicate on restart)
     const alreadyExists = db.members.some(
       (m) => normalizeEmail(m.email) === BOOTSTRAP_EMAIL
     );
@@ -920,6 +921,8 @@ async function handleApi(req, res) {
     const id = previous.id || bodyId || emailSlug || crypto.randomUUID();
     const role = normalizeRole(body.role || body.access || previous.role || "Sales Representative");
     const permissions = sanitizePermissions(Array.isArray(body.permissions) ? body.permissions : (previous.permissions || defaultPermissionsForRole(role)));
+    // If re-adding a previously disabled/archived member, reactivate them
+    const wasArchived = previous.email && (previous.inviteStatus === "Disabled" || previous.archived || previous.deactivated);
     const member = {
       ...previous,
       id,
@@ -932,7 +935,11 @@ async function handleApi(req, res) {
       access: role,
       permissions,
       permissionsExplicit: true,
-      inviteStatus: body.inviteStatus || previous.inviteStatus || "Invite Sent",
+      // Always activate: if they were archived/disabled, this POST re-adds them
+      inviteStatus: body.inviteStatus || (wasArchived ? "Active" : previous.inviteStatus || "Invite Sent"),
+      archived: false,
+      deactivated: false,
+      deleted: false,
       mustChangePassword: password_hash && !previous.password_hash ? true : Boolean(previous.mustChangePassword),
       password_hash,
       passwordAlgorithm: password_hash ? "bcrypt" : previous.passwordAlgorithm || "",
@@ -1433,6 +1440,90 @@ async function handleApi(req, res) {
     writeAudit(db, "Hub permissions updated", session, "Administration", db.members[index].email, `Updated by ${session.email}`);
     writeDb(db);
     return json(res, 200, { ok: true, member: publicMemberForList(db.members[index]) });
+  }
+
+  // ── POST /api/admin/reset-members ────────────────────────────────────────
+  // Super Admin only — HARD RESET. Deletes every member except the calling
+  // Super Admin. Clears all sessions (except caller's), password-reset tokens,
+  // invite records, and orphaned permission rows. Returns a full report.
+  if (req.method === "POST" && url.pathname === "/api/admin/reset-members") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (session.role !== "Super Admin") return json(res, 403, { error: "Super Admin only" });
+
+    const db = readDb();
+
+    // Find the caller's member record (keep this one)
+    const callerEmail = normalizeEmail(session.email);
+    const callerIdx = db.members.findIndex((m) => normalizeEmail(m.email) === callerEmail);
+    if (callerIdx < 0) return json(res, 500, { error: "Could not find your own member record — aborting for safety." });
+
+    const callerMember = db.members[callerIdx];
+    const removedMemberCount = db.members.length - 1;
+    const removedMemberEmails = db.members
+      .filter((m) => normalizeEmail(m.email) !== callerEmail)
+      .map((m) => m.email);
+
+    // Keep only the caller, fully active with all permissions
+    const now = new Date().toISOString();
+    const resetCaller = {
+      ...callerMember,
+      role: "Super Admin",
+      access: "Super Admin",
+      permissions: permissionKeys,
+      permissionsExplicit: true,
+      inviteStatus: "Active",
+      archived: false,
+      deactivated: false,
+      deleted: false,
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+      mustChangePassword: false,
+      updated_at: now,
+    };
+    db.members = [resetCaller];
+
+    // Clear all user_permissions except caller's
+    const removedPermissionCount = db.user_permissions
+      ? db.user_permissions.filter((p) => p.user_id !== callerMember.id).length
+      : 0;
+    db.user_permissions = (db.user_permissions || []).filter((p) => p.user_id === callerMember.id);
+
+    // Clean object-style permissions map if present
+    let orphanedPermissions = 0;
+    if (db.permissions && typeof db.permissions === "object" && !Array.isArray(db.permissions)) {
+      const validIds = new Set([callerMember.id]);
+      const orphanKeys = Object.keys(db.permissions).filter((k) => !validIds.has(k));
+      orphanKeys.forEach((k) => { delete db.permissions[k]; });
+      orphanedPermissions = orphanKeys.length;
+    }
+
+    // Expire all sessions except the caller's current session
+    const sid = parseCookies(req).interactive_security_session;
+    const removedSessionCount = db.sessions.filter((s) => s.sid !== sid).length;
+    db.sessions = db.sessions.filter((s) => s.sid === sid);
+
+    // Clear all password-reset / OTP / invite tokens
+    const removedTokenCount = (db.password_reset_tokens || []).length;
+    db.password_reset_tokens = [];
+
+    writeAudit(db, "Emergency member reset", session, "Administration", "reset-members",
+      `Hard reset by ${session.email}. Removed ${removedMemberCount} member(s): [${removedMemberEmails.join(", ")}]. ` +
+      `Cleared ${removedPermissionCount + orphanedPermissions} permission row(s), ` +
+      `${removedSessionCount} session(s), ${removedTokenCount} token(s).`);
+    writeDb(db);
+
+    console.log(`[reset-members] HARD RESET by ${session.email}: removed ${removedMemberCount} members, ${removedSessionCount} sessions, ${removedTokenCount} tokens`);
+
+    return json(res, 200, {
+      ok: true,
+      membersRemoved: removedMemberCount,
+      removedEmails: removedMemberEmails,
+      permissionsCleared: removedPermissionCount + orphanedPermissions,
+      sessionsCleared: removedSessionCount,
+      tokensCleared: removedTokenCount,
+      surviving: publicMemberForList(resetCaller),
+    });
   }
 
   console.log(`[404] Unhandled API route: ${req.method} ${url.pathname}`);
