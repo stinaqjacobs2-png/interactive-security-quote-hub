@@ -197,12 +197,18 @@ function ensureDb() {
   }
   db.members = db.members.map((member) => {
     let updated = member;
-    // Backfill id for members created before the id field was added
+    const email = normalizeEmail(updated.email || "");
+    // Backfill id: prefer email-slug so it matches what the hub generates client-side
     if (!updated.id) {
       updated = {
         ...updated,
-        id: crypto.randomUUID(),
+        id: email ? email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") : crypto.randomUUID(),
       };
+      changed = true;
+    }
+    // Normalise email in place
+    if (email && updated.email !== email) {
+      updated = { ...updated, email };
       changed = true;
     }
     const normalizedRole = normalizeRole(updated.role || updated.access || "Read Only");
@@ -249,24 +255,29 @@ function ensureDb() {
       updated_at: request.updated_at || new Date().toISOString(),
     };
   });
-  // Deduplicate members by email — keep the one with the most data (Super Admin first, then most recent)
+  // Deduplicate members by email.
+  // Priority: Super Admin > Active > most recently updated archived.
   const seen = new Map();
   db.members.forEach((m) => {
     const key = normalizeEmail(m.email || "");
     if (!key) return;
     const existing = seen.get(key);
     if (!existing) { seen.set(key, m); return; }
-    // Prefer Super Admin role, then more recently updated
-    const mIsSuperAdmin = (m.role || m.access || "").toLowerCase().includes("super");
-    const eIsSuperAdmin = (existing.role || existing.access || "").toLowerCase().includes("super");
-    if (mIsSuperAdmin && !eIsSuperAdmin) { seen.set(key, m); changed = true; }
-    else if (!mIsSuperAdmin && !eIsSuperAdmin && (m.updated_at || "") > (existing.updated_at || "")) { seen.set(key, m); changed = true; }
-    else changed = true; // duplicate found, will be removed
+    function score(r) {
+      const isSuperAdmin = (r.role || r.access || "").toLowerCase().includes("super");
+      const isActive = (r.inviteStatus || "Active") !== "Disabled";
+      return (isSuperAdmin ? 100 : 0) + (isActive ? 10 : 0);
+    }
+    const ms = score(m), es = score(existing);
+    if (ms > es) { seen.set(key, m); changed = true; }
+    else if (ms === es && (m.updated_at || "") > (existing.updated_at || "")) { seen.set(key, m); changed = true; }
+    else changed = true;
   });
   if (db.members.length !== seen.size) {
+    const before = db.members.length;
     db.members = Array.from(seen.values());
     changed = true;
-    console.log(`[startup] Deduplicated members: ${db.members.length} unique members remaining`);
+    console.log(`[startup] Removed ${before - db.members.length} duplicate member(s). ${db.members.length} unique members remain.`);
   }
 
   if (changed) fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
@@ -769,7 +780,9 @@ async function handleApi(req, res) {
   }
 
   // ── GET /api/members ──────────────────────────────────────────────────────
-  // FIX: expose member list to admin UI so it doesn't depend solely on localStorage
+  // ?status=active  → only active members (default)
+  // ?status=archived → only disabled/archived members
+  // ?status=all     → all members
   if (req.method === "GET" && url.pathname === "/api/members") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
@@ -777,9 +790,22 @@ async function handleApi(req, res) {
       return json(res, 403, { error: "Access denied" });
     }
     const db = readDb();
-    // Include disabled members (for audit display) but never expose password hashes
-    const members = db.members.map(publicMemberForList);
-    return json(res, 200, { members });
+    const statusFilter = (url.searchParams.get("status") || "active").toLowerCase();
+    let members = db.members;
+    if (statusFilter === "active") {
+      members = members.filter((m) => (m.inviteStatus || "Active") !== "Disabled");
+    } else if (statusFilter === "archived") {
+      members = members.filter((m) => (m.inviteStatus || "Active") === "Disabled");
+    }
+    // Deduplicate by email in the response (extra safety — removes any dups the startup pass missed)
+    const seen = new Set();
+    members = members.filter((m) => {
+      const key = normalizeEmail(m.email || "");
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return json(res, 200, { members: members.map(publicMemberForList) });
   }
 
   // ── GET /api/members/search ───────────────────────────────────────────────
@@ -951,10 +977,21 @@ async function handleApi(req, res) {
     if (normalizeEmail(target.email) === normalizeEmail(session.email)) {
       return json(res, 400, { error: "You cannot remove your own account." });
     }
-    db.members[index] = { ...target, inviteStatus: "Disabled", updated_at: new Date().toISOString() };
+    // Prevent removing the last Super Admin
+    const isSuperAdmin = (target.role || target.access || "").toLowerCase().includes("super");
+    if (isSuperAdmin) {
+      const activeSuperAdmins = db.members.filter((m) =>
+        (m.role || m.access || "").toLowerCase().includes("super") &&
+        (m.inviteStatus || "Active") !== "Disabled"
+      );
+      if (activeSuperAdmins.length <= 1) {
+        return json(res, 400, { error: "Cannot remove the last Super Admin account." });
+      }
+    }
+    db.members[index] = { ...target, inviteStatus: "Disabled", archived: true, updated_at: new Date().toISOString() };
     // Expire all active sessions for the removed member
     db.sessions = db.sessions.filter((s) => normalizeEmail(s.email) !== normalizeEmail(target.email));
-    writeAudit(db, "Member removed", session, "Setup - Member access", target.email, `Disabled by ${session.email}`);
+    writeAudit(db, "Member disabled", session, "Administration", target.email, `Disabled by ${session.email}`);
     writeDb(db);
     return json(res, 200, { ok: true, member: publicMemberForList(db.members[index]) });
   }
@@ -1118,31 +1155,68 @@ async function handleApi(req, res) {
   }
 
   // ── POST /api/members/readd ───────────────────────────────────────────────
-  // Re-enables a previously disabled member
+  // Re-enables a previously disabled member — never creates a duplicate
   if (req.method === "POST" && url.pathname === "/api/members/readd") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
     if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
     const body = await readBody(req);
-    const memberId = body.id || body.memberId || body.userId;
-    const memberEmail = normalizeEmail(body.email || "");
-    if (!memberId && !memberEmail) return json(res, 400, { error: "Member ID or email required" });
+    console.log(`[members/readd] body=${JSON.stringify(body)}`);
     const db = readDb();
-    const index = db.members.findIndex((m) =>
-      (memberId && m.id === memberId) ||
-      (memberEmail && normalizeEmail(m.email) === memberEmail)
-    );
+    const index = findMemberIndex(db, body.id || body.memberId || body.userId || "", body);
     if (index < 0) return json(res, 404, { error: "Member not found" });
+    const role = normalizeRole(body.role || body.access || db.members[index].role || "Sales Representative");
+    const permissions = Array.isArray(body.permissions) && body.permissions.length
+      ? sanitizePermissions(body.permissions)
+      : db.members[index].permissions || defaultPermissionsForRole(role);
     db.members[index] = {
       ...db.members[index],
+      role,
+      access: role,
+      permissions,
+      permissionsExplicit: true,
       inviteStatus: "Active",
+      archived: false,
+      deactivated: false,
+      deleted: false,
       failedLoginAttempts: 0,
       lockedUntil: null,
       updated_at: new Date().toISOString(),
     };
-    writeAudit(db, "Member re-enabled", session, "Setup - Member access", db.members[index].email, `Re-enabled by ${session.email}`);
+    writeAudit(db, "Member re-added", session, "Administration", db.members[index].email, `Re-activated by ${session.email}`);
     writeDb(db);
     return json(res, 200, { ok: true, member: publicMemberForList(db.members[index]) });
+  }
+
+  // ── POST /api/members/cleanup-duplicates ─────────────────────────────────
+  // Super Admin only — removes duplicate archived records, returns count removed
+  if (req.method === "POST" && url.pathname === "/api/members/cleanup-duplicates") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (session.role !== "Super Admin") return json(res, 403, { error: "Super Admin only" });
+    const db = readDb();
+    const before = db.members.length;
+    const seen = new Map();
+    db.members.forEach((m) => {
+      const key = normalizeEmail(m.email || "");
+      if (!key) return;
+      const existing = seen.get(key);
+      if (!existing) { seen.set(key, m); return; }
+      function score(r) {
+        const isSA = (r.role || r.access || "").toLowerCase().includes("super");
+        const isActive = (r.inviteStatus || "Active") !== "Disabled";
+        return (isSA ? 100 : 0) + (isActive ? 10 : 0);
+      }
+      if (score(m) > score(existing)) seen.set(key, m);
+      else if (score(m) === score(existing) && (m.updated_at || "") > (existing.updated_at || "")) seen.set(key, m);
+    });
+    db.members = Array.from(seen.values());
+    const removed = before - db.members.length;
+    if (removed > 0) {
+      writeAudit(db, "Duplicate members cleaned", session, "Administration", "cleanup", `${removed} duplicate(s) removed by ${session.email}`);
+      writeDb(db);
+    }
+    return json(res, 200, { ok: true, removed, remaining: db.members.length });
   }
 
   // ── GET /api/security-settings ───────────────────────────────────────────
