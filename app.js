@@ -1778,19 +1778,8 @@ function urlWithSso(url) {
 }
 
 function hydrateSharedSessionFromUrl() {
-  const params = new URLSearchParams(window.location.search);
-  const token = params.get("sso");
-  if (token) {
-    const session = decodeSessionFromHub(token);
-    if (session?.email) {
-      saveSharedSessionObject(session);
-    }
-    params.delete("sso");
-    const query = params.toString();
-    const cleanedUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
-    window.history.replaceState({}, document.title, cleanedUrl);
-    return;
-  }
+  // Do not trust unsigned ?sso=<base64> URLs. Hub sign-in now uses the
+  // server-side /api/sso/create-token -> /api/sso/consume-token flow.
 
   const legacyUser = sessionStorage.getItem(sessionStorageKey);
   if (legacyUser && !currentSession()) {
@@ -2502,7 +2491,7 @@ function currentMember() {
       ...member,
       access: role,
       role,
-      permissions: Array.isArray(session?.permissions) ? session.permissions : member.permissions,
+      permissions: Array.isArray(session?.permissions) && session.permissions.length ? session.permissions : member.permissions,
       permissionsExplicit: typeof session?.permissionsExplicit === "boolean" ? session.permissionsExplicit : Boolean(member.permissionsExplicit),
     };
   }
