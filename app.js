@@ -469,7 +469,7 @@ const permissionDefinitions = [
 ];
 
 const platformRoles = ["Super Admin", "Admin", "Quotation Builder", "Sales Representative", "Read Only"];
-const passwordPolicyMessage = "Password must be at least 5 characters long and contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special character.";
+const passwordPolicyMessage = "Password must be at least 12 characters long and contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special character.";
 
 function normalizeRole(role = "") {
   const value = String(role || "").trim();
@@ -2379,7 +2379,7 @@ function memberMatchesIdentity(member = {}, identity = {}) {
 
 function passwordPolicyErrors(password = "") {
   return [
-    [password.length >= 5, "at least 5 characters"],
+    [password.length >= 12, "at least 12 characters"],
     [/[A-Z]/.test(password), "at least 1 uppercase letter"],
     [/[a-z]/.test(password), "at least 1 lowercase letter"],
     [/[0-9]/.test(password), "at least 1 number"],

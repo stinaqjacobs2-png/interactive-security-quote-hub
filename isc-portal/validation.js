@@ -15,7 +15,7 @@ const LoginSchema = z.object({
 
 const ChangePasswordSchema = z.object({
   currentPassword: z.string().min(1),
-  newPassword: z.string().min(8).max(200),
+  newPassword: z.string().min(12).max(200),
 });
 
 // ── Members ──────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ const MemberSchema = z.object({
   role: z.enum(["Super Admin", "Admin", "Full Access Member", "Quotation Builder Only"]),
   permissions: z.array(z.string().max(60)).default([]),
   inviteStatus: z.enum(["Pending", "Invite Sent", "Active", "Disabled"]).default("Pending"),
-  tempPassword: z.string().min(8).max(200).optional().or(z.literal("")),
+  tempPassword: z.string().min(12).max(200).optional().or(z.literal("")),
   phone: optionalText(50),
   branch: optionalText(100),
   department: optionalText(100),
