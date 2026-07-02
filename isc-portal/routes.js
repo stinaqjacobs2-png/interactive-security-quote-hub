@@ -1,5 +1,5 @@
 "use strict";
-// api/routes.js – all API handlers, called from server.js
+// isc-portal/routes.js – all API handlers, called from server.js
 require("dotenv").config();
 const { v4: uuidv4 } = require("uuid");
 const { all, get, run, transaction, nextQuoteNumber, nextRequestNumber, getSetting, setSetting } = require("../db");
@@ -32,10 +32,21 @@ function getMemberWithPermissions(id) {
   return { ...member, permissions: perms };
 }
 
+// FIX: When both id and email are supplied, look them up separately and assert
+// they resolve to the same member — prevents an OR-query from silently matching
+// the wrong row if a crafted request supplies mismatched id/email values.
 function getMemberByIdentity(identity = {}) {
   const id = String(identity.id || identity.userId || identity.memberId || "").trim();
   const email = String(identity.email || "").trim().toLowerCase();
-  if (id && email) return get("SELECT * FROM members WHERE id = ? OR lower(email) = ?", [id, email]);
+
+  if (id && email) {
+    const byId = get("SELECT * FROM members WHERE id = ?", [id]);
+    const byEmail = get("SELECT * FROM members WHERE lower(email) = ?", [email]);
+    // If both match but disagree on which row, treat as no match to avoid
+    // returning the wrong member.
+    if (byId && byEmail && byId.id !== byEmail.id) return null;
+    return byId || byEmail;
+  }
   if (id) return get("SELECT * FROM members WHERE id = ?", [id]);
   if (email) return get("SELECT * FROM members WHERE lower(email) = ?", [email]);
   return null;
@@ -43,7 +54,6 @@ function getMemberByIdentity(identity = {}) {
 
 function saveMemberPermissions(memberId, permKeys) {
   run("DELETE FROM member_permissions WHERE member_id = ?", [memberId]);
-  const stmt = run;
   permKeys.forEach((key) => {
     run(
       `INSERT OR REPLACE INTO member_permissions (id, member_id, permission_key, can_access)
@@ -51,6 +61,28 @@ function saveMemberPermissions(memberId, permKeys) {
       [uuidv4(), memberId, key]
     );
   });
+}
+
+// ── Password policy (mirrors server.js) ─────────────────────────
+
+function passwordPolicyErrors(password = "") {
+  const errors = [];
+  if (password.length < 12) errors.push("at least 12 characters");
+  if (!/[A-Z]/.test(password)) errors.push("one uppercase letter");
+  if (!/[a-z]/.test(password)) errors.push("one lowercase letter");
+  if (!/[0-9]/.test(password)) errors.push("one number");
+  if (!/[^A-Za-z0-9]/.test(password)) errors.push("one special character");
+  return errors;
+}
+
+function assertStrongPassword(password) {
+  const errors = passwordPolicyErrors(password);
+  if (errors.length) {
+    const err = new Error(`Password must contain ${errors.join(", ")}.`);
+    err.code = "WEAK_PASSWORD";
+    err.details = errors;
+    throw err;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -104,7 +136,12 @@ async function handleChangePassword(req, res) {
     if (!valid) return json(res, 401, { error: "Current password is incorrect" });
   }
 
-  if (!body.newPassword || body.newPassword.length < 8) return json(res, 400, { error: "New password must be at least 8 characters" });
+  // FIX: enforce the same 12-char + complexity policy used in server.js
+  try {
+    assertStrongPassword(body.newPassword || "");
+  } catch (err) {
+    return json(res, 400, { error: err.message, code: err.code || "WEAK_PASSWORD", details: err.details || [] });
+  }
 
   const hash = await hashPassword(body.newPassword);
   run("UPDATE members SET password_hash = ?, must_change_pw = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?", [hash, member.id]);
@@ -416,7 +453,6 @@ async function handleSaveQuotation(req, res) {
   const id = body.id || `${quoteNumber}-${Date.now()}`;
 
   const existing = get("SELECT * FROM quotations WHERE id = ?", [id]);
-  const isRevision = !!body.revisingQuoteId;
 
   const payload = [
     id, quoteNumber, data.selectedCompany,
@@ -466,7 +502,6 @@ async function handleSaveQuotation(req, res) {
     );
   }
 
-  // Update linked sales request
   if (data.salesRequestId) {
     run(`UPDATE sales_requests SET status='Submitted for Approval', linked_quotation_id=?,
         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`,
@@ -474,7 +509,6 @@ async function handleSaveQuotation(req, res) {
     );
   }
 
-  // Notify approvers by email (fire-and-forget)
   const quote = rowToQuote(get("SELECT * FROM quotations WHERE id = ?", [id]));
   const approvers = all("SELECT m.email, m.name FROM members m JOIN member_permissions mp ON mp.member_id = m.id WHERE mp.permission_key = 'approval' AND mp.can_access = 1 AND m.invite_status != 'Disabled'");
   approvers.forEach((a) => sendApprovalNotification({ ...quote, quoteNumber, submittedByName: session.name }, a.email, a.name).catch(() => {}));
@@ -490,7 +524,7 @@ async function handleDecideQuotation(req, res) {
   const id = url.searchParams.get("id");
   if (!id) return json(res, 400, { error: "Missing id" });
   const body = await readBody(req);
-  const decision = body.decision; // "approved" | "rejected"
+  const decision = body.decision;
   const reason = body.reason || "";
 
   if (!["approved", "rejected"].includes(decision)) return json(res, 400, { error: "Invalid decision" });
@@ -544,8 +578,6 @@ async function handleClientPdf(req, res) {
   const id = url.searchParams.get("id");
   const quote = get("SELECT * FROM quotations WHERE id = ?", [id]);
   if (!quote) return json(res, 404, { error: "Not found" });
-
-  // Build the HTML via the existing clientQuotationHtml function (reimplemented server-side)
   const html = buildClientQuotationHtml(rowToQuote(quote));
   writeAudit(session, "Downloaded client PDF", quote.quote_number, "Quote Library", quote.quote_number);
   return streamPdf(html, res, `${quote.quote_number}-client.pdf`);
@@ -563,7 +595,7 @@ async function handleProcessedPdf(req, res) {
   return streamPdf(html, res, `${quote.quote_number}-processed.pdf`);
 }
 
-// ── Minimal HTML builders (mirrors app.js logic server-side) ─────
+// ── Minimal HTML builders ─────────────────────────────────────────
 
 const COMPANIES = {
   "isc-sa": { name: "Interactive Security Consultants SA CC", registration: "1995/008708/23", vat: "4540148170", address: "24 Van Zyl Road, Steynsvlei, Muldersdrift", phone: "0861 070 007", email: "finance@interactivesecurity.co.za", website: "www.interactivesecurity.co.za", bankName: "Nedbank", accountType: "Current Account", accountNumber: "102 618 9853", branchCode: "198 765" },
@@ -635,23 +667,15 @@ function buildProcessedQuotationHtml(quote) {
 async function handleFileUpload(req, res) {
   const session = requireAuth(req, res);
   if (!session) return;
-
-  // Multer is callback-based; wrap it
   const multerMiddleware = upload.array("files", 10);
   await new Promise((resolve, reject) => {
     multerMiddleware(req, res, (err) => { if (err) reject(err); else resolve(); });
-  }).catch((err) => {
-    json(res, 400, { error: err.message });
-    return null;
-  });
-
+  }).catch((err) => { json(res, 400, { error: err.message }); return null; });
   if (res.headersSent) return;
-
   const url = new URL(req.url, "http://localhost");
   const linkedTo = url.searchParams.get("linkedTo") || "";
   const linkedType = url.searchParams.get("linkedType") || "";
   const docCategory = url.searchParams.get("docCategory") || "";
-
   const savedFiles = [];
   for (const file of req.files || []) {
     const storageKey = await saveFile(file);
@@ -663,7 +687,6 @@ async function handleFileUpload(req, res) {
     );
     savedFiles.push({ id: fileId, name: file.originalname, size: file.size, mimeType: file.mimetype });
   }
-
   writeAudit(session, "Uploaded files", `${savedFiles.length} file(s)`, linkedType || "Files", linkedTo);
   return json(res, 200, { files: savedFiles });
 }
@@ -719,10 +742,8 @@ async function handleSaveSalesRequest(req, res) {
   const body = await readBody(req);
   const { data, error, issues } = validate(SalesRequestSchema, body);
   if (error) return json(res, 400, { error, issues });
-
   const requestNumber = nextRequestNumber();
   const id = uuidv4();
-
   run(`INSERT INTO sales_requests (id, request_number, client_name, client_contact_person, client_email, client_phone,
       site_project_name, site_address, sales_rep_id, sales_rep_name, sales_rep_email, sales_rep_phone,
       required_due_date, description_of_work, notes_for_builder, status, submitted_by)
@@ -732,7 +753,6 @@ async function handleSaveSalesRequest(req, res) {
      data.salesRepId || "", data.salesRepName, data.salesRepEmail || "", data.salesRepPhone || "",
      data.requiredDueDate || "", data.descriptionOfWork || "", data.notesForBuilder || "", session.userId]
   );
-
   writeAudit(session, "Request submitted", requestNumber, "Sales Quotation Requests", requestNumber, data.clientName);
   const request = get("SELECT * FROM sales_requests WHERE id = ?", [id]);
   return json(res, 200, { request });
@@ -795,7 +815,6 @@ function handleGetAudit(req, res) {
   const from = url.searchParams.get("from") || "";
   const to = url.searchParams.get("to") || "";
   const singleDate = url.searchParams.get("date") || "";
-
   let sql = "SELECT * FROM audit_trail WHERE 1=1";
   const params = [];
   if (memberId) { sql += " AND member_id = ?"; params.push(memberId); }
