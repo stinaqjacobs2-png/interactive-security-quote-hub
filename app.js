@@ -1955,6 +1955,113 @@ async function refreshFirstSetupAccess() {
   }
 }
 
+async function handleFirstSetupFromUrl() {
+  if (window.location.pathname !== "/setup") return false;
+  document.querySelector(".app-shell")?.setAttribute("hidden", "true");
+  loginScreen.hidden = false;
+
+  let setupRequired = true;
+  try {
+    const response = await fetch("/api/setup/status", { credentials: "include" });
+    const data = await response.json().catch(() => ({}));
+    setupRequired = Boolean(data.setupRequired);
+  } catch {
+    setupRequired = true;
+  }
+
+  if (!setupRequired) {
+    loginScreen.innerHTML = `
+      <form class="login-card" id="firstSetupCompleteForm">
+        <div class="brand login-brand">
+          <img class="brand-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+          <div>
+            <strong>Interactive Security Portal</strong>
+            <small>Setup complete</small>
+          </div>
+        </div>
+        <h1>Setup is complete</h1>
+        <p>A Super Admin password already exists. Please sign in or use Forgot password.</p>
+        <button class="primary-btn" type="button" id="backToLoginFromSetup">Back to sign in</button>
+      </form>
+    `;
+    document.querySelector("#backToLoginFromSetup")?.addEventListener("click", () => {
+      window.location.href = "/";
+    });
+    return true;
+  }
+
+  loginScreen.innerHTML = `
+    <form class="login-card" id="firstSetupForm">
+      <div class="brand login-brand">
+        <img class="brand-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" />
+        <div>
+          <strong>Interactive Security Portal</strong>
+          <small>First Super Admin setup</small>
+        </div>
+      </div>
+      <h1>Create Super Admin</h1>
+      <p>Create the first administrator account for this portal.</p>
+      <label>Name<input id="firstSetupName" autocomplete="name" required /></label>
+      <label>Email address<input id="firstSetupEmail" type="email" autocomplete="email" required /></label>
+      <label>Password<input id="firstSetupPassword" type="password" autocomplete="new-password" required /></label>
+      <label>Confirm password<input id="firstSetupConfirmPassword" type="password" autocomplete="new-password" required /></label>
+      <button class="primary-btn" type="submit">Create password</button>
+      <button class="link-btn" type="button" id="cancelFirstSetup">Back to sign in</button>
+      <p class="login-note">${escapeHtml(passwordPolicyMessage)}</p>
+    </form>
+  `;
+
+  document.querySelector("#cancelFirstSetup")?.addEventListener("click", () => {
+    window.location.href = "/";
+  });
+  document.querySelector("#firstSetupForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const name = document.querySelector("#firstSetupName")?.value.trim() || "";
+    const email = normalizeEmail(document.querySelector("#firstSetupEmail")?.value || "");
+    const password = String(document.querySelector("#firstSetupPassword")?.value || "");
+    const confirmPassword = String(document.querySelector("#firstSetupConfirmPassword")?.value || "");
+    if (password !== confirmPassword) {
+      alert("The password and confirmation do not match.");
+      return;
+    }
+    if (!isStrongPassword(password)) {
+      alert(strongPasswordMessage(password));
+      return;
+    }
+    try {
+      const response = await fetch("/api/setup/create-admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ name, email, password }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Setup could not be completed.");
+      const user = data.user || {};
+      saveSharedSessionObject(user);
+      saveMemberRecord({
+        id: user.userId || slugify(email),
+        name: user.name || name || displayNameFromUser(email),
+        email,
+        access: "Super Admin",
+        role: "Super Admin",
+        permissions: Array.isArray(user.permissions) ? user.permissions : roleDefaultPermissions["Super Admin"],
+        permissionsExplicit: Boolean(user.permissionsExplicit),
+        hasLoggedIn: true,
+        inviteStatus: "Active",
+      });
+      document.querySelector(".app-shell")?.removeAttribute("hidden");
+      loginScreen.hidden = true;
+      window.history.replaceState({}, "", "/#portal");
+      applyPermissions();
+      showSection("portal");
+    } catch (error) {
+      alert(error.message || "Setup could not be completed.");
+    }
+  });
+  return true;
+}
+
 function currentUserName() {
   const user = currentUser();
   const member = storageList(membersStorageKey).find((item) => normalizeEmail(item.email) === normalizeEmail(user));
@@ -12828,7 +12935,10 @@ const routeSection = window.location.hash.slice(1) === "approval" ? "approvals" 
 const initialSection = ["portal", "projections", "dashboard", "builder", "guardingBuilder", "armedResponseBuilder", "salesRequests", "approvals", "library", "projectTimeline", "settings", "audit"].includes(routeSection)
   ? routeSection
   : "portal";
-handlePasswordResetTokenFromUrl().then((handledReset) => {
+handleFirstSetupFromUrl().then((handledSetup) => {
+  if (handledSetup) return true;
+  return handlePasswordResetTokenFromUrl();
+}).then((handledReset) => {
   if (handledReset) return true;
   return consumeHubSsoTokenIfPresent();
 }).then(async (handledSso) => {

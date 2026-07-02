@@ -200,6 +200,14 @@ function publicUser(member) {
   };
 }
 
+function hasConfiguredSuperAdmin(db) {
+  return db.members.some((member) => (
+    normalizeRole(member.role || member.access) === "Super Admin"
+    && (member.inviteStatus || "Active") !== "Disabled"
+    && Boolean(member.password_hash)
+  ));
+}
+
 function passwordPolicyErrors(password = "") {
   const errors = [];
   if (password.length < 12) errors.push("at least 12 characters");
@@ -348,11 +356,11 @@ function saveSession(user) {
     lastActivityAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + settings.sessionAbsoluteHours * 60 * 60 * 1000).toISOString(),
   };
-  db.sessions = db.sessions.filter((item) => item.email !== session.email || new Date(item.expiresAt) > new Date());
+  db.sessions = db.sessions.filter((item) => normalizeEmail(item.email) !== normalizeEmail(session.email) || new Date(item.expiresAt) > new Date());
   db.sessions.push(session);
   // FIX: find existing member BEFORE building memberRecord so we can use their
   // stored contact fields as fallback — prevents SSO login from wiping phone/branch/department.
-  const memberIndex = db.members.findIndex((member) => member.email === session.email || member.id === session.userId);
+  const memberIndex = db.members.findIndex((member) => normalizeEmail(member.email) === normalizeEmail(session.email) || member.id === session.userId);
   const existingMember = memberIndex >= 0 ? db.members[memberIndex] : {};
   const memberRecord = {
     id: session.userId,
@@ -422,6 +430,77 @@ function serveStatic(req, res) {
 
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  if (req.method === "GET" && url.pathname === "/api/setup/status") {
+    const db = readDb();
+    return json(res, 200, { setupRequired: !hasConfiguredSuperAdmin(db) });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/setup/create-admin") {
+    const body = await readBody(req);
+    const email = normalizeEmail(body.email);
+    const name = String(body.name || "").trim() || email;
+    const password = String(body.password || "");
+    if (!email || !password) return json(res, 400, { error: "Name, email, and password are required." });
+
+    const db = readDb();
+    if (hasConfiguredSuperAdmin(db)) {
+      return json(res, 409, { error: "Setup is already complete. Please sign in or use Forgot password." });
+    }
+
+    let passwordHash = "";
+    try {
+      passwordHash = hashPassword(password);
+    } catch (error) {
+      return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
+    }
+
+    const now = new Date().toISOString();
+    const id = email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || crypto.randomUUID();
+    const memberIndex = db.members.findIndex((member) => normalizeEmail(member.email) === email || member.id === id);
+    const previous = memberIndex >= 0 ? db.members[memberIndex] : {};
+    const member = {
+      ...previous,
+      id: previous.id || id,
+      name,
+      email,
+      role: "Super Admin",
+      access: "Super Admin",
+      permissions: permissionKeys,
+      permissionsExplicit: false,
+      inviteStatus: "Active",
+      password_hash: passwordHash,
+      passwordAlgorithm: "bcrypt",
+      mustChangePassword: false,
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+      mfaEnabled: Boolean(previous.mfaEnabled),
+      mfaRequired: Boolean(previous.mfaRequired),
+      created_at: previous.created_at || now,
+      updated_at: now,
+      passwordChangedAt: now,
+    };
+    if (memberIndex >= 0) db.members[memberIndex] = member;
+    else db.members.push(member);
+    writeAudit(db, "Completed first Super Admin setup", member, "Authentication", email, "Initial setup password created");
+    writeDb(db);
+
+    const session = saveSession(publicUser(member));
+    setCookie(res, "interactive_security_session", session.sid);
+    return json(res, 200, {
+      user: {
+        userId: session.userId,
+        email: session.email,
+        name: session.name,
+        role: session.role,
+        permissions: session.permissions,
+        permissionsExplicit: session.permissionsExplicit,
+        mustChangePassword: false,
+        mfaEnabled: Boolean(session.mfaEnabled),
+        mfaRequired: Boolean(session.mfaRequired),
+      },
+    });
+  }
 
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
     const body = await readBody(req);
@@ -800,6 +879,7 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res);
     if (url.pathname.startsWith("/hubs/")) return serveIndex(res);
+    if (["/setup", "/reset-password"].includes(url.pathname)) return serveIndex(res);
     return serveStatic(req, res);
   } catch (error) {
     console.error(error);
