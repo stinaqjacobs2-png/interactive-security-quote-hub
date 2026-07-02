@@ -2344,7 +2344,11 @@ function writeQuotationPermissionAudit(member, permission, previousValue, nextVa
 
 function saveUserPermissions(member) {
   const selected = new Set(member.permissions || []);
-  const existing = storageList(userPermissionsStorageKey).filter((permission) => permission.user_id !== member.id);
+  const existing = storageList(userPermissionsStorageKey).filter((permission) => !memberMatchesIdentity(member, {
+    id: permission.user_id,
+    userId: permission.user_id,
+    email: permission.user_email,
+  }));
   const timestamp = new Date().toISOString();
   const records = permissionDefinitions.map((permission) => ({
     id: `${member.id}-${permission.key}`,
@@ -2368,6 +2372,20 @@ function slugify(value) {
 
 function normalizeEmail(value = "") {
   return value.trim().toLowerCase();
+}
+
+function normalizeMemberId(value = "") {
+  return String(value || "").trim();
+}
+
+function memberMatchesIdentity(member = {}, identity = {}) {
+  const memberId = normalizeMemberId(member.id || member.userId || member.memberId);
+  const wantedIds = [identity.id, identity.userId, identity.memberId]
+    .map(normalizeMemberId)
+    .filter(Boolean);
+  const memberEmail = normalizeEmail(member.email || "");
+  const wantedEmail = normalizeEmail(identity.email || "");
+  return (memberId && wantedIds.includes(memberId)) || (memberEmail && wantedEmail && memberEmail === wantedEmail);
 }
 
 function passwordPolicyErrors(password = "") {
@@ -2430,8 +2448,9 @@ function sendInviteEmail(member, temporaryPassword, isResend = false) {
 function saveMemberRecord(member) {
   const members = storageList(membersStorageKey);
   const role = normalizeRole(member.access || member.role || "Read Only");
-  const normalizedMember = { ...member, access: role, role };
-  const index = members.findIndex((item) => item.id === member.id);
+  const id = member.id || member.userId || slugify(member.email || member.name || "member");
+  const normalizedMember = { ...member, id, userId: member.userId || id, access: role, role };
+  const index = members.findIndex((item) => memberMatchesIdentity(item, normalizedMember));
   if (index >= 0) members[index] = normalizedMember;
   else members.push(normalizedMember);
   saveStorageList(membersStorageKey, members);
@@ -2541,7 +2560,7 @@ function memberPermissions(member = currentMember()) {
   const defaults = roleDefaultPermissions[role] || [];
   const explicit = member.permissionsExplicit === true && Array.isArray(member.permissions) ? member.permissions : null;
   const stored = storageList(userPermissionsStorageKey)
-    .filter((permission) => permission.user_id === member.id || normalizeEmail(permission.user_email) === normalizeEmail(member.email))
+    .filter((permission) => memberMatchesIdentity(member, { id: permission.user_id, userId: permission.user_id, email: permission.user_email }))
     .filter((permission) => permission.can_access)
     .map((permission) => permission.permission_key);
   return new Set(explicit || (member.permissionsExplicit === true && stored.length ? stored : defaults));
@@ -3376,7 +3395,7 @@ function hasExplicitHubPermission(member, permissionKey) {
   const stored = storageList(userPermissionsStorageKey).some((permission) => (
     permission.permission_key === permissionKey
     && permission.can_access
-    && (permission.user_id === member.id || normalizeEmail(permission.user_email) === normalizeEmail(member.email))
+    && memberMatchesIdentity(member, { id: permission.user_id, userId: permission.user_id, email: permission.user_email })
   ));
   if (stored) return true;
   return Boolean(member.permissionsExplicit && Array.isArray(member.permissions) && member.permissions.includes(permissionKey));
@@ -5435,7 +5454,7 @@ function setGovernanceHubAccess(memberId, hubSlug, canAccessHub, options = {}) {
     alert("You do not have permission to change hub access permissions.");
     return;
   }
-  const member = governanceMembers().find((item) => item.id === memberId);
+  const member = governanceMembers().find((item) => memberMatchesIdentity(item, { id: memberId, userId: memberId }));
   const hub = companyHubBySlug(hubSlug);
   if (!member || !hub) return;
   if (member.access === "Super Admin" && normalizeEmail(member.email) === normalizeEmail(currentUser())) {
@@ -5457,7 +5476,7 @@ function setGovernanceHubAccess(memberId, hubSlug, canAccessHub, options = {}) {
   saveStorageList(userHubAccessStorageKey, accessRows);
   const permissionKey = permissionDefinitions.find((permission) => permission.hubSlug === hubSlug)?.key || hubSlug.replace(/-/g, "_");
   const members = storageList(membersStorageKey);
-  const memberIndex = members.findIndex((item) => item.id === memberId);
+  const memberIndex = members.findIndex((item) => memberMatchesIdentity(item, { id: memberId, userId: memberId, email: member.email }));
   if (memberIndex >= 0) {
     const nextPermissions = new Set(Array.isArray(members[memberIndex].permissions) ? members[memberIndex].permissions : Array.from(memberPermissions(members[memberIndex])));
     if (canAccessHub) nextPermissions.add(permissionKey);
@@ -5489,13 +5508,14 @@ async function syncGovernanceMemberToBackend(member) {
 }
 
 function mergeGovernanceMemberFromServer(member) {
-  if (!member?.id) return;
+  if (!member?.id && !member?.userId && !member?.email) return;
   const members = storageList(membersStorageKey);
-  const index = members.findIndex((item) => item.id === member.id || normalizeEmail(item.email) === normalizeEmail(member.email));
+  const index = members.findIndex((item) => memberMatchesIdentity(item, member));
   const normalized = {
     ...(index >= 0 ? members[index] : {}),
     ...member,
     id: member.id || member.userId,
+    userId: member.userId || member.id,
     access: normalizeRole(member.access || member.role || "Read Only"),
     role: normalizeRole(member.role || member.access || "Read Only"),
     inviteStatus: member.inviteStatus || member.status || "Active",
@@ -5541,7 +5561,7 @@ async function readdGovernanceMemberOnServer(payload) {
 
 async function updateGovernanceMember(memberId, changes = {}, options = {}) {
   const members = storageList(membersStorageKey);
-  const index = members.findIndex((member) => member.id === memberId);
+  const index = members.findIndex((member) => memberMatchesIdentity(member, { id: memberId, userId: memberId, email: changes.email }));
   if (index < 0) return;
   const before = members[index];
   if (before.access === "Super Admin" && !isSuperAdmin()) {
@@ -5966,7 +5986,7 @@ function governanceTabFromHash() {
   return governanceTabs.some((item) => item.key === key) ? key : activeGovernanceTab;
 }
 
-function renderGovernanceHub(tab = activeGovernanceTab) {async function emergencyResetMembers() {
+async function emergencyResetMembers() {
   const confirmed = confirm(
     "This will remove ALL old members, archived users, duplicate users, permissions and invites.\n" +
     "Only your current Super Admin account will remain.\n\nContinue?"
@@ -5983,6 +6003,8 @@ function renderGovernanceHub(tab = activeGovernanceTab) {async function emergenc
     alert("Reset failed: " + (data.error || "Unknown error"));
   }
 }
+
+function renderGovernanceHub(tab = activeGovernanceTab) {
   activeGovernanceTab = tab;
   if (tab === "security" && !governancePasswordResetRequestsLoaded && !governancePasswordResetRequestsLoading) {
     loadGovernancePasswordResetRequests().then(() => renderGovernanceHub("security"));
@@ -5999,10 +6021,7 @@ function renderGovernanceHub(tab = activeGovernanceTab) {async function emergenc
     history: renderGovernanceHistory(),
   }[tab] || renderGovernanceDashboard();
   portalHubGrid.innerHTML = `<section class="finance-hub-shell governance-hub-shell"><aside class="finance-sidebar"><div class="brand"><img class="brand-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" /><div><strong>${escapeHtml(hub.name)}</strong><small>System governance</small></div></div><nav>${governanceTabs.map((item) => `<button class="nav-item ${item.key === tab ? "active" : ""}" type="button" data-governance-tab="${item.key}">${escapeHtml(item.label)}</button>`).join("")}</nav><div class="finance-user-panel"><small>Signed in as</small><strong>${escapeHtml(currentUserName())}</strong><span>${escapeHtml(currentMember().access || "Member")}</span><button class="secondary-btn" type="button" data-finance-logout>Logout</button></div></aside><main class="finance-main"><div class="panel-heading"><div><p class="eyebrow">Administration & Governance</p><h1>${escapeHtml(governanceTabs.find((item) => item.key === tab)?.label || "System Dashboard")}</h1></div><strong class="finance-active-date">${escapeHtml(isSuperAdmin() ? "Super Admin" : "Admin view")}</strong></div>${content}</main></section>`;
-  writeAudit("Opened governance tab", tab, "Administration & Governance", tab, currentUserName());<button onclick="emergencyResetMembers()" 
-  style="background:#dc2626;color:white;padding:8px 16px;border:none;border-radius:6px;cursor:pointer;font-weight:bold;">
-  🚨 Emergency Reset Members
-</button>
+  writeAudit("Opened governance tab", tab, "Administration & Governance", tab, currentUserName());
 }
 
 function financeTabFromHash() {
@@ -10634,14 +10653,15 @@ memberForm.addEventListener("submit", async (event) => {
 
   const members = storageList(membersStorageKey);
   const email = normalizeEmail(memberEmail.value);
-  const duplicate = members.find((member) => normalizeEmail(member.email) === email && member.id !== memberForm.dataset.editId);
+  const editingIdentity = { id: memberForm.dataset.editId, userId: memberForm.dataset.editId, email };
+  const duplicate = members.find((member) => normalizeEmail(member.email) === email && !memberMatchesIdentity(member, editingIdentity));
   if (duplicate) {
     alert("A member with this email address already exists.");
     markInvalid(memberEmail);
     return;
   }
 
-  const existing = members.find((member) => member.id === memberForm.dataset.editId);
+  const existing = members.find((member) => memberMatchesIdentity(member, editingIdentity));
   const temporaryPassword = memberTempPassword.value.trim();
   if (!existing && !temporaryPassword) {
     alert("Please enter or auto-generate a temporary password for the invite.");
@@ -10656,7 +10676,7 @@ memberForm.addEventListener("submit", async (event) => {
 
   const id = memberForm.dataset.editId || slugify(email);
   const selectedRole = normalizeRole(memberAccess.value);
-  const payload = {
+  let payload = {
     ...(existing || {}),
     id,
     name: memberName.value.trim(),
@@ -10683,12 +10703,24 @@ memberForm.addEventListener("submit", async (event) => {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || "Member could not be saved securely.");
+      if (data.member) {
+        payload = {
+          ...payload,
+          ...data.member,
+          id: data.member.id || data.member.userId || payload.id,
+          access: normalizeRole(data.member.access || data.member.role || payload.access),
+          role: normalizeRole(data.member.role || data.member.access || payload.role),
+          inviteStatus: data.member.inviteStatus || data.member.status || payload.inviteStatus,
+          permissions: Array.isArray(data.member.permissions) ? data.member.permissions : payload.permissions,
+          permissionsExplicit: typeof data.member.permissionsExplicit === "boolean" ? data.member.permissionsExplicit : true,
+        };
+      }
     } catch (error) {
       alert(error.message || "Member could not be saved securely.");
       return;
     }
   }
-  const existingIndex = members.findIndex((member) => member.id === id);
+  const existingIndex = members.findIndex((member) => memberMatchesIdentity(member, payload));
   if (existingIndex >= 0) members[existingIndex] = payload;
   else members.push(payload);
   saveStorageList(membersStorageKey, members);
@@ -10741,13 +10773,13 @@ memberList.addEventListener("click", async (event) => {
     return;
   }
   if (saveId) {
-    const index = members.findIndex((item) => item.id === saveId);
+    const index = members.findIndex((item) => memberMatchesIdentity(item, { id: saveId, userId: saveId }));
     const member = members[index];
     const panel = memberList.querySelector(`[data-setup-member-edit-panel="${CSS.escape(saveId)}"]`);
     if (index < 0 || !member || !panel) return;
     const fieldValue = (field) => panel.querySelector(`[data-setup-member-field="${field}"]`)?.value?.trim() || "";
     const nextEmail = normalizeEmail(fieldValue("email"));
-    const duplicate = members.find((item) => item.id !== saveId && normalizeEmail(item.email) === nextEmail);
+    const duplicate = members.find((item) => normalizeEmail(item.email) === nextEmail && !memberMatchesIdentity(item, { id: saveId, userId: saveId }));
     if (!fieldValue("name") || !nextEmail) {
       setSetupMemberNotice(saveId, "Name and email are required.", "warning");
       renderSetup();
@@ -10818,7 +10850,7 @@ memberList.addEventListener("click", async (event) => {
   }
   if (deactivateId || reactivateId || forcePasswordId) {
     const targetId = deactivateId || reactivateId || forcePasswordId;
-    const index = members.findIndex((item) => item.id === targetId);
+    const index = members.findIndex((item) => memberMatchesIdentity(item, { id: targetId, userId: targetId }));
     const member = members[index];
     if (index < 0 || !member) return;
     const changes = forcePasswordId
@@ -12332,7 +12364,7 @@ portalHubGrid.addEventListener("click", async (event) => {
   }
   const governanceSaveUser = event.target.closest("[data-governance-save-user]")?.dataset.governanceSaveUser;
   if (governanceSaveUser) {
-    const member = governanceMembers().find((item) => item.id === governanceSaveUser);
+    const member = governanceMembers().find((item) => memberMatchesIdentity(item, { id: governanceSaveUser, userId: governanceSaveUser }));
     const panel = document.querySelector(`[data-governance-edit-panel="${CSS.escape(governanceSaveUser)}"]`);
     if (!member || !panel) return;
     const fieldValue = (field) => panel.querySelector(`[data-governance-edit-field="${field}"]`)?.value?.trim() || "";
@@ -12342,7 +12374,7 @@ portalHubGrid.addEventListener("click", async (event) => {
       renderGovernanceHub("users");
       return;
     }
-    const duplicate = governanceMembers().find((item) => item.id !== governanceSaveUser && normalizeEmail(item.email) === nextEmail);
+    const duplicate = governanceMembers().find((item) => normalizeEmail(item.email) === nextEmail && !memberMatchesIdentity(item, { id: governanceSaveUser, userId: governanceSaveUser }));
     if (duplicate) {
       setGovernanceUserNotice(governanceSaveUser, "Another user already uses this email address.", "warning");
       renderGovernanceHub("users");
@@ -12390,7 +12422,7 @@ portalHubGrid.addEventListener("click", async (event) => {
   }
   const governanceRemoveUser = event.target.closest("[data-governance-remove-user]")?.dataset.governanceRemoveUser;
   if (governanceRemoveUser) {
-    const member = governanceMembers().find((item) => item.id === governanceRemoveUser);
+    const member = governanceMembers().find((item) => memberMatchesIdentity(item, { id: governanceRemoveUser, userId: governanceRemoveUser }));
     if (!member) return;
     if (!confirm(`Remove ${member.name || member.email} from active access? They will not be able to log in, but their audit history will remain.`)) return;
     try {
@@ -12404,7 +12436,7 @@ portalHubGrid.addEventListener("click", async (event) => {
   }
   const governanceReaddUser = event.target.closest("[data-governance-readd-user]")?.dataset.governanceReaddUser;
   if (governanceReaddUser) {
-    const member = governanceMembers().find((item) => item.id === governanceReaddUser);
+    const member = governanceMembers().find((item) => memberMatchesIdentity(item, { id: governanceReaddUser, userId: governanceReaddUser }));
     await addGovernanceUser(member || null);
     return;
   }
@@ -12448,7 +12480,7 @@ portalHubGrid.addEventListener("click", async (event) => {
   }
   const governanceForceLogout = event.target.closest("[data-governance-force-logout]")?.dataset.governanceForceLogout;
   if (governanceForceLogout) {
-    const member = governanceMembers().find((item) => item.id === governanceForceLogout);
+    const member = governanceMembers().find((item) => memberMatchesIdentity(item, { id: governanceForceLogout, userId: governanceForceLogout }));
     if (member && normalizeEmail(member.email) === normalizeEmail(currentUser())) clearSharedSession();
     writeAudit("Forced user logout", member?.email || governanceForceLogout, "Administration & Governance", member?.email || governanceForceLogout, `Forced by ${currentUserName()}`);
     renderGovernanceHub("security");

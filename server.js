@@ -320,11 +320,26 @@ function normalizeEmail(value = "") {
   return String(value).trim().toLowerCase();
 }
 
+function normalizeMemberId(value = "") {
+  return String(value || "").trim();
+}
+
+function memberMatches(member = {}, identifiers = {}) {
+  const memberId = normalizeMemberId(member.id || member.userId || member.memberId);
+  const wantedIds = [identifiers.id, identifiers.userId, identifiers.memberId]
+    .map(normalizeMemberId)
+    .filter(Boolean);
+  const memberEmail = normalizeEmail(member.email);
+  const wantedEmail = normalizeEmail(identifiers.email);
+  return (memberId && wantedIds.includes(memberId)) || (memberEmail && wantedEmail && memberEmail === wantedEmail);
+}
+
 function publicUser(member) {
   const role = normalizeRole(member.role || member.access || "Read Only");
   const hasExplicitPermissions = Boolean(member.permissionsExplicit) || (Array.isArray(member.permissions) && member.permissions.length > 0);
   const permissions = hasExplicitPermissions ? sanitizePermissions(member.permissions) : defaultPermissionsForRole(role);
   return {
+    id: member.id,
     userId: member.id,
     email: member.email,
     name: member.name || member.email,
@@ -344,6 +359,7 @@ function publicMemberForList(member) {
   const hasExplicit = Boolean(member.permissionsExplicit) || (Array.isArray(member.permissions) && member.permissions.length > 0);
   return {
     id: member.id,
+    userId: member.id,
     email: member.email,
     name: member.name || member.email,
     phone: member.phone || "",
@@ -441,6 +457,7 @@ function findMemberIndex(db, urlSegment, body) {
   return db.members.findIndex((m) => {
     const mSlug = emailToSlug(m.email || "");
     const mEmail = normalizeEmail(m.email || "");
+    if (memberMatches(m, { id: segIsId ? seg : "", userId: bodyId, memberId: body.memberId, email: bodyEmail })) return true;
     if (segIsId) {
       if (m.id === seg)                          return true; // exact stored id
       if (mEmail && mEmail === normalizeEmail(seg)) return true; // email in URL
@@ -548,17 +565,25 @@ function getSession(req) {
   }
 
   // ── FIX: verify member is still active on every request ───────────────────
-  const member = db.members.find((m) => normalizeEmail(m.email) === normalizeEmail(session.email));
-  if (member && member.inviteStatus === "Disabled") {
+  const member = db.members.find((m) => memberMatches(m, session));
+  const accountStatus = String(member?.inviteStatus || member?.status || "").toLowerCase();
+  if (!member || ["disabled", "archived", "deactivated"].includes(accountStatus)) {
     db.sessions = db.sessions.filter((item) => item.sid !== sid);
     writeAudit(db, "Session rejected — account disabled", session, "Authentication", session.email, "Member deactivated");
     writeDb(db);
     return null;
   }
 
-  session.role = normalizeRole(session.role || session.access || "Read Only");
-  const sanitizedSessionPermissions = sanitizePermissions(session.permissions);
-  session.permissions = session.permissionsExplicit ? sanitizedSessionPermissions : (sanitizedSessionPermissions.length ? sanitizedSessionPermissions : defaultPermissionsForRole(session.role));
+  const role = normalizeRole(member.role || member.access || session.role || session.access || "Read Only");
+  const memberPermissions = sanitizePermissions(member.permissions);
+  const hasExplicitPermissions = Boolean(member.permissionsExplicit) || memberPermissions.length > 0;
+  session.userId = member.id;
+  session.email = member.email;
+  session.name = member.name || member.email;
+  session.role = role;
+  session.permissions = hasExplicitPermissions ? memberPermissions : defaultPermissionsForRole(role);
+  session.permissionsExplicit = hasExplicitPermissions;
+  session.mustChangePassword = Boolean(member.mustChangePassword);
   session.lastActivityAt = now.toISOString();
   writeDb(db);
   return session;
@@ -569,19 +594,21 @@ function saveSession(user) {
   const settings = securitySettings(db);
   const sid = crypto.randomBytes(32).toString("hex");
   const now = new Date();
-  const role = normalizeRole(user.role || user.access || "Read Only");
-  const userPermissions = sanitizePermissions(user.permissions);
-  const hasExplicitPermissions = Boolean(user.permissionsExplicit) || userPermissions.length > 0;
+  const member = db.members.find((m) => memberMatches(m, user));
+  const role = normalizeRole(member?.role || member?.access || user.role || user.access || "Read Only");
+  const userPermissions = sanitizePermissions(member?.permissions || user.permissions);
+  const hasExplicitPermissions = Boolean(member?.permissionsExplicit ?? user.permissionsExplicit) || userPermissions.length > 0;
   const session = {
     sid,
-    userId: user.userId || user.id || user.email,
-    email: user.email,
-    name: user.name || user.email,
+    userId: member?.id || user.userId || user.id || user.email,
+    email: member?.email || user.email,
+    name: member?.name || user.name || user.email,
     role,
     permissions: hasExplicitPermissions ? userPermissions : defaultPermissionsForRole(role),
     permissionsExplicit: hasExplicitPermissions,
-    mfaEnabled: Boolean(user.mfaEnabled),
-    mfaRequired: Boolean(user.mfaRequired),
+    mfaEnabled: Boolean(member?.mfaEnabled ?? user.mfaEnabled),
+    mfaRequired: Boolean(member?.mfaRequired ?? user.mfaRequired),
+    mustChangePassword: Boolean(member?.mustChangePassword ?? user.mustChangePassword),
     createdAt: now.toISOString(),
     lastActivityAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + settings.sessionAbsoluteHours * 60 * 60 * 1000).toISOString(),
@@ -590,7 +617,7 @@ function saveSession(user) {
   db.sessions.push(session);
 
   // ── FIX: only update non-sensitive fields; never overwrite password_hash ───
-  const memberIndex = db.members.findIndex((m) => m.email === session.email || m.id === session.userId);
+  const memberIndex = db.members.findIndex((m) => memberMatches(m, session));
   const safeUpdate = {
     id: session.userId,
     name: session.name,
@@ -598,7 +625,7 @@ function saveSession(user) {
     phone: user.phone || user.phoneNumber || "",
     branch: user.branch || "",
     department: user.department || "",
-    inviteStatus: user.inviteStatus || "Active",
+    inviteStatus: user.inviteStatus || member?.inviteStatus || "Active",
     role: session.role,
     access: session.role,
     permissions: session.permissions,
@@ -611,7 +638,7 @@ function saveSession(user) {
     // Preserve password_hash, failedLoginAttempts, lockedUntil, etc.
     db.members[memberIndex] = { ...db.members[memberIndex], ...safeUpdate };
   } else {
-    db.members.push({ ...safeUpdate, created_at: new Date().toISOString() });
+    db.members.push({ ...safeUpdate, password_hash: "", passwordAlgorithm: "", mustChangePassword: false, failedLoginAttempts: 0, lockedUntil: null, created_at: new Date().toISOString() });
   }
   writeDb(db);
   return session;
@@ -765,7 +792,7 @@ async function handleApi(req, res) {
     const currentPassword = String(body.currentPassword || "");
     const newPassword = String(body.newPassword || "");
     const db = readDb();
-    const member = db.members.find((item) => normalizeEmail(item.email) === normalizeEmail(session.email));
+    const member = db.members.find((item) => memberMatches(item, session));
     if (!member) return json(res, 404, { error: "Member not found" });
     if (member.password_hash && !verifyPassword(currentPassword, member.password_hash)) {
       writeAudit(db, "Failed password change", member, "Authentication", member.email, "Current password incorrect");
@@ -835,7 +862,7 @@ async function handleApi(req, res) {
     if (!record || record.used_at || new Date(record.expires_at) <= new Date()) {
       return json(res, 401, { error: "Password reset link is invalid or expired." });
     }
-    const member = db.members.find((item) => item.id === record.user_id || normalizeEmail(item.email) === normalizeEmail(record.email));
+    const member = db.members.find((item) => memberMatches(item, { userId: record.user_id, email: record.email }));
     if (!member) return json(res, 404, { error: "Member not found" });
     try {
       member.password_hash = hashPassword(newPassword);
@@ -996,7 +1023,7 @@ async function handleApi(req, res) {
     const target = db.members[index];
     if (normalizeEmail(target.email) === normalizeEmail(session.email)) return json(res, 400, { error: "You cannot remove your own account." });
     db.members[index] = { ...target, inviteStatus: "Disabled", updated_at: new Date().toISOString() };
-    db.sessions = db.sessions.filter((s) => normalizeEmail(s.email) !== normalizeEmail(target.email));
+    db.sessions = db.sessions.filter((s) => !memberMatches(target, s));
     writeAudit(db, "Member disabled", session, "Administration", target.email, `Disabled by ${session.email}`);
     writeDb(db);
     return json(res, 200, { ok: true, member: publicMemberForList(db.members[index]) });
@@ -1051,7 +1078,7 @@ async function handleApi(req, res) {
     }
     db.members[index] = { ...target, inviteStatus: "Disabled", archived: true, updated_at: new Date().toISOString() };
     // Expire all active sessions for the removed member
-    db.sessions = db.sessions.filter((s) => normalizeEmail(s.email) !== normalizeEmail(target.email));
+    db.sessions = db.sessions.filter((s) => !memberMatches(target, s));
     writeAudit(db, "Member disabled", session, "Administration", target.email, `Disabled by ${session.email}`);
     writeDb(db);
     return json(res, 200, { ok: true, member: publicMemberForList(db.members[index]) });
@@ -1084,7 +1111,7 @@ async function handleApi(req, res) {
     };
     db.members[index] = updated;
     if (body.inviteStatus === "Disabled") {
-      db.sessions = db.sessions.filter((s) => normalizeEmail(s.email) !== normalizeEmail(previous.email));
+      db.sessions = db.sessions.filter((s) => !memberMatches(previous, s));
     }
     writeAudit(db, "Member updated", session, "Setup - Member access", previous.email, `Updated by ${session.email}`);
     writeDb(db);
@@ -1173,27 +1200,28 @@ async function handleApi(req, res) {
     const body = await readBody(req);
     const db = readDb();
     const now = new Date().toISOString();
+    const member = db.members.find((item) => memberMatches(item, { userId: body.userId, id: body.id, email: body.userEmail || body.email }));
+    const permissionUserId = member?.id || body.userId || body.id || body.userEmail || body.email || "";
     const previous = db.user_permissions
-      .filter((item) => item.user_id === body.userId && item.can_access)
+      .filter((item) => (item.user_id === permissionUserId || (member && memberMatches(member, { userId: item.user_id }))) && item.can_access)
       .map((item) => item.permission_key);
     const requestedPermissions = sanitizePermissions(body.permissions || []);
-    db.user_permissions = db.user_permissions.filter((item) => item.user_id !== body.userId);
+    db.user_permissions = db.user_permissions.filter((item) => !(item.user_id === permissionUserId || (member && memberMatches(member, { userId: item.user_id }))));
     requestedPermissions.forEach((permissionKey) => {
       db.user_permissions.push({
         id: crypto.randomUUID(),
-        user_id: body.userId,
+        user_id: permissionUserId,
         permission_key: permissionKey,
         can_access: true,
         created_at: now,
         updated_at: now,
       });
     });
-    const member = db.members.find((item) => item.id === body.userId || normalizeEmail(item.email) === normalizeEmail(body.userEmail || ""));
     if (member) {
       member.permissions = requestedPermissions;
       member.permissionsExplicit = true;
     }
-    writeAudit(db, "Changed member permissions", session, "Setup - Member access", body.userId || body.userEmail || "", `Previous: ${previous.join(", ") || "none"} | New: ${requestedPermissions.join(", ") || "none"}`);
+    writeAudit(db, "Changed member permissions", session, "Setup - Member access", member?.email || body.userId || body.userEmail || "", `Previous: ${previous.join(", ") || "none"} | New: ${requestedPermissions.join(", ") || "none"}`);
     writeDb(db);
     return json(res, 200, { ok: true });
   }
@@ -1388,7 +1416,7 @@ async function handleApi(req, res) {
     if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
     const memberId = decodeURIComponent(url.pathname.split("/")[3]);
     const db = readDb();
-    const index = db.members.findIndex((m) => m.id === memberId || normalizeEmail(m.email) === normalizeEmail(memberId));
+    const index = db.members.findIndex((m) => memberMatches(m, { id: memberId, userId: memberId, email: memberId }));
     if (index < 0) return json(res, 404, { error: "Member not found" });
     db.members[index] = { ...db.members[index], failedLoginAttempts: 0, lockedUntil: null, updated_at: new Date().toISOString() };
     writeAudit(db, "Account unlocked", session, "Administration", db.members[index].email, `Unlocked by ${session.email}`);
@@ -1406,7 +1434,7 @@ async function handleApi(req, res) {
     const newPassword = String(body.newPassword || body.temporaryPassword || "");
     if (!newPassword) return json(res, 400, { error: "New password is required" });
     const db = readDb();
-    const index = db.members.findIndex((m) => m.id === memberId || normalizeEmail(m.email) === normalizeEmail(memberId));
+    const index = db.members.findIndex((m) => memberMatches(m, { id: memberId, userId: memberId, email: memberId }));
     if (index < 0) return json(res, 404, { error: "Member not found" });
     let password_hash;
     try {
@@ -1415,7 +1443,7 @@ async function handleApi(req, res) {
       return json(res, 400, { error: error.message, code: error.code, details: error.details || [] });
     }
     db.members[index] = { ...db.members[index], password_hash, passwordAlgorithm: "bcrypt", mustChangePassword: true, failedLoginAttempts: 0, lockedUntil: null, updated_at: new Date().toISOString() };
-    db.sessions = db.sessions.filter((s) => normalizeEmail(s.email) !== normalizeEmail(db.members[index].email));
+    db.sessions = db.sessions.filter((s) => !memberMatches(db.members[index], s));
     writeAudit(db, "Password reset by admin", session, "Administration", db.members[index].email, `Reset by ${session.email}`);
     writeDb(db);
     return json(res, 200, { ok: true });
@@ -1456,7 +1484,7 @@ async function handleApi(req, res) {
     const db = readDb();
     const email = normalizeEmail(body.email || "");
     const memberId = body.id || body.memberId || body.userId;
-    const index = db.members.findIndex((m) => (memberId && m.id === memberId) || (email && normalizeEmail(m.email) === email));
+    const index = db.members.findIndex((m) => memberMatches(m, { id: memberId, userId: memberId, email }));
     if (index < 0) return json(res, 404, { error: "Member not found" });
     const permissions = sanitizePermissions(body.permissions || []);
     db.members[index] = { ...db.members[index], permissions, permissionsExplicit: true, updated_at: new Date().toISOString() };

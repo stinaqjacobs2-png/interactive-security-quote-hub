@@ -32,6 +32,15 @@ function getMemberWithPermissions(id) {
   return { ...member, permissions: perms };
 }
 
+function getMemberByIdentity(identity = {}) {
+  const id = String(identity.id || identity.userId || identity.memberId || "").trim();
+  const email = String(identity.email || "").trim().toLowerCase();
+  if (id && email) return get("SELECT * FROM members WHERE id = ? OR lower(email) = ?", [id, email]);
+  if (id) return get("SELECT * FROM members WHERE id = ?", [id]);
+  if (email) return get("SELECT * FROM members WHERE lower(email) = ?", [email]);
+  return null;
+}
+
 function saveMemberPermissions(memberId, permKeys) {
   run("DELETE FROM member_permissions WHERE member_id = ?", [memberId]);
   const stmt = run;
@@ -87,7 +96,7 @@ async function handleChangePassword(req, res) {
   const session = requireAuth(req, res);
   if (!session) return;
   const body = await readBody(req);
-  const member = get("SELECT * FROM members WHERE id = ?", [session.userId]);
+  const member = getMemberByIdentity(session);
   if (!member) return json(res, 404, { error: "Member not found" });
 
   if (member.password_hash) {
@@ -191,10 +200,9 @@ async function handleSaveMember(req, res) {
   if (error) return json(res, 400, { error, issues });
 
   const url = new URL(req.url, "http://localhost");
-  const editId = url.searchParams.get("id") || body.id || null;
-
-  const id = editId || uuidv4();
-  const existing = editId ? get("SELECT * FROM members WHERE id = ?", [id]) : null;
+  const editId = url.searchParams.get("id") || body.id || body.userId || null;
+  const existing = getMemberByIdentity({ id: editId, userId: body.userId, email: data.email });
+  const id = existing?.id || editId || uuidv4();
 
   // Check email uniqueness
   const dup = get("SELECT id FROM members WHERE email = ? AND id != ?", [data.email, id]);
