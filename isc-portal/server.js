@@ -272,6 +272,66 @@ function tokenHash(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
+function generateOtp() {
+  return String(crypto.randomInt(100000, 1000000));
+}
+
+function generateTemporaryPassword() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
+  const required = ["A", "a", "7", "!"];
+  return [...required, ...Array.from({ length: 10 }, () => alphabet[crypto.randomInt(0, alphabet.length)])]
+    .sort(() => crypto.randomInt(-1, 2))
+    .join("");
+}
+
+function publicMemberRecord(member) {
+  return {
+    ...publicUser(member),
+    id: member.id,
+    access: normalizeRole(member.access || member.role || "Read Only"),
+    status: member.status || member.inviteStatus || "Active",
+    inviteStatus: member.inviteStatus || member.status || "Active",
+    phone: member.phone || "",
+    branch: member.branch || "",
+    department: member.department || "",
+    position: member.position || "",
+    updated_at: member.updated_at || "",
+  };
+}
+
+function requireAdminSession(req, res) {
+  const session = getSession(req);
+  if (!session) {
+    json(res, 401, { error: "Not signed in" });
+    return null;
+  }
+  if (!hasPermission(session, "member_access_management")) {
+    json(res, 403, { error: "Access denied" });
+    return null;
+  }
+  return session;
+}
+
+function resetRequestResponse(record, member) {
+  return {
+    id: record.id,
+    user_id: record.user_id,
+    user_name: member?.name || record.email || "",
+    user_email: member?.email || record.email || "",
+    requested_at: record.created_at,
+    status: record.status || (record.used_at ? "Completed" : "Pending"),
+    approved_by: record.approved_by || "",
+    requested_ip: record.requested_ip || "",
+    requested_device: record.requested_device || "",
+    completed_at: record.used_at || record.completed_at || "",
+    otp_status: record.otp_status || "",
+    otp_expires_at: record.otp_expires_at || "",
+    otp_attempts: record.otp_attempts || 0,
+    admin_email_status: record.admin_email_status || "",
+    admin_email_error: record.admin_email_error || "",
+  };
+}
+
 function securitySettings(db) {
   return {
     maxFailedLogins: Number(db.security_settings?.maxFailedLogins || MAX_FAILED_LOGINS),
@@ -656,6 +716,7 @@ async function handleApi(req, res) {
         email: member.email,
         expires_at: new Date(Date.now() + settings.passwordResetMinutes * 60 * 1000).toISOString(),
         used_at: null,
+        status: "Pending",
         created_at: new Date().toISOString(),
       });
       db.email_logs.push({
@@ -676,14 +737,104 @@ async function handleApi(req, res) {
     });
   }
 
+  if (req.method === "GET" && url.pathname === "/api/auth/password-reset-requests") {
+    const session = requireAdminSession(req, res);
+    if (!session) return;
+    const db = readDb();
+    const requests = db.password_reset_tokens
+      .slice()
+      .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
+      .map((record) => resetRequestResponse(record, db.members.find((member) => member.id === record.user_id || normalizeEmail(member.email) === normalizeEmail(record.email))));
+    return json(res, 200, {
+      requests,
+      emailDiagnostics: {
+        provider: "Manual OTP",
+        adminEmail: process.env.PASSWORD_RESET_ADMIN_EMAIL || "",
+        sender: process.env.EMAIL_FROM || "",
+      },
+    });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/password-reset-requests/action") {
+    const session = requireAdminSession(req, res);
+    if (!session) return;
+    const body = await readBody(req);
+    const db = readDb();
+    const record = db.password_reset_tokens.find((item) => item.id === body.requestId);
+    if (!record) return json(res, 404, { error: "Password reset request not found." });
+    const member = db.members.find((item) => item.id === record.user_id || normalizeEmail(item.email) === normalizeEmail(record.email));
+    if (!member) return json(res, 404, { error: "Member not found." });
+    let otp = "";
+    if (body.action === "generate_otp") {
+      otp = generateOtp();
+      record.otp_hash = tokenHash(otp);
+      record.otp_status = "Generated";
+      record.otp_expires_at = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      record.status = "OTP Generated";
+      record.approved_by = session.email;
+    } else if (body.action === "mark_completed") {
+      record.status = "Completed";
+      record.completed_at = new Date().toISOString();
+    } else if (body.action === "force_change") {
+      member.mustChangePassword = true;
+      record.status = "Force Change Required";
+      record.approved_by = session.email;
+    } else if (body.action === "reject") {
+      record.status = "Rejected";
+      record.used_at = new Date().toISOString();
+      record.approved_by = session.email;
+    } else {
+      return json(res, 400, { error: "Unknown password reset action." });
+    }
+    writeAudit(db, "Updated password reset request", session, "Authentication", member.email, body.action);
+    writeDb(db);
+    return json(res, 200, { ok: true, otp, request: resetRequestResponse(record, member) });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/password-reset-requests/generate-otp") {
+    const session = requireAdminSession(req, res);
+    if (!session) return;
+    const body = await readBody(req);
+    const db = readDb();
+    const member = db.members.find((item) => item.id === body.userId || normalizeEmail(item.email) === normalizeEmail(body.email || ""));
+    if (!member) return json(res, 404, { error: "Member not found." });
+    const otp = generateOtp();
+    const now = new Date().toISOString();
+    const record = {
+      id: crypto.randomUUID(),
+      token_hash: "",
+      otp_hash: tokenHash(otp),
+      otp_status: "Generated",
+      otp_expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      user_id: member.id,
+      email: member.email,
+      expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      used_at: null,
+      status: "OTP Generated",
+      approved_by: session.email,
+      created_at: now,
+    };
+    db.password_reset_tokens.push(record);
+    writeAudit(db, "Generated password reset OTP", session, "Authentication", member.email, "OTP generated by administrator");
+    writeDb(db);
+    return json(res, 200, { ok: true, otp, request: resetRequestResponse(record, member) });
+  }
+
   if (req.method === "POST" && url.pathname === "/api/auth/reset-password") {
     const body = await readBody(req);
     const resetToken = String(body.token || "");
+    const email = normalizeEmail(body.email);
+    const otp = String(body.otp || "").trim();
     const newPassword = String(body.newPassword || "");
     const db = readDb();
-    const record = db.password_reset_tokens.find((item) => item.token_hash === tokenHash(resetToken));
+    const record = otp
+      ? db.password_reset_tokens.find((item) => normalizeEmail(item.email) === email && item.otp_hash === tokenHash(otp))
+      : db.password_reset_tokens.find((item) => item.token_hash === tokenHash(resetToken));
     if (!record || record.used_at || new Date(record.expires_at) <= new Date()) {
       return json(res, 401, { error: "Password reset link is invalid or expired." });
+    }
+    if (otp && record.otp_expires_at && new Date(record.otp_expires_at) <= new Date()) {
+      return json(res, 401, { error: "Password reset OTP is invalid or expired." });
     }
     const member = db.members.find((item) => item.id === record.user_id || normalizeEmail(item.email) === normalizeEmail(record.email));
     if (!member) return json(res, 404, { error: "Member not found" });
@@ -693,6 +844,8 @@ async function handleApi(req, res) {
       return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
     }
     record.used_at = new Date().toISOString();
+    record.status = "Completed";
+    if (otp) record.otp_status = "Used";
     member.passwordAlgorithm = "bcrypt";
     member.mustChangePassword = false;
     member.failedLoginAttempts = 0;
@@ -731,6 +884,14 @@ async function handleApi(req, res) {
         department: member.department || "",
       }));
     return json(res, 200, { members: activeMembers });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/finance/import-opening-balances") {
+    return json(res, 501, { error: "Excel workbook import is not enabled on this server yet. Please save the workbook as CSV and import the CSV file." });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/cost/import-entity-balances") {
+    return json(res, 501, { error: "Excel workbook import is not enabled on this server yet. Please save the workbook as CSV and import the CSV file." });
   }
 
   if (req.method === "POST" && url.pathname === "/api/members") {
@@ -789,6 +950,85 @@ async function handleApi(req, res) {
     writeAudit(db, index >= 0 ? "Updated member access" : "Member invite sent", session, "Setup - Member access", email, `${previousSummary} -> ${newSummary}`);
     writeDb(db);
     return json(res, 200, { member: publicUser(member) });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/members/remove") {
+    const session = requireAdminSession(req, res);
+    if (!session) return;
+    const body = await readBody(req);
+    const db = readDb();
+    const member = db.members.find((item) => item.id === body.memberId || normalizeEmail(item.email) === normalizeEmail(body.email || ""));
+    if (!member) return json(res, 404, { error: "Member not found." });
+    if (normalizeEmail(member.email) === normalizeEmail(session.email)) return json(res, 400, { error: "You cannot remove your own account." });
+    member.inviteStatus = "Disabled";
+    member.status = "Disabled";
+    member.archivedAt = new Date().toISOString();
+    member.archivedBy = session.email;
+    member.updated_at = new Date().toISOString();
+    writeAudit(db, "Removed member", session, "Setup - Member access", member.email, "Member disabled by administrator");
+    writeDb(db);
+    return json(res, 200, { ok: true, member: publicMemberRecord(member) });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/members/readd") {
+    const session = requireAdminSession(req, res);
+    if (!session) return;
+    const body = await readBody(req);
+    const db = readDb();
+    const existing = db.members.find((item) => item.id === body.memberId || item.id === body.id || normalizeEmail(item.email) === normalizeEmail(body.email || ""));
+    const email = normalizeEmail(body.email || existing?.email || "");
+    if (!email) return json(res, 400, { error: "Member email is required." });
+    const temporaryPassword = generateTemporaryPassword();
+    const role = normalizeRole(body.role || body.access || existing?.role || "Sales Representative");
+    const now = new Date().toISOString();
+    const member = {
+      ...(existing || {}),
+      id: existing?.id || body.id || email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+      name: body.name || existing?.name || email,
+      email,
+      role,
+      access: role,
+      permissions: sanitizePermissions(Array.isArray(body.permissions) ? body.permissions : (existing?.permissions || defaultPermissionsForRole(role))),
+      permissionsExplicit: Boolean(body.permissionsExplicit ?? existing?.permissionsExplicit),
+      inviteStatus: "Active",
+      status: "Active",
+      password_hash: hashPassword(temporaryPassword),
+      passwordAlgorithm: "bcrypt",
+      mustChangePassword: true,
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+      reactivatedAt: now,
+      reactivatedBy: session.email,
+      updated_at: now,
+      created_at: existing?.created_at || now,
+    };
+    const index = db.members.findIndex((item) => item.id === member.id || normalizeEmail(item.email) === email);
+    if (index >= 0) db.members[index] = member;
+    else db.members.push(member);
+    writeAudit(db, "Re-added member", session, "Setup - Member access", member.email, "Member reactivated by administrator");
+    writeDb(db);
+    return json(res, 200, { ok: true, member: publicMemberRecord(member), temporaryPassword, emailStatus: "Manual delivery required" });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/admin/reset-members") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (normalizeRole(session.role || session.access) !== "Super Admin") return json(res, 403, { error: "Only Super Admin users may reset members." });
+    const db = readDb();
+    const current = db.members.find((member) => member.id === session.userId || normalizeEmail(member.email) === normalizeEmail(session.email));
+    if (!current) return json(res, 404, { error: "Current member not found." });
+    const membersRemoved = Math.max(0, db.members.length - 1);
+    current.role = "Super Admin";
+    current.access = "Super Admin";
+    current.permissions = permissionKeys;
+    current.inviteStatus = "Active";
+    current.status = "Active";
+    current.updated_at = new Date().toISOString();
+    db.members = [current];
+    db.user_permissions = [];
+    writeAudit(db, "Emergency member reset", session, "Administration & Governance", session.email, `Removed ${membersRemoved} member(s)`);
+    writeDb(db);
+    return json(res, 200, { ok: true, membersRemoved, member: publicMemberRecord(current) });
   }
 
   if (req.method === "POST" && url.pathname === "/api/sso/create-token") {
