@@ -208,6 +208,21 @@ function writeDb(db) {
   fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
 }
 
+function backupUsers(db, reason = "user-cleanup") {
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupPath = path.join(dataDir, `${reason}-${stamp}.json`);
+  fs.writeFileSync(backupPath, JSON.stringify({
+    created_at: new Date().toISOString(),
+    reason,
+    members: db.members || [],
+    user_permissions: db.user_permissions || [],
+    sessions: db.sessions || [],
+    password_reset_tokens: db.password_reset_tokens || [],
+  }, null, 2));
+  return backupPath;
+}
+
 function normalizeEmail(value = "") {
   return String(value).trim().toLowerCase();
 }
@@ -894,17 +909,26 @@ async function handleApi(req, res) {
     return json(res, 501, { error: "Excel workbook import is not enabled on this server yet. Please save the workbook as CSV and import the CSV file." });
   }
 
-  if (req.method === "POST" && url.pathname === "/api/members") {
+  if (req.method === "POST" && ["/api/users", "/api/members"].includes(url.pathname)) {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
     if (!hasPermission(session, "member_access_management")) return json(res, 403, { error: "Access denied" });
     const body = await readBody(req);
     const email = normalizeEmail(body.email);
-    const tempPassword = String(body.temporaryPassword || "");
     if (!email || !body.name) return json(res, 400, { error: "Member name and email are required." });
     const db = readDb();
     const existing = db.members.find((item) => normalizeEmail(item.email) === email && item.id !== body.id);
     if (existing) return json(res, 409, { error: "A member with this email address already exists." });
+    const now = new Date().toISOString();
+    const id = body.id || email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const index = db.members.findIndex((item) => item.id === id || normalizeEmail(item.email) === email);
+    const previous = index >= 0 ? db.members[index] : {};
+    let tempPassword = String(body.temporaryPassword || "");
+    let generatedTemporaryPassword = false;
+    if (!previous.email && !tempPassword) {
+      tempPassword = generateTemporaryPassword();
+      generatedTemporaryPassword = true;
+    }
     let password_hash = "";
     if (tempPassword) {
       try {
@@ -913,10 +937,6 @@ async function handleApi(req, res) {
         return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
       }
     }
-    const now = new Date().toISOString();
-    const id = body.id || email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    const index = db.members.findIndex((item) => item.id === id || normalizeEmail(item.email) === email);
-    const previous = index >= 0 ? db.members[index] : {};
     const role = normalizeRole(body.role || body.access || previous.role || "Sales Representative");
     const permissions = sanitizePermissions(Array.isArray(body.permissions) ? body.permissions : (previous.permissions || defaultPermissionsForRole(role)));
     const member = {
@@ -949,7 +969,12 @@ async function handleApi(req, res) {
     const newSummary = `${role}: ${permissions.join(", ") || "no modules selected"}`;
     writeAudit(db, index >= 0 ? "Updated member access" : "Member invite sent", session, "Setup - Member access", email, `${previousSummary} -> ${newSummary}`);
     writeDb(db);
-    return json(res, 200, { member: publicUser(member) });
+    return json(res, 200, {
+      ok: true,
+      member: publicUser(member),
+      temporaryPassword: generatedTemporaryPassword ? tempPassword : undefined,
+      emailStatus: generatedTemporaryPassword ? "Manual delivery required" : undefined,
+    });
   }
 
   if (req.method === "POST" && url.pathname === "/api/members/remove") {
@@ -1015,20 +1040,41 @@ async function handleApi(req, res) {
     if (!session) return json(res, 401, { error: "Not signed in" });
     if (normalizeRole(session.role || session.access) !== "Super Admin") return json(res, 403, { error: "Only Super Admin users may reset members." });
     const db = readDb();
-    const current = db.members.find((member) => member.id === session.userId || normalizeEmail(member.email) === normalizeEmail(session.email));
-    if (!current) return json(res, 404, { error: "Current member not found." });
-    const membersRemoved = Math.max(0, db.members.length - 1);
-    current.role = "Super Admin";
-    current.access = "Super Admin";
-    current.permissions = permissionKeys;
-    current.inviteStatus = "Active";
-    current.status = "Active";
-    current.updated_at = new Date().toISOString();
-    db.members = [current];
+    const christienEmail = "christien@interactivesecurity.co.za";
+    const christien = db.members.find((member) => normalizeEmail(member.email) === christienEmail);
+    if (!christien) return json(res, 404, { error: "Christien Jacobs was not found in the member database. Create or restore Christien before running the cleanup." });
+    const backupPath = backupUsers(db, "user-cleanup-before-christien-reset");
+    const membersRemoved = db.members.filter((member) => normalizeEmail(member.email) !== christienEmail).length;
+    const now = new Date().toISOString();
+    christien.id = christien.id || "christien-interactivesecurity-co-za";
+    christien.name = "Christien Jacobs";
+    christien.email = christienEmail;
+    christien.role = "Super Admin";
+    christien.access = "Super Admin";
+    christien.permissions = permissionKeys;
+    christien.permissionsExplicit = true;
+    christien.inviteStatus = "Active";
+    christien.status = "Active";
+    christien.mustChangePassword = Boolean(christien.mustChangePassword && !christien.password_hash);
+    christien.failedLoginAttempts = 0;
+    christien.lockedUntil = null;
+    christien.updated_at = now;
+    db.members = [christien];
     db.user_permissions = [];
-    writeAudit(db, "Emergency member reset", session, "Administration & Governance", session.email, `Removed ${membersRemoved} member(s)`);
+    db.password_reset_tokens = [];
+    db.sso_tokens = [];
+    db.sessions = (db.sessions || []).filter((item) => item.userId === christien.id || normalizeEmail(item.email) === christienEmail);
+    db.sessions.forEach((item) => {
+      item.userId = christien.id;
+      item.email = christien.email;
+      item.name = christien.name;
+      item.role = christien.role;
+      item.permissions = permissionKeys;
+      item.permissionsExplicit = true;
+    });
+    writeAudit(db, "One-time Christien user cleanup", session, "Administration & Governance", christienEmail, `Backed up users to ${path.basename(backupPath)}. Removed ${membersRemoved} member(s).`);
     writeDb(db);
-    return json(res, 200, { ok: true, membersRemoved, member: publicMemberRecord(current) });
+    return json(res, 200, { ok: true, membersRemoved, backupFile: path.basename(backupPath), member: publicMemberRecord(christien), members: [publicMemberRecord(christien)] });
   }
 
   if (req.method === "POST" && url.pathname === "/api/sso/create-token") {

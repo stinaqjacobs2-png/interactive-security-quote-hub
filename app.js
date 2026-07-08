@@ -5588,7 +5588,7 @@ function setGovernanceHubAccess(memberId, hubSlug, canAccessHub, options = {}) {
 async function syncGovernanceMemberToBackend(member) {
   if (window.location.protocol === "file:") return;
   const role = normalizeRole(member.access || member.role || "Read Only");
-  const response = await fetch("/api/members", {
+  const response = await fetch("/api/users", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -6091,10 +6091,25 @@ async function emergencyResetMembers() {
   const res = await fetch("/api/admin/reset-members", { method: "POST" });
   const data = await res.json();
   if (data.ok) {
-    alert("Reset complete. Removed " + data.membersRemoved + " member(s). Only you remain.");
+    const remainingMembers = Array.isArray(data.members) && data.members.length ? data.members : (data.member ? [data.member] : []);
+    if (remainingMembers.length) {
+      saveStorageList(membersStorageKey, remainingMembers.map((member) => ({
+        ...member,
+        id: member.id || member.userId,
+        userId: member.userId || member.id,
+        access: normalizeRole(member.access || member.role || "Super Admin"),
+        role: normalizeRole(member.role || member.access || "Super Admin"),
+        inviteStatus: member.inviteStatus || member.status || "Active",
+        status: member.status || member.inviteStatus || "Active",
+        permissions: Array.isArray(member.permissions) ? member.permissions : permissionDefinitions.map((permission) => permission.key),
+        permissionsExplicit: true,
+      })));
+    }
+    alert("Reset complete. Removed " + data.membersRemoved + " member(s). Only Christien remains.");
     // reload both member tables — replace these with whatever your app uses
     if (typeof loadMembers === "function") loadMembers();
     if (typeof loadArchivedMembers === "function") loadArchivedMembers();
+    if (typeof renderGovernanceHub === "function") renderGovernanceHub("users");
   } else {
     alert("Reset failed: " + (data.error || "Unknown error"));
   }
@@ -10791,7 +10806,7 @@ memberForm.addEventListener("submit", async (event) => {
   const isBootstrapSave = isBootstrapSuperAdmin() && selectedRole === "Super Admin";
   if (!isBootstrapSave) {
     try {
-      const response = await fetch("/api/members", {
+      const response = await fetch("/api/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
