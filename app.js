@@ -2030,6 +2030,7 @@ function saveSharedSessionObject(session) {
   if (!session?.email) return null;
   const normalizedEmail = normalizeEmail(session.email);
   const role = normalizeRole(session.role || session.access || "Read Only");
+  const passwordSetupComplete = session.passwordSetupComplete !== false;
   const normalizedSession = {
     userId: session.userId || slugify(normalizedEmail),
     email: normalizedEmail,
@@ -2038,8 +2039,7 @@ function saveSharedSessionObject(session) {
     access: role,
     permissions: Array.isArray(session.permissions) ? session.permissions : roleDefaultPermissions[role] || [],
     permissionsExplicit: Boolean(session.permissionsExplicit),
-    passwordSetupComplete: Boolean(session.passwordSetupComplete ?? true),
-    mustChangePassword: Boolean(session.mustChangePassword),
+    passwordSetupComplete,
     isActive: Boolean(session.isActive ?? true),
     signedInAt: session.signedInAt || new Date().toISOString(),
     lastActivityAt: session.lastActivityAt || new Date().toISOString(),
@@ -2209,6 +2209,8 @@ async function refreshBackendSession() {
       permissions: Array.isArray(data.user.permissions) ? data.user.permissions : member?.permissions || [],
       permissionsExplicit: Boolean(data.user.permissionsExplicit),
       inviteStatus: member?.inviteStatus || "Active",
+      passwordSetupComplete: data.user.passwordSetupComplete !== false,
+      isActive: Boolean(data.user.isActive ?? true),
     });
     console.log("AUTH DEBUG", {
       context: "refreshBackendSession",
@@ -2842,7 +2844,21 @@ function saveMemberRecord(member) {
   const members = storageList(membersStorageKey);
   const role = normalizeRole(member.access || member.role || "Read Only");
   const id = member.id || member.userId || slugify(member.email || member.name || "member");
-  const normalizedMember = { ...member, id, userId: member.userId || id, access: role, role };
+  const passwordSetupComplete = member.passwordSetupComplete !== false;
+  const normalizedMember = {
+    ...member,
+    id,
+    userId: member.userId || id,
+    access: role,
+    role,
+    passwordSetupComplete,
+  };
+  delete normalizedMember.password_setup_complete;
+  delete normalizedMember.setupComplete;
+  delete normalizedMember.requiresPasswordSetup;
+  delete normalizedMember.onboardingComplete;
+  delete normalizedMember.forcePasswordReset;
+  delete normalizedMember.mustChangePassword;
   const index = members.findIndex((item) => memberMatchesIdentity(item, normalizedMember));
   if (index >= 0) members[index] = normalizedMember;
   else members.push(normalizedMember);
@@ -11129,7 +11145,6 @@ memberForm.addEventListener("submit", async (event) => {
     inviteStatus: memberInviteStatus.value,
   };
   if (temporaryPassword) {
-    payload.mustChangePassword = true;
     payload.hasLoggedIn = false;
     payload.inviteStatus = "Invite Sent";
     payload.inviteSentAt = new Date().toISOString();
@@ -12317,7 +12332,7 @@ loginForm.addEventListener("submit", async (event) => {
     }
     return;
   }
-  if (user.mustChangePassword || user.passwordSetupComplete === false) {
+  if (user.passwordSetupComplete === false) {
     const newPassword = prompt(`Please create a new password before continuing. ${passwordPolicyMessage}`);
     if (!newPassword || !isStrongPassword(newPassword.trim())) {
       alert(strongPasswordMessage(newPassword || ""));
@@ -12326,9 +12341,10 @@ loginForm.addEventListener("submit", async (event) => {
       return;
     }
     try {
-      await changeBackendPassword(loginPassword.value, newPassword.trim());
-      user.mustChangePassword = false;
+      const passwordChangeResult = await changeBackendPassword(loginPassword.value, newPassword.trim());
+      user = passwordChangeResult.user || { ...user, passwordSetupComplete: true };
       user.passwordSetupComplete = true;
+      user.mustChangePassword = false;
       writeAudit("Changed temporary password", email, "Authentication", email, "First login password change");
     } catch (error) {
       alert(error.message || "Password could not be changed.");
@@ -12351,7 +12367,6 @@ loginForm.addEventListener("submit", async (event) => {
     hasLoggedIn: true,
     inviteStatus: "Active",
     passwordSetupComplete: Boolean(user.passwordSetupComplete ?? true),
-    mustChangePassword: false,
     isActive: true,
     passwordHash: undefined,
     legacyPasswordHash: member?.legacyPasswordHash,

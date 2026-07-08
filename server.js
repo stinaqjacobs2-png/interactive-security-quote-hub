@@ -106,17 +106,38 @@ function normalizeMemberAuthState(member = {}) {
   const updated = { ...member };
   const hash = memberPasswordHash(updated);
   const now = new Date().toISOString();
+  const legacySetupComplete = updated.passwordSetupComplete === true
+    || updated.password_setup_complete === true
+    || updated.setupComplete === true
+    || updated.onboardingComplete === true;
+  const legacySetupIncomplete = updated.passwordSetupComplete === false
+    || updated.password_setup_complete === false
+    || updated.setupComplete === false
+    || updated.requiresPasswordSetup === true;
+  const forcePasswordChange = Boolean(updated.forcePasswordChange || updated.forcePasswordReset) && !legacySetupComplete;
+  const legacyMustChange = Boolean(updated.mustChangePassword || updated.must_change_pw) && !legacySetupComplete;
+  const hasTemporarySetupState = legacySetupIncomplete
+    && !legacySetupComplete
+    && !updated.passwordChangedAt
+    && ["invite sent", "pending", "password reset", "otp generated", "force change required"].includes(String(updated.inviteStatus || updated.status || "").trim().toLowerCase());
   if (hash) {
     updated.password_hash = hash;
     updated.passwordHash = hash;
     updated.passwordAlgorithm = updated.passwordAlgorithm || "bcrypt";
   }
-  const forcePasswordChange = Boolean(updated.forcePasswordChange);
-  const setupComplete = updated.passwordSetupComplete === true || updated.password_setup_complete === true;
-  const legacyMustChange = Boolean(updated.mustChangePassword || updated.must_change_pw);
-  const mustChange = forcePasswordChange || (legacyMustChange && !setupComplete);
+  const mustChange = forcePasswordChange || hasTemporarySetupState || (legacyMustChange && !legacySetupComplete && hasTemporarySetupState);
   updated.passwordSetupComplete = hash ? !mustChange : false;
-  updated.mustChangePassword = hash ? !updated.passwordSetupComplete : true;
+  delete updated.password_setup_complete;
+  delete updated.setupComplete;
+  delete updated.requiresPasswordSetup;
+  delete updated.onboardingComplete;
+  delete updated.forcePasswordReset;
+  delete updated.must_change_pw;
+  delete updated.mustChangePassword;
+  if (updated.passwordSetupComplete) {
+    delete updated.forcePasswordChange;
+    delete updated.passwordResetRequested;
+  }
   updated.isActive = !["disabled", "archived", "deactivated"].includes(String(updated.inviteStatus || updated.status || "Active").toLowerCase());
   updated.status = updated.isActive ? (updated.status === "Disabled" ? "Active" : (updated.status || "Active")) : (updated.status || "Disabled");
   updated.inviteStatus = updated.isActive ? (updated.inviteStatus === "Disabled" ? "Active" : (updated.inviteStatus || "Active")) : (updated.inviteStatus || "Disabled");
@@ -196,6 +217,28 @@ function ensureDb() {
     }
     return updated;
   });
+  const christienEmail = "christien@interactivesecurity.co.za";
+  const christienIndex = db.members.findIndex((member) => normalizeEmail(member.email) === christienEmail);
+  if (christienIndex >= 0) {
+    const previous = db.members[christienIndex];
+    const updated = normalizeMemberAuthState({
+      ...previous,
+      name: previous.name || "Christien Jacobs",
+      role: "Super Admin",
+      access: "Super Admin",
+      permissions: permissionKeys,
+      permissionsExplicit: false,
+      inviteStatus: "Active",
+      status: "Active",
+      isActive: true,
+      updated_at: previous.updated_at || new Date().toISOString(),
+      updatedAt: previous.updatedAt || previous.updated_at || new Date().toISOString(),
+    });
+    if (JSON.stringify(updated) !== JSON.stringify(previous)) {
+      db.members[christienIndex] = updated;
+      changed = true;
+    }
+  }
   db.sales_quotation_requests = db.sales_quotation_requests.map((request) => {
     const normalized = String(request.status || "")
       .trim()
@@ -436,7 +479,7 @@ function publicUser(member) {
     permissions,
     permissionsExplicit: hasExplicitPermissions,
     inviteStatus: normalizedMember.inviteStatus || "Active",
-    mustChangePassword: Boolean(normalizedMember.mustChangePassword),
+    mustChangePassword: normalizedMember.passwordSetupComplete !== true,
     passwordSetupComplete: Boolean(normalizedMember.passwordSetupComplete),
     isActive: Boolean(normalizedMember.isActive),
     mfaEnabled: Boolean(member.mfaEnabled),
@@ -757,22 +800,25 @@ function saveSession(user) {
   // FIX: find existing member BEFORE building memberRecord so we can use their
   // stored contact fields as fallback — prevents SSO login from wiping phone/branch/department.
   const memberIndex = db.members.findIndex((member) => normalizeEmail(member.email) === normalizeEmail(session.email) || member.id === session.userId);
-  const existingMember = memberIndex >= 0 ? db.members[memberIndex] : {};
+  const existingMember = memberIndex >= 0 ? normalizeMemberAuthState(db.members[memberIndex]) : {};
+  const normalizedUser = normalizeMemberAuthState({ ...existingMember, ...user });
   const memberRecord = {
     id: session.userId,
     name: session.name,
     email: session.email,
-    phone: user.phone || user.phoneNumber || existingMember.phone || "",
-    branch: user.branch || existingMember.branch || "",
-    department: user.department || existingMember.department || "",
-    inviteStatus: user.inviteStatus || existingMember.inviteStatus || "Active",
+    phone: normalizedUser.phone || normalizedUser.phoneNumber || "",
+    branch: normalizedUser.branch || "",
+    department: normalizedUser.department || "",
+    inviteStatus: normalizedUser.inviteStatus || "Active",
     role: session.role,
     permissions: session.permissions,
     mfaEnabled: session.mfaEnabled,
     mfaRequired: session.mfaRequired,
-    mustChangePassword: Boolean(existingMember.mustChangePassword),
-    passwordSetupComplete: Boolean(existingMember.passwordSetupComplete),
-    isActive: Boolean(existingMember.isActive ?? true),
+    password_hash: normalizedUser.password_hash || existingMember.password_hash || "",
+    passwordHash: normalizedUser.passwordHash || existingMember.passwordHash || "",
+    passwordAlgorithm: normalizedUser.passwordAlgorithm || existingMember.passwordAlgorithm || "",
+    passwordSetupComplete: Boolean(normalizedUser.passwordSetupComplete),
+    isActive: Boolean(normalizedUser.isActive ?? true),
     updated_at: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -875,7 +921,6 @@ async function handleApi(req, res) {
       password_hash: passwordHash,
       passwordHash,
       passwordAlgorithm: "bcrypt",
-      mustChangePassword: false,
       passwordSetupComplete: true,
       isActive: true,
       failedLoginAttempts: 0,
@@ -937,7 +982,6 @@ async function handleApi(req, res) {
           password_hash: passwordHash,
           passwordHash,
           passwordAlgorithm: "bcrypt",
-          mustChangePassword: false,
           passwordSetupComplete: true,
           isActive: true,
           failedLoginAttempts: 0,
@@ -979,9 +1023,10 @@ async function handleApi(req, res) {
     member.lastLoginAt = now.toISOString();
     member.updated_at = now.toISOString();
     member.updatedAt = member.updated_at;
-    member.passwordSetupComplete = Boolean(member.passwordSetupComplete);
-    member.mustChangePassword = !member.passwordSetupComplete;
-    writeAudit(db, "Signed in", member, "Authentication", email, member.mustChangePassword ? "Password setup required once" : "Successful login");
+    member = normalizeMemberAuthState(member);
+    db.members[memberIndex] = member;
+    const requiresPasswordSetup = member.passwordSetupComplete !== true;
+    writeAudit(db, "Signed in", member, "Authentication", email, requiresPasswordSetup ? "Password setup required once" : "Successful login");
     writeDb(db);
     const session = saveSession(publicUser(member));
     setCookie(res, "interactive_security_session", session.sid);
@@ -993,7 +1038,7 @@ async function handleApi(req, res) {
         role: session.role,
         permissions: session.permissions,
         permissionsExplicit: session.permissionsExplicit,
-        mustChangePassword: Boolean(member.mustChangePassword),
+        mustChangePassword: requiresPasswordSetup,
         passwordSetupComplete: Boolean(member.passwordSetupComplete),
         isActive: Boolean(member.isActive),
         mfaEnabled: Boolean(member.mfaEnabled),
@@ -1026,10 +1071,6 @@ async function handleApi(req, res) {
     member.password_hash = nextPasswordHash;
     member.passwordHash = nextPasswordHash;
     member.passwordAlgorithm = "bcrypt";
-    member.mustChangePassword = false;
-    member.must_change_pw = false;
-    member.forcePasswordChange = false;
-    member.passwordResetRequested = false;
     member.passwordSetupComplete = true;
     member.isActive = true;
     member.passwordChangedAt = new Date().toISOString();
@@ -1039,9 +1080,17 @@ async function handleApi(req, res) {
     member.status = "Active";
     member.updated_at = new Date().toISOString();
     member.updatedAt = member.updated_at;
-    writeAudit(db, "Changed password", member, "Authentication", member.email, "Password changed successfully");
+    db.password_reset_tokens = (db.password_reset_tokens || []).map((record) => (
+      normalizeEmail(record.email) === normalizeEmail(member.email) && !["Completed", "Used"].includes(record.status)
+        ? { ...record, status: "Completed", otp_status: record.otp_status === "Generated" ? "Used" : record.otp_status, used_at: record.used_at || member.passwordChangedAt }
+        : record
+    ));
+    const savedMember = normalizeMemberAuthState(member);
+    const memberIndex = db.members.findIndex((item) => item.id === savedMember.id || normalizeEmail(item.email) === normalizeEmail(savedMember.email));
+    if (memberIndex >= 0) db.members[memberIndex] = savedMember;
+    writeAudit(db, "Changed password", savedMember, "Authentication", savedMember.email, "Password changed successfully");
     writeDb(db);
-    return json(res, 200, { ok: true });
+    return json(res, 200, { ok: true, user: publicUser(savedMember), member: publicMemberRecord(savedMember) });
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/request-password-reset") {
@@ -1120,8 +1169,9 @@ async function handleApi(req, res) {
       record.status = "Completed";
       record.completed_at = new Date().toISOString();
     } else if (body.action === "force_change") {
-      member.mustChangePassword = true;
       member.passwordSetupComplete = false;
+      member.forcePasswordChange = true;
+      member.passwordResetRequested = true;
       record.status = "Force Change Required";
       record.approved_by = session.email;
     } else if (body.action === "reject") {
@@ -1195,10 +1245,6 @@ async function handleApi(req, res) {
     record.status = "Completed";
     if (otp) record.otp_status = "Used";
     member.passwordAlgorithm = "bcrypt";
-    member.mustChangePassword = false;
-    member.must_change_pw = false;
-    member.forcePasswordChange = false;
-    member.passwordResetRequested = false;
     member.passwordSetupComplete = true;
     member.failedLoginAttempts = 0;
     member.lockedUntil = null;
@@ -1208,15 +1254,26 @@ async function handleApi(req, res) {
     member.isActive = true;
     member.updated_at = new Date().toISOString();
     member.updatedAt = member.updated_at;
-    writeAudit(db, "Password reset completed", member, "Authentication", member.email, "Password reset token consumed");
+    const savedMember = normalizeMemberAuthState(member);
+    const memberIndex = db.members.findIndex((item) => item.id === savedMember.id || normalizeEmail(item.email) === normalizeEmail(savedMember.email));
+    if (memberIndex >= 0) db.members[memberIndex] = savedMember;
+    writeAudit(db, "Password reset completed", savedMember, "Authentication", savedMember.email, "Password reset token consumed");
     writeDb(db);
-    return json(res, 200, { ok: true });
+    return json(res, 200, { ok: true, user: publicUser(savedMember), member: publicMemberRecord(savedMember) });
   }
 
   if (req.method === "GET" && url.pathname === "/api/auth/session") {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
-    return json(res, 200, { user: session });
+    const db = readDb();
+    const memberIndex = db.members.findIndex((item) => item.id === session.userId || normalizeEmail(item.email) === normalizeEmail(session.email));
+    if (memberIndex >= 0) {
+      const member = normalizeMemberAuthState(db.members[memberIndex]);
+      db.members[memberIndex] = member;
+      writeDb(db);
+      return json(res, 200, { user: publicUser(member) });
+    }
+    return json(res, 200, { user: { ...session, passwordSetupComplete: true, mustChangePassword: false } });
   }
 
   if (req.method === "GET" && url.pathname === "/api/members/search") {
@@ -1379,7 +1436,7 @@ async function handleApi(req, res) {
     const nextPasswordHash = password_hash || memberPasswordHash(previous);
     const forcePasswordChange = Boolean(body.forcePasswordChange);
     const passwordSetupComplete = password_hash || forcePasswordChange ? false : Boolean(previous.passwordSetupComplete && nextPasswordHash);
-    const member = {
+    const member = normalizeMemberAuthState({
       ...previous,
       id,
       name: String(body.name || previous.name || email),
@@ -1394,8 +1451,6 @@ async function handleApi(req, res) {
       inviteStatus: body.inviteStatus || previous.inviteStatus || "Invite Sent",
       status: body.status || previous.status || "Active",
       isActive: !["disabled", "archived", "deactivated"].includes(String(body.inviteStatus || body.status || previous.inviteStatus || previous.status || "Active").toLowerCase()),
-      mustChangePassword: nextPasswordHash ? !passwordSetupComplete : true,
-      must_change_pw: nextPasswordHash ? !passwordSetupComplete : true,
       forcePasswordChange,
       passwordResetRequested: forcePasswordChange ? true : Boolean(previous.passwordResetRequested),
       passwordSetupComplete,
@@ -1411,7 +1466,7 @@ async function handleApi(req, res) {
       updated_at: now,
       createdAt: previous.createdAt || previous.created_at || now,
       updatedAt: now,
-    };
+    });
     if (index >= 0) db.members[index] = member;
     else db.members.push(member);
     const previousSummary = previous.email ? `${normalizeRole(previous.role || previous.access)}: ${(previous.permissions || []).join(", ") || "role defaults"}` : "new member";
@@ -1470,8 +1525,9 @@ async function handleApi(req, res) {
       password_hash: temporaryPasswordHash,
       passwordHash: temporaryPasswordHash,
       passwordAlgorithm: "bcrypt",
-      mustChangePassword: true,
       passwordSetupComplete: false,
+      forcePasswordChange: true,
+      passwordResetRequested: true,
       isActive: true,
       failedLoginAttempts: 0,
       lockedUntil: null,
@@ -1512,7 +1568,9 @@ async function handleApi(req, res) {
     christien.status = "Active";
     christien.isActive = true;
     christien.passwordSetupComplete = Boolean(memberPasswordHash(christien));
-    christien.mustChangePassword = !christien.passwordSetupComplete;
+    delete christien.mustChangePassword;
+    delete christien.must_change_pw;
+    delete christien.forcePasswordReset;
     christien.failedLoginAttempts = 0;
     christien.lockedUntil = null;
     christien.updated_at = now;
