@@ -111,8 +111,11 @@ function normalizeMemberAuthState(member = {}) {
     updated.passwordHash = hash;
     updated.passwordAlgorithm = updated.passwordAlgorithm || "bcrypt";
   }
-  const mustChange = Boolean(updated.mustChangePassword || updated.must_change_pw);
-  updated.passwordSetupComplete = Boolean(updated.passwordSetupComplete ?? (hash && !mustChange));
+  const forcePasswordChange = Boolean(updated.forcePasswordChange);
+  const setupComplete = updated.passwordSetupComplete === true || updated.password_setup_complete === true;
+  const legacyMustChange = Boolean(updated.mustChangePassword || updated.must_change_pw);
+  const mustChange = forcePasswordChange || (legacyMustChange && !setupComplete);
+  updated.passwordSetupComplete = hash ? !mustChange : false;
   updated.mustChangePassword = hash ? !updated.passwordSetupComplete : true;
   updated.isActive = !["disabled", "archived", "deactivated"].includes(String(updated.inviteStatus || updated.status || "Active").toLowerCase());
   updated.status = updated.isActive ? (updated.status === "Disabled" ? "Active" : (updated.status || "Active")) : (updated.status || "Disabled");
@@ -1024,6 +1027,9 @@ async function handleApi(req, res) {
     member.passwordHash = nextPasswordHash;
     member.passwordAlgorithm = "bcrypt";
     member.mustChangePassword = false;
+    member.must_change_pw = false;
+    member.forcePasswordChange = false;
+    member.passwordResetRequested = false;
     member.passwordSetupComplete = true;
     member.isActive = true;
     member.passwordChangedAt = new Date().toISOString();
@@ -1190,6 +1196,9 @@ async function handleApi(req, res) {
     if (otp) record.otp_status = "Used";
     member.passwordAlgorithm = "bcrypt";
     member.mustChangePassword = false;
+    member.must_change_pw = false;
+    member.forcePasswordChange = false;
+    member.passwordResetRequested = false;
     member.passwordSetupComplete = true;
     member.failedLoginAttempts = 0;
     member.lockedUntil = null;
@@ -1368,7 +1377,8 @@ async function handleApi(req, res) {
     const role = normalizeRole(body.role || body.access || previous.role || "Sales Representative");
     const permissions = sanitizePermissions(Array.isArray(body.permissions) ? body.permissions : (previous.permissions || defaultPermissionsForRole(role)));
     const nextPasswordHash = password_hash || memberPasswordHash(previous);
-    const passwordSetupComplete = password_hash ? false : Boolean(previous.passwordSetupComplete && nextPasswordHash);
+    const forcePasswordChange = Boolean(body.forcePasswordChange);
+    const passwordSetupComplete = password_hash || forcePasswordChange ? false : Boolean(previous.passwordSetupComplete && nextPasswordHash);
     const member = {
       ...previous,
       id,
@@ -1385,6 +1395,9 @@ async function handleApi(req, res) {
       status: body.status || previous.status || "Active",
       isActive: !["disabled", "archived", "deactivated"].includes(String(body.inviteStatus || body.status || previous.inviteStatus || previous.status || "Active").toLowerCase()),
       mustChangePassword: nextPasswordHash ? !passwordSetupComplete : true,
+      must_change_pw: nextPasswordHash ? !passwordSetupComplete : true,
+      forcePasswordChange,
+      passwordResetRequested: forcePasswordChange ? true : Boolean(previous.passwordResetRequested),
       passwordSetupComplete,
       password_hash: nextPasswordHash,
       passwordHash: nextPasswordHash,
