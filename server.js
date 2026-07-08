@@ -7,6 +7,7 @@ const bcrypt = require("./vendor/bcrypt");
 const root = __dirname;
 const dataDir = path.join(root, "data");
 const dbPath = path.join(dataDir, "app-db.json");
+const uploadDir = path.join(dataDir, "uploads");
 const port = Number(process.env.PORT || 3100);
 const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS || 12);
 const MAX_FAILED_LOGINS = Number(process.env.MAX_FAILED_LOGINS || 5);
@@ -97,6 +98,32 @@ function sanitizePermissions(permissions = []) {
     .filter((permission) => permissionKeys.includes(permission))));
 }
 
+function memberPasswordHash(member = {}) {
+  return member.password_hash || member.passwordHash || "";
+}
+
+function normalizeMemberAuthState(member = {}) {
+  const updated = { ...member };
+  const hash = memberPasswordHash(updated);
+  const now = new Date().toISOString();
+  if (hash) {
+    updated.password_hash = hash;
+    updated.passwordHash = hash;
+    updated.passwordAlgorithm = updated.passwordAlgorithm || "bcrypt";
+  }
+  const mustChange = Boolean(updated.mustChangePassword || updated.must_change_pw);
+  updated.passwordSetupComplete = Boolean(updated.passwordSetupComplete ?? (hash && !mustChange));
+  updated.mustChangePassword = hash ? !updated.passwordSetupComplete : true;
+  updated.isActive = !["disabled", "archived", "deactivated"].includes(String(updated.inviteStatus || updated.status || "Active").toLowerCase());
+  updated.status = updated.isActive ? (updated.status === "Disabled" ? "Active" : (updated.status || "Active")) : (updated.status || "Disabled");
+  updated.inviteStatus = updated.isActive ? (updated.inviteStatus === "Disabled" ? "Active" : (updated.inviteStatus || "Active")) : (updated.inviteStatus || "Disabled");
+  updated.createdAt = updated.createdAt || updated.created_at || now;
+  updated.updatedAt = updated.updatedAt || updated.updated_at || now;
+  updated.created_at = updated.created_at || updated.createdAt;
+  updated.updated_at = updated.updated_at || updated.updatedAt;
+  return updated;
+}
+
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -116,6 +143,7 @@ function ensureDb() {
       user_permissions: [],
       sales_quotation_requests: [],
       sales_quotation_request_files: [],
+      uploaded_files: [],
       email_logs: [],
       audit_trail: [],
       password_reset_tokens: [],
@@ -132,7 +160,7 @@ function ensureDb() {
   }
   const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
   let changed = false;
-  ["sessions", "sso_tokens", "members", "user_permissions", "sales_quotation_requests", "sales_quotation_request_files", "email_logs", "audit_trail", "password_reset_tokens"].forEach((table) => {
+  ["sessions", "sso_tokens", "members", "user_permissions", "sales_quotation_requests", "sales_quotation_request_files", "uploaded_files", "email_logs", "audit_trail", "password_reset_tokens"].forEach((table) => {
     if (!Array.isArray(db[table])) {
       db[table] = [];
       changed = true;
@@ -150,7 +178,8 @@ function ensureDb() {
     changed = true;
   }
   db.members = db.members.map((member) => {
-    let updated = member;
+    let updated = normalizeMemberAuthState(member);
+    if (JSON.stringify(updated) !== JSON.stringify(member)) changed = true;
     const normalizedRole = normalizeRole(updated.role || updated.access || "Read Only");
     const normalizedPermissions = sanitizePermissions(updated.permissions);
     if (updated.role !== normalizedRole || updated.access !== normalizedRole) {
@@ -159,17 +188,6 @@ function ensureDb() {
         role: normalizedRole,
         access: normalizedRole,
         permissions: normalizedPermissions.length ? normalizedPermissions : defaultPermissionsForRole(normalizedRole),
-      };
-      changed = true;
-    }
-    if (updated.passwordHash && !updated.legacyPasswordHash) {
-      updated = {
-        ...updated,
-        legacyPasswordHash: updated.passwordHash,
-        passwordHash: undefined,
-        password_hash: updated.password_hash || "",
-        passwordAlgorithm: updated.password_hash ? "bcrypt" : "legacy-sha256-reset-required",
-        mustChangePassword: true,
       };
       changed = true;
     }
@@ -208,6 +226,181 @@ function writeDb(db) {
   fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
 }
 
+function normalizeZipPath(value = "") {
+  return String(value).replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+const crcTable = Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = value & 1 ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+  }
+  return value >>> 0;
+});
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function dosDateTime(date = new Date()) {
+  const year = Math.max(1980, date.getFullYear());
+  const dosTime = (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
+  const dosDate = ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
+  return { dosTime, dosDate };
+}
+
+function createZip(files) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  files.forEach((file) => {
+    const name = Buffer.from(normalizeZipPath(file.name), "utf8");
+    const data = Buffer.isBuffer(file.data) ? file.data : Buffer.from(String(file.data || ""), "utf8");
+    const checksum = crc32(data);
+    const { dosTime, dosDate } = dosDateTime(file.modifiedAt || new Date());
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt16LE(dosTime, 10);
+    local.writeUInt16LE(dosDate, 12);
+    local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    local.writeUInt16LE(0, 28);
+    localParts.push(local, name, data);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(0, 10);
+    central.writeUInt16LE(dosTime, 12);
+    central.writeUInt16LE(dosDate, 14);
+    central.writeUInt32LE(checksum, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt16LE(0, 30);
+    central.writeUInt16LE(0, 32);
+    central.writeUInt16LE(0, 34);
+    central.writeUInt16LE(0, 36);
+    central.writeUInt32LE(0, 38);
+    central.writeUInt32LE(offset, 42);
+    centralParts.push(central, name);
+    offset += local.length + name.length + data.length;
+  });
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  end.writeUInt16LE(0, 20);
+  return Buffer.concat([...localParts, ...centralParts, end]);
+}
+
+function collectBackupFiles() {
+  ensureDb();
+  const warnings = [];
+  const included = new Map();
+  const addFile = (absolutePath, zipPath) => {
+    if (!fs.existsSync(absolutePath)) {
+      warnings.push(`Missing file: ${zipPath}`);
+      return;
+    }
+    const stat = fs.statSync(absolutePath);
+    if (!stat.isFile()) return;
+    const normalized = normalizeZipPath(zipPath);
+    included.set(normalized, {
+      name: normalized,
+      data: fs.readFileSync(absolutePath),
+      modifiedAt: stat.mtime,
+      size: stat.size,
+      sourcePath: absolutePath,
+    });
+  };
+  const addDirectory = (absoluteDir, zipDir, required = false) => {
+    if (!fs.existsSync(absoluteDir)) {
+      const message = `Missing folder: ${zipDir}`;
+      if (required) warnings.push(message);
+      else warnings.push(`${message} (no server-side files found there)`);
+      return;
+    }
+    const entries = fs.readdirSync(absoluteDir, { withFileTypes: true });
+    if (!entries.length) warnings.push(`Folder is empty: ${zipDir}`);
+    entries.forEach((entry) => {
+      const absolutePath = path.join(absoluteDir, entry.name);
+      const childZipPath = normalizeZipPath(path.join(zipDir, entry.name));
+      if (entry.isDirectory()) addDirectory(absolutePath, childZipPath, false);
+      else if (entry.isFile()) addFile(absolutePath, childZipPath);
+    });
+  };
+
+  addDirectory(dataDir, "data", true);
+  addDirectory(path.join(root, "quotation-template-pdfs"), "quotation-template-pdfs", false);
+  ["data/uploads", "uploads", "attachments", "documents", "data/documents"].forEach((candidate) => {
+    addDirectory(path.join(root, candidate), candidate, false);
+  });
+  addFile(path.join(root, "guarding-price-catalog.generated.json"), "guarding-price-catalog.generated.json");
+
+  const files = Array.from(included.values());
+  return { files, warnings };
+}
+
+function buildSystemBackup() {
+  const { files, warnings } = collectBackupFiles();
+  const backupDate = new Date();
+  const sourceFileBytes = files.reduce((sum, file) => sum + file.size, 0);
+  const manifestBase = {
+    backupName: "System Backup",
+    backupCreatedAt: backupDate.toISOString(),
+    application: {
+      name: "interactive-security-quote-hub",
+      entryFile: "server.js",
+      nodeEnv: process.env.NODE_ENV || "development",
+      port,
+      dataDir,
+      dbPath,
+      renderDiskMount: "/opt/render/project/src/data",
+    },
+    storageReality: {
+      liveBackend: "root server.js",
+      serverDatabase: "data/app-db.json",
+      browserOnlyWarning: "Some uploads and records are stored in browser localStorage/IndexedDB and require the Browser Data Export from the admin browser.",
+    },
+    filesIncluded: files.map((file) => ({
+      path: file.name,
+      sizeBytes: file.size,
+      modifiedAt: file.modifiedAt.toISOString(),
+    })),
+    totalFileCount: files.length + 1,
+    totalSourceFileBytes: sourceFileBytes,
+    totalBackupSizeBytes: 0,
+    warnings,
+  };
+  let archive = Buffer.alloc(0);
+  let manifest = manifestBase;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const manifestData = Buffer.from(JSON.stringify(manifest, null, 2), "utf8");
+    archive = createZip([
+      ...files,
+      { name: "manifest.json", data: manifestData, modifiedAt: backupDate, size: manifestData.length },
+    ]);
+    if (manifest.totalBackupSizeBytes === archive.length) break;
+    manifest = { ...manifestBase, totalBackupSizeBytes: archive.length };
+  }
+  return { archive, manifest };
+}
+
 function backupUsers(db, reason = "user-cleanup") {
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -228,6 +421,7 @@ function normalizeEmail(value = "") {
 }
 
 function publicUser(member) {
+  const normalizedMember = normalizeMemberAuthState(member);
   const role = normalizeRole(member.role || member.access || "Read Only");
   const hasExplicitPermissions = Boolean(member.permissionsExplicit) || (Array.isArray(member.permissions) && member.permissions.length > 0);
   const permissions = hasExplicitPermissions ? sanitizePermissions(member.permissions) : defaultPermissionsForRole(role);
@@ -238,8 +432,10 @@ function publicUser(member) {
     role,
     permissions,
     permissionsExplicit: hasExplicitPermissions,
-    inviteStatus: member.inviteStatus || "Active",
-    mustChangePassword: Boolean(member.mustChangePassword),
+    inviteStatus: normalizedMember.inviteStatus || "Active",
+    mustChangePassword: Boolean(normalizedMember.mustChangePassword),
+    passwordSetupComplete: Boolean(normalizedMember.passwordSetupComplete),
+    isActive: Boolean(normalizedMember.isActive),
     mfaEnabled: Boolean(member.mfaEnabled),
     mfaRequired: Boolean(member.mfaRequired),
   };
@@ -414,6 +610,98 @@ function readBody(req) {
   });
 }
 
+function readRawBody(req, maxBytes = 50 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(new Error("Upload is too large."));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+function parseMultipartForm(req, buffer) {
+  const contentType = req.headers["content-type"] || "";
+  const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  if (!boundaryMatch) throw new Error("Missing multipart boundary.");
+  const boundary = `--${boundaryMatch[1] || boundaryMatch[2]}`;
+  const body = buffer.toString("latin1");
+  const fields = {};
+  const files = [];
+  body.split(boundary).forEach((part) => {
+    if (!part || part === "--\r\n" || part === "--") return;
+    const trimmed = part.replace(/^\r\n/, "").replace(/\r\n--$/, "");
+    const headerEnd = trimmed.indexOf("\r\n\r\n");
+    if (headerEnd < 0) return;
+    const rawHeaders = trimmed.slice(0, headerEnd);
+    let content = trimmed.slice(headerEnd + 4);
+    if (content.endsWith("\r\n")) content = content.slice(0, -2);
+    const disposition = rawHeaders.match(/content-disposition:\s*form-data;([^\r\n]+)/i)?.[1] || "";
+    const name = disposition.match(/name="([^"]+)"/i)?.[1] || "";
+    const filename = disposition.match(/filename="([^"]*)"/i)?.[1] || "";
+    const mimeType = rawHeaders.match(/content-type:\s*([^\r\n]+)/i)?.[1]?.trim() || "application/octet-stream";
+    if (!name) return;
+    if (filename) {
+      files.push({
+        fieldName: name,
+        originalFilename: path.basename(filename),
+        mimeType,
+        data: Buffer.from(content, "latin1"),
+      });
+    } else {
+      fields[name] = Buffer.from(content, "latin1").toString("utf8");
+    }
+  });
+  return { fields, files };
+}
+
+function safeStoredFilename(originalFilename = "upload.bin") {
+  const ext = path.extname(originalFilename).toLowerCase().replace(/[^.a-z0-9]/g, "");
+  return `${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID()}${ext}`;
+}
+
+function publicUploadRecord(record) {
+  return {
+    id: record.id,
+    originalFilename: record.originalFilename,
+    storedFilename: record.storedFilename,
+    filePath: record.filePath,
+    mimeType: record.mimeType,
+    fileSize: record.fileSize,
+    uploadedAt: record.uploadedAt,
+    uploadedBy: record.uploadedBy,
+    module: record.module || "",
+    relatedType: record.relatedType || "",
+    relatedId: record.relatedId || "",
+    quoteNumber: record.quoteNumber || "",
+    requestNumber: record.requestNumber || "",
+    clientName: record.clientName || "",
+    legacyId: record.legacyId || "",
+    url: `/api/admin/uploads?id=${encodeURIComponent(record.id)}`,
+  };
+}
+
+function requireSuperAdminSession(req, res) {
+  const session = getSession(req);
+  if (!session) {
+    json(res, 401, { error: "Not signed in" });
+    return null;
+  }
+  if (normalizeRole(session.role || session.access) !== "Super Admin") {
+    json(res, 403, { error: "Only Super Admin users may access this endpoint." });
+    return null;
+  }
+  return session;
+}
+
 function getSession(req) {
   const sid = parseCookies(req).interactive_security_session;
   if (!sid) return null;
@@ -479,7 +767,11 @@ function saveSession(user) {
     permissions: session.permissions,
     mfaEnabled: session.mfaEnabled,
     mfaRequired: session.mfaRequired,
+    mustChangePassword: Boolean(existingMember.mustChangePassword),
+    passwordSetupComplete: Boolean(existingMember.passwordSetupComplete),
+    isActive: Boolean(existingMember.isActive ?? true),
     updated_at: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   };
   if (memberIndex >= 0) db.members[memberIndex] = { ...existingMember, ...memberRecord };
   else db.members.push({ ...memberRecord, created_at: new Date().toISOString() });
@@ -578,14 +870,19 @@ async function handleApi(req, res) {
       permissionsExplicit: false,
       inviteStatus: "Active",
       password_hash: passwordHash,
+      passwordHash,
       passwordAlgorithm: "bcrypt",
       mustChangePassword: false,
+      passwordSetupComplete: true,
+      isActive: true,
       failedLoginAttempts: 0,
       lockedUntil: null,
       mfaEnabled: Boolean(previous.mfaEnabled),
       mfaRequired: Boolean(previous.mfaRequired),
       created_at: previous.created_at || now,
       updated_at: now,
+      createdAt: previous.createdAt || previous.created_at || now,
+      updatedAt: now,
       passwordChangedAt: now,
     };
     if (memberIndex >= 0) db.members[memberIndex] = member;
@@ -604,6 +901,8 @@ async function handleApi(req, res) {
         permissions: session.permissions,
         permissionsExplicit: session.permissionsExplicit,
         mustChangePassword: false,
+        passwordSetupComplete: true,
+        isActive: true,
         mfaEnabled: Boolean(session.mfaEnabled),
         mfaRequired: Boolean(session.mfaRequired),
       },
@@ -617,11 +916,14 @@ async function handleApi(req, res) {
     if (!email || !password) return json(res, 400, { error: "Missing email or password" });
     const db = readDb();
     const settings = securitySettings(db);
-    let member = db.members.find((item) => normalizeEmail(item.email) === email);
+    const memberIndex = db.members.findIndex((item) => normalizeEmail(item.email) === email);
+    let member = memberIndex >= 0 ? normalizeMemberAuthState(db.members[memberIndex]) : null;
+    if (memberIndex >= 0) db.members[memberIndex] = member;
     const now = new Date();
-    const hasPasswordUsers = db.members.some((item) => item.password_hash);
+    const hasPasswordUsers = db.members.some((item) => memberPasswordHash(item));
     if (!member && !hasPasswordUsers && process.env.NODE_ENV !== "production") {
       try {
+        const passwordHash = hashPassword(password);
         member = {
           id: email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
           name: body.name || "System Admin",
@@ -629,12 +931,17 @@ async function handleApi(req, res) {
           role: "Super Admin",
           permissions: permissionKeys,
           inviteStatus: "Active",
-          password_hash: hashPassword(password),
+          password_hash: passwordHash,
+          passwordHash,
           passwordAlgorithm: "bcrypt",
           mustChangePassword: false,
+          passwordSetupComplete: true,
+          isActive: true,
           failedLoginAttempts: 0,
           created_at: now.toISOString(),
           updated_at: now.toISOString(),
+          createdAt: now.toISOString(),
+          updatedAt: now.toISOString(),
           mfaEnabled: false,
         };
         db.members.push(member);
@@ -644,14 +951,15 @@ async function handleApi(req, res) {
         return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
       }
     }
-    if (!member || member.inviteStatus === "Disabled") return json(res, 401, { error: "The email address or password is incorrect." });
+    if (!member || !member.isActive) return json(res, 401, { error: "The email address or password is incorrect." });
     if (member.lockedUntil && new Date(member.lockedUntil) > now) {
       return json(res, 423, { error: `Account locked until ${member.lockedUntil}`, code: "ACCOUNT_LOCKED", lockedUntil: member.lockedUntil });
     }
-    if (!member.password_hash) {
+    const savedPasswordHash = memberPasswordHash(member);
+    if (!savedPasswordHash) {
       return json(res, 403, { error: "Password reset required before this account can sign in.", code: "PASSWORD_RESET_REQUIRED" });
     }
-    if (!verifyPassword(password, member.password_hash)) {
+    if (!verifyPassword(password, savedPasswordHash)) {
       member.failedLoginAttempts = Number(member.failedLoginAttempts || 0) + 1;
       member.lastFailedLoginAt = now.toISOString();
       if (member.failedLoginAttempts >= settings.maxFailedLogins) {
@@ -667,7 +975,10 @@ async function handleApi(req, res) {
     member.lockedUntil = null;
     member.lastLoginAt = now.toISOString();
     member.updated_at = now.toISOString();
-    writeAudit(db, "Signed in", member, "Authentication", email, member.mustChangePassword ? "Password change required" : "Successful login");
+    member.updatedAt = member.updated_at;
+    member.passwordSetupComplete = Boolean(member.passwordSetupComplete);
+    member.mustChangePassword = !member.passwordSetupComplete;
+    writeAudit(db, "Signed in", member, "Authentication", email, member.mustChangePassword ? "Password setup required once" : "Successful login");
     writeDb(db);
     const session = saveSession(publicUser(member));
     setCookie(res, "interactive_security_session", session.sid);
@@ -680,6 +991,8 @@ async function handleApi(req, res) {
         permissions: session.permissions,
         permissionsExplicit: session.permissionsExplicit,
         mustChangePassword: Boolean(member.mustChangePassword),
+        passwordSetupComplete: Boolean(member.passwordSetupComplete),
+        isActive: Boolean(member.isActive),
         mfaEnabled: Boolean(member.mfaEnabled),
         mfaRequired: Boolean(member.mfaRequired),
       },
@@ -695,21 +1008,31 @@ async function handleApi(req, res) {
     const db = readDb();
     const member = db.members.find((item) => normalizeEmail(item.email) === normalizeEmail(session.email));
     if (!member) return json(res, 404, { error: "Member not found" });
-    if (member.password_hash && !verifyPassword(currentPassword, member.password_hash)) {
+    const existingPasswordHash = memberPasswordHash(member);
+    if (existingPasswordHash && !verifyPassword(currentPassword, existingPasswordHash)) {
       writeAudit(db, "Failed password change", member, "Authentication", member.email, "Current password incorrect");
       writeDb(db);
       return json(res, 401, { error: "Current password is incorrect." });
     }
+    let nextPasswordHash = "";
     try {
-      member.password_hash = hashPassword(newPassword);
+      nextPasswordHash = hashPassword(newPassword);
     } catch (error) {
       return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
     }
+    member.password_hash = nextPasswordHash;
+    member.passwordHash = nextPasswordHash;
     member.passwordAlgorithm = "bcrypt";
     member.mustChangePassword = false;
+    member.passwordSetupComplete = true;
+    member.isActive = true;
     member.passwordChangedAt = new Date().toISOString();
     member.failedLoginAttempts = 0;
     member.lockedUntil = null;
+    member.inviteStatus = "Active";
+    member.status = "Active";
+    member.updated_at = new Date().toISOString();
+    member.updatedAt = member.updated_at;
     writeAudit(db, "Changed password", member, "Authentication", member.email, "Password changed successfully");
     writeDb(db);
     return json(res, 200, { ok: true });
@@ -792,6 +1115,7 @@ async function handleApi(req, res) {
       record.completed_at = new Date().toISOString();
     } else if (body.action === "force_change") {
       member.mustChangePassword = true;
+      member.passwordSetupComplete = false;
       record.status = "Force Change Required";
       record.approved_by = session.email;
     } else if (body.action === "reject") {
@@ -853,20 +1177,28 @@ async function handleApi(req, res) {
     }
     const member = db.members.find((item) => item.id === record.user_id || normalizeEmail(item.email) === normalizeEmail(record.email));
     if (!member) return json(res, 404, { error: "Member not found" });
+    let nextPasswordHash = "";
     try {
-      member.password_hash = hashPassword(newPassword);
+      nextPasswordHash = hashPassword(newPassword);
     } catch (error) {
       return json(res, 400, { error: error.message, code: error.code || "WEAK_PASSWORD", details: error.details || [] });
     }
+    member.password_hash = nextPasswordHash;
+    member.passwordHash = nextPasswordHash;
     record.used_at = new Date().toISOString();
     record.status = "Completed";
     if (otp) record.otp_status = "Used";
     member.passwordAlgorithm = "bcrypt";
     member.mustChangePassword = false;
+    member.passwordSetupComplete = true;
     member.failedLoginAttempts = 0;
     member.lockedUntil = null;
     member.passwordChangedAt = new Date().toISOString();
     member.inviteStatus = "Active";
+    member.status = "Active";
+    member.isActive = true;
+    member.updated_at = new Date().toISOString();
+    member.updatedAt = member.updated_at;
     writeAudit(db, "Password reset completed", member, "Authentication", member.email, "Password reset token consumed");
     writeDb(db);
     return json(res, 200, { ok: true });
@@ -909,6 +1241,102 @@ async function handleApi(req, res) {
     return json(res, 501, { error: "Excel workbook import is not enabled on this server yet. Please save the workbook as CSV and import the CSV file." });
   }
 
+  if (req.method === "POST" && url.pathname === "/api/admin/uploads") {
+    const session = requireSuperAdminSession(req, res);
+    if (!session) return;
+    try {
+      if (!String(req.headers["content-type"] || "").includes("multipart/form-data")) {
+        return json(res, 400, { error: "Upload must use multipart/form-data." });
+      }
+      if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+      const parsed = parseMultipartForm(req, await readRawBody(req));
+      if (!parsed.files.length) return json(res, 400, { error: "No files were uploaded." });
+      const db = readDb();
+      const now = new Date().toISOString();
+      const saved = parsed.files.map((file) => {
+        const storedFilename = safeStoredFilename(file.originalFilename);
+        const absolutePath = path.join(uploadDir, storedFilename);
+        fs.writeFileSync(absolutePath, file.data);
+        const record = {
+          id: crypto.randomUUID(),
+          originalFilename: file.originalFilename,
+          storedFilename,
+          filePath: normalizeZipPath(path.relative(root, absolutePath)),
+          mimeType: file.mimeType,
+          fileSize: file.data.length,
+          uploadedAt: now,
+          uploadedBy: {
+            userId: session.userId,
+            email: session.email,
+            name: session.name,
+          },
+          module: parsed.fields.module || "",
+          relatedType: parsed.fields.relatedType || "",
+          relatedId: parsed.fields.relatedId || "",
+          quoteNumber: parsed.fields.quoteNumber || "",
+          requestNumber: parsed.fields.requestNumber || "",
+          clientName: parsed.fields.clientName || "",
+          legacyId: parsed.fields.legacyId || "",
+          source: parsed.fields.source || "server-upload",
+        };
+        db.uploaded_files.push(record);
+        return record;
+      });
+      writeAudit(db, "Uploaded server-side files", session, "Administration & Governance", parsed.fields.module || "Server Uploads", `${saved.length} file(s) saved to data/uploads`);
+      writeDb(db);
+      return json(res, 200, { ok: true, files: saved.map(publicUploadRecord) });
+    } catch (error) {
+      console.error("Admin upload failed", error);
+      return json(res, 500, { error: "Upload failed.", detail: error.message });
+    }
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/admin/uploads") {
+    const session = requireSuperAdminSession(req, res);
+    if (!session) return;
+    const db = readDb();
+    const id = url.searchParams.get("id") || "";
+    if (!id) return json(res, 200, { files: db.uploaded_files.map(publicUploadRecord) });
+    const record = db.uploaded_files.find((item) => item.id === id);
+    if (!record) return json(res, 404, { error: "Uploaded file not found." });
+    const absolutePath = path.resolve(root, record.filePath || path.join("data", "uploads", record.storedFilename || ""));
+    if (!absolutePath.startsWith(uploadDir) || !fs.existsSync(absolutePath)) {
+      return json(res, 404, { error: "Uploaded file is missing from data/uploads." });
+    }
+    const mode = url.searchParams.get("mode") || "view";
+    res.writeHead(200, {
+      "Content-Type": record.mimeType || "application/octet-stream",
+      "Content-Disposition": `${mode === "download" ? "attachment" : "inline"}; filename="${encodeURIComponent(record.originalFilename || record.storedFilename || "upload")}"`,
+      "Cache-Control": "private, no-store",
+    });
+    return fs.createReadStream(absolutePath).pipe(res);
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/admin/backup") {
+    const session = getSession(req);
+    if (!session) return json(res, 401, { error: "Not signed in" });
+    if (normalizeRole(session.role || session.access) !== "Super Admin") {
+      return json(res, 403, { error: "Only Super Admin users may download system backups." });
+    }
+    try {
+      const { archive, manifest } = buildSystemBackup();
+      const dateStamp = new Date().toISOString().slice(0, 10);
+      const db = readDb();
+      writeAudit(db, "Downloaded system backup", session, "Administration & Governance", "System Backup", `${manifest.totalFileCount} file(s), ${manifest.totalBackupSizeBytes} bytes`);
+      writeDb(db);
+      res.writeHead(200, {
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="interactive-security-backup-${dateStamp}.zip"`,
+        "Content-Length": archive.length,
+        "Cache-Control": "no-store",
+      });
+      return res.end(archive);
+    } catch (error) {
+      console.error("System backup failed", error);
+      return json(res, 500, { error: "System backup could not be created.", detail: error.message });
+    }
+  }
+
   if (req.method === "POST" && ["/api/users", "/api/members"].includes(url.pathname)) {
     const session = getSession(req);
     if (!session) return json(res, 401, { error: "Not signed in" });
@@ -922,7 +1350,7 @@ async function handleApi(req, res) {
     const now = new Date().toISOString();
     const id = body.id || email.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     const index = db.members.findIndex((item) => item.id === id || normalizeEmail(item.email) === email);
-    const previous = index >= 0 ? db.members[index] : {};
+    const previous = index >= 0 ? normalizeMemberAuthState(db.members[index]) : {};
     let tempPassword = String(body.temporaryPassword || "");
     let generatedTemporaryPassword = false;
     if (!previous.email && !tempPassword) {
@@ -939,6 +1367,8 @@ async function handleApi(req, res) {
     }
     const role = normalizeRole(body.role || body.access || previous.role || "Sales Representative");
     const permissions = sanitizePermissions(Array.isArray(body.permissions) ? body.permissions : (previous.permissions || defaultPermissionsForRole(role)));
+    const nextPasswordHash = password_hash || memberPasswordHash(previous);
+    const passwordSetupComplete = password_hash ? false : Boolean(previous.passwordSetupComplete && nextPasswordHash);
     const member = {
       ...previous,
       id,
@@ -952,9 +1382,13 @@ async function handleApi(req, res) {
       permissions,
       permissionsExplicit: true,
       inviteStatus: body.inviteStatus || previous.inviteStatus || "Invite Sent",
-      mustChangePassword: password_hash ? true : Boolean(previous.mustChangePassword),
-      password_hash: password_hash || previous.password_hash || "",
-      passwordAlgorithm: password_hash ? "bcrypt" : previous.passwordAlgorithm || "",
+      status: body.status || previous.status || "Active",
+      isActive: !["disabled", "archived", "deactivated"].includes(String(body.inviteStatus || body.status || previous.inviteStatus || previous.status || "Active").toLowerCase()),
+      mustChangePassword: nextPasswordHash ? !passwordSetupComplete : true,
+      passwordSetupComplete,
+      password_hash: nextPasswordHash,
+      passwordHash: nextPasswordHash,
+      passwordAlgorithm: nextPasswordHash ? "bcrypt" : previous.passwordAlgorithm || "",
       // FIX: preserve existing lockout state; only reset on login or explicit admin unlock action
       failedLoginAttempts: previous.failedLoginAttempts || 0,
       lockedUntil: previous.lockedUntil || null,
@@ -962,6 +1396,8 @@ async function handleApi(req, res) {
       mfaRequired: Boolean(previous.mfaRequired),
       created_at: previous.created_at || now,
       updated_at: now,
+      createdAt: previous.createdAt || previous.created_at || now,
+      updatedAt: now,
     };
     if (index >= 0) db.members[index] = member;
     else db.members.push(member);
@@ -1004,6 +1440,7 @@ async function handleApi(req, res) {
     const email = normalizeEmail(body.email || existing?.email || "");
     if (!email) return json(res, 400, { error: "Member email is required." });
     const temporaryPassword = generateTemporaryPassword();
+    const temporaryPasswordHash = hashPassword(temporaryPassword);
     const role = normalizeRole(body.role || body.access || existing?.role || "Sales Representative");
     const now = new Date().toISOString();
     const member = {
@@ -1017,15 +1454,20 @@ async function handleApi(req, res) {
       permissionsExplicit: Boolean(body.permissionsExplicit ?? existing?.permissionsExplicit),
       inviteStatus: "Active",
       status: "Active",
-      password_hash: hashPassword(temporaryPassword),
+      password_hash: temporaryPasswordHash,
+      passwordHash: temporaryPasswordHash,
       passwordAlgorithm: "bcrypt",
       mustChangePassword: true,
+      passwordSetupComplete: false,
+      isActive: true,
       failedLoginAttempts: 0,
       lockedUntil: null,
       reactivatedAt: now,
       reactivatedBy: session.email,
       updated_at: now,
+      updatedAt: now,
       created_at: existing?.created_at || now,
+      createdAt: existing?.createdAt || existing?.created_at || now,
     };
     const index = db.members.findIndex((item) => item.id === member.id || normalizeEmail(item.email) === email);
     if (index >= 0) db.members[index] = member;
@@ -1055,10 +1497,13 @@ async function handleApi(req, res) {
     christien.permissionsExplicit = true;
     christien.inviteStatus = "Active";
     christien.status = "Active";
-    christien.mustChangePassword = Boolean(christien.mustChangePassword && !christien.password_hash);
+    christien.isActive = true;
+    christien.passwordSetupComplete = Boolean(memberPasswordHash(christien));
+    christien.mustChangePassword = !christien.passwordSetupComplete;
     christien.failedLoginAttempts = 0;
     christien.lockedUntil = null;
     christien.updated_at = now;
+    christien.updatedAt = now;
     db.members = [christien];
     db.user_permissions = [];
     db.password_reset_tokens = [];

@@ -786,10 +786,11 @@ async function saveSupplierQuoteFile(quoteId) {
   const db = await openSupplierQuoteDb();
   const existingRecord = await loadSupplierQuoteFile(quoteId).catch(() => null);
   const existingFiles = existingRecord?.files || (existingRecord?.file ? [{ metadata: existingRecord.metadata, file: existingRecord.file }] : []);
+  const localMetadata = state.supplierQuotes.filter((metadata) => !metadata.serverUploadId);
   const newFiles = state.supplierQuoteFiles.map((file, index) => ({
-    metadata: state.supplierQuotes[index],
+    metadata: localMetadata[index],
     file,
-  }));
+  })).filter((entry) => entry.metadata && entry.file);
   await new Promise((resolve, reject) => {
     const transaction = db.transaction(supplierQuoteStoreName, "readwrite");
     const store = transaction.objectStore(supplierQuoteStoreName);
@@ -818,6 +819,14 @@ async function loadSupplierQuoteFile(quoteId) {
 
 async function openSupplierQuote(quoteId, fileId = "", mode = "view") {
   try {
+    const quote = loadApprovals().find((item) => item.id === quoteId || item.quoteNumber === quoteId);
+    const metadataFiles = supplierQuoteList(quote);
+    const serverFile = fileId ? metadataFiles.find((entry) => entry.fileId === fileId || entry.serverUploadId === fileId) : metadataFiles.find((entry) => entry.file_url);
+    if (serverFile?.file_url) {
+      const url = mode === "download" ? `${serverFile.file_url}&mode=download` : serverFile.file_url;
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
     const record = await loadSupplierQuoteFile(quoteId);
     const files = record?.files || (record?.file ? [{ metadata: record.metadata, file: record.file }] : []);
     if (!files.length) {
@@ -1384,6 +1393,291 @@ function downloadBlobFile(file, downloadName) {
   setTimeout(() => URL.revokeObjectURL(fileUrl), 1000);
 }
 
+function browserZipCrc32(bytes) {
+  if (!browserZipCrc32.table) {
+    browserZipCrc32.table = Array.from({ length: 256 }, (_, index) => {
+      let value = index;
+      for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+      return value >>> 0;
+    });
+  }
+  let crc = 0xffffffff;
+  bytes.forEach((byte) => {
+    crc = browserZipCrc32.table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  });
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function browserZipDosDateTime(date = new Date()) {
+  const year = Math.max(1980, date.getFullYear());
+  return {
+    time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
+    date: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+  };
+}
+
+function concatUint8Arrays(parts) {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  parts.forEach((part) => {
+    out.set(part, offset);
+    offset += part.length;
+  });
+  return out;
+}
+
+async function createBrowserZip(entries) {
+  const encoder = new TextEncoder();
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = encoder.encode(String(entry.name).replace(/^\/+/, "").replace(/\\/g, "/"));
+    const data = entry.data instanceof Uint8Array ? entry.data : new Uint8Array(await entry.data.arrayBuffer());
+    const checksum = browserZipCrc32(data);
+    const stamp = browserZipDosDateTime(entry.modifiedAt || new Date());
+    const local = new Uint8Array(30);
+    const localView = new DataView(local.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(6, 0x0800, true);
+    localView.setUint16(8, 0, true);
+    localView.setUint16(10, stamp.time, true);
+    localView.setUint16(12, stamp.date, true);
+    localView.setUint32(14, checksum, true);
+    localView.setUint32(18, data.length, true);
+    localView.setUint32(22, data.length, true);
+    localView.setUint16(26, name.length, true);
+    localParts.push(local, name, data);
+
+    const central = new Uint8Array(46);
+    const centralView = new DataView(central.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(8, 0x0800, true);
+    centralView.setUint16(10, 0, true);
+    centralView.setUint16(12, stamp.time, true);
+    centralView.setUint16(14, stamp.date, true);
+    centralView.setUint32(16, checksum, true);
+    centralView.setUint32(20, data.length, true);
+    centralView.setUint32(24, data.length, true);
+    centralView.setUint16(28, name.length, true);
+    centralView.setUint32(42, offset, true);
+    centralParts.push(central, name);
+    offset += local.length + name.length + data.length;
+  }
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const end = new Uint8Array(22);
+  const endView = new DataView(end.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(8, entries.length, true);
+  endView.setUint16(10, entries.length, true);
+  endView.setUint32(12, centralSize, true);
+  endView.setUint32(16, offset, true);
+  return new Blob([concatUint8Arrays([...localParts, ...centralParts, end])], { type: "application/zip" });
+}
+
+function textZipEntry(name, value) {
+  return { name, data: new Blob([value], { type: "application/json;charset=utf-8" }) };
+}
+
+async function readIndexedDbStore(storeName) {
+  const db = await openSupplierQuoteDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(storeName, "readonly");
+    const store = transaction.objectStore(storeName);
+    const request = store.getAll();
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+    transaction.oncomplete = () => db.close();
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error);
+    };
+  });
+}
+
+async function exportBrowserBackup() {
+  if (!isSuperAdmin()) return alert("Only Super Admin users may export browser backup data.");
+  const backupDate = new Date();
+  const localStorageData = {};
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    localStorageData[key] = localStorage.getItem(key);
+  }
+  const sessionStorageData = {};
+  for (let index = 0; index < sessionStorage.length; index += 1) {
+    const key = sessionStorage.key(index);
+    sessionStorageData[key] = sessionStorage.getItem(key);
+  }
+  const entries = [
+    textZipEntry("localStorage.json", JSON.stringify(localStorageData, null, 2)),
+    textZipEntry("sessionStorage.json", JSON.stringify(sessionStorageData, null, 2)),
+  ];
+  const manifest = {
+    backupName: "Browser Data Export",
+    backupCreatedAt: backupDate.toISOString(),
+    browserStorage: {
+      localStorageKeys: Object.keys(localStorageData),
+      sessionStorageKeys: Object.keys(sessionStorageData),
+      indexedDbName: supplierQuoteDbName,
+      indexedDbStores: [supplierQuoteStoreName, libraryDocumentStoreName],
+    },
+    filesIncluded: ["localStorage.json", "sessionStorage.json"],
+    warnings: [],
+  };
+  for (const storeName of [supplierQuoteStoreName, libraryDocumentStoreName]) {
+    try {
+      const records = await readIndexedDbStore(storeName);
+      const metadata = [];
+      for (const record of records) {
+        const file = record.file || record.blob;
+        const fileId = record.fileId || record.id || `${storeName}-${metadata.length + 1}`;
+        metadata.push({ ...record, file: file ? { name: file.name, type: file.type, size: file.size, lastModified: file.lastModified } : null });
+        if (file instanceof Blob) {
+          const safeName = String(file.name || `${fileId}.bin`).replace(/[<>:"/\\|?*]+/g, "_");
+          entries.push({ name: `indexeddb/${storeName}/${fileId}-${safeName}`, data: file, modifiedAt: file.lastModified ? new Date(file.lastModified) : backupDate });
+          manifest.filesIncluded.push(`indexeddb/${storeName}/${fileId}-${safeName}`);
+        }
+      }
+      entries.push(textZipEntry(`indexeddb/${storeName}.json`, JSON.stringify(metadata, null, 2)));
+      manifest.filesIncluded.push(`indexeddb/${storeName}.json`);
+    } catch (error) {
+      manifest.warnings.push(`Could not export IndexedDB store ${storeName}: ${error.message || error}`);
+    }
+  }
+  manifest.totalFileCount = entries.length + 1;
+  entries.push(textZipEntry("manifest.json", JSON.stringify(manifest, null, 2)));
+  const zip = await createBrowserZip(entries);
+  downloadBlobFile(zip, `interactive-security-browser-data-${todayInputValue()}.zip`);
+  writeAudit("Exported browser backup", `${manifest.totalFileCount} file(s)`, "Administration & Governance", "Browser Data Export", "localStorage and IndexedDB exported from this browser");
+}
+
+async function downloadServerBackup() {
+  if (!isSuperAdmin()) return alert("Only Super Admin users may download server backups.");
+  try {
+    const response = await fetch("/api/admin/backup", { credentials: "include" });
+    const contentType = response.headers.get("Content-Type") || "";
+    if (!response.ok) {
+      const data = contentType.includes("application/json") ? await response.json().catch(() => ({})) : {};
+      throw new Error(data.error || "Server backup could not be downloaded.");
+    }
+    const blob = await response.blob();
+    downloadBlobFile(blob, `interactive-security-backup-${todayInputValue()}.zip`);
+    writeAudit("Downloaded server backup", formatFileSize(blob.size), "Administration & Governance", "System Backup", "Server-side data export");
+  } catch (error) {
+    alert(error.message || "Server backup could not be downloaded.");
+  }
+}
+
+async function uploadFileToServer(file, context = {}) {
+  if (window.location.protocol === "file:") throw new Error("Server uploads require the live app URL.");
+  if (!isSuperAdmin()) throw new Error("Only Super Admin users may upload files to server storage.");
+  const formData = new FormData();
+  formData.append("files", file, file.name || context.originalFilename || "upload.bin");
+  Object.entries(context).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") formData.append(key, String(value));
+  });
+  const response = await fetch("/api/admin/uploads", {
+    method: "POST",
+    credentials: "include",
+    body: formData,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "File could not be uploaded to server storage.");
+  return data.files?.[0];
+}
+
+function serverUploadMetadata(record, fallbackFile = {}) {
+  return {
+    id: record.id || fallbackFile.id,
+    file_name: record.originalFilename || fallbackFile.name || "upload",
+    file_url: record.url || "",
+    file_type: record.mimeType || fallbackFile.type || "application/octet-stream",
+    mime_type: record.mimeType || fallbackFile.type || "application/octet-stream",
+    file_size: record.fileSize || fallbackFile.size || 0,
+    uploaded_by_user_id: record.uploadedBy?.email || currentUser(),
+    uploaded_at: record.uploadedAt || new Date().toISOString(),
+    serverUploadId: record.id || "",
+    stored_filename: record.storedFilename || "",
+    server_file_path: record.filePath || "",
+    storage: "server",
+  };
+}
+
+function base64ToFile(record, fallbackName = "legacy-upload.bin") {
+  const encoded = record.file_data_base64 || record.base64 || "";
+  if (!encoded) return null;
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  const type = record.mime_type || record.file_type || record.type || "application/octet-stream";
+  return new File([bytes], record.file_name || record.name || fallbackName, { type });
+}
+
+async function migrateBrowserUploadsToServer() {
+  if (!isSuperAdmin()) return alert("Only Super Admin users may migrate browser uploads.");
+  if (!confirm("This will copy browser-stored uploads from this browser into server persistent storage. Continue?")) return;
+  let migrated = 0;
+  const failures = [];
+  const uploadLegacyFile = async (file, context) => {
+    if (!file) return;
+    try {
+      await uploadFileToServer(file, { ...context, source: "browser-upload-migration" });
+      migrated += 1;
+    } catch (error) {
+      failures.push(`${file.name || context.legacyId || "file"}: ${error.message || error}`);
+    }
+  };
+  for (const request of loadSalesRequests()) {
+    for (const fileRecord of request.files || []) {
+      if (!fileRecord.serverUploadId) {
+        await uploadLegacyFile(base64ToFile(fileRecord, "sales-request-document.bin"), {
+          module: "Sales Quotation Requests",
+          relatedType: "sales_request",
+          relatedId: request.id || "",
+          requestNumber: request.request_number || request.number || "",
+          clientName: request.client_name || request.clientName || "",
+          legacyId: fileRecord.id || fileRecord.fileId || "",
+        });
+      }
+    }
+  }
+  for (const documentRecord of costRows("documents")) {
+    if (!documentRecord.serverUploadId) {
+      await uploadLegacyFile(base64ToFile(documentRecord, "cost-document.bin"), {
+        module: "Cost Hub",
+        relatedType: "cost_document",
+        relatedId: documentRecord.id || "",
+        clientName: documentRecord.supplierId ? costSupplierName(documentRecord.supplierId) : "",
+        legacyId: documentRecord.id || "",
+      });
+    }
+  }
+  for (const storeName of [supplierQuoteStoreName, libraryDocumentStoreName]) {
+    try {
+      const records = await readIndexedDbStore(storeName);
+      for (const record of records) {
+        const file = record.file || record.blob;
+        if (file instanceof Blob) {
+          await uploadLegacyFile(file, {
+            module: "Quote Library",
+            relatedType: storeName,
+            relatedId: record.quoteId || record.fileId || record.id || "",
+            legacyId: record.fileId || record.id || "",
+          });
+        }
+      }
+    } catch (error) {
+      failures.push(`${storeName}: ${error.message || error}`);
+    }
+  }
+  alert(`Migration complete. Uploaded ${migrated} file(s) to server storage.${failures.length ? `\n\nWarnings:\n${failures.slice(0, 8).join("\n")}` : ""}`);
+  writeAudit("Migrated browser uploads", `${migrated} file(s)`, "Administration & Governance", "Server Upload Migration", failures.length ? `${failures.length} warning(s)` : "Completed");
+}
+
 async function saveLibraryDocumentFile(fileId, file) {
   const db = await openSupplierQuoteDb();
   await new Promise((resolve, reject) => {
@@ -1744,6 +2038,9 @@ function saveSharedSessionObject(session) {
     access: role,
     permissions: Array.isArray(session.permissions) ? session.permissions : roleDefaultPermissions[role] || [],
     permissionsExplicit: Boolean(session.permissionsExplicit),
+    passwordSetupComplete: Boolean(session.passwordSetupComplete ?? true),
+    mustChangePassword: Boolean(session.mustChangePassword),
+    isActive: Boolean(session.isActive ?? true),
     signedInAt: session.signedInAt || new Date().toISOString(),
     lastActivityAt: session.lastActivityAt || new Date().toISOString(),
   };
@@ -5384,6 +5681,11 @@ async function handleCostFormSubmit(form) {
 
 function openCostDocument(id, mode = "view") {
   const documentRecord = costRows("documents").find((document) => document.id === id);
+  if (documentRecord?.file_url) {
+    const url = mode === "download" ? `${documentRecord.file_url}&mode=download` : documentRecord.file_url;
+    window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
   if (!documentRecord?.file_data_base64) return alert("The original file data is not available.");
   const binary = atob(documentRecord.file_data_base64);
   const bytes = new Uint8Array(binary.length);
@@ -5397,6 +5699,10 @@ function openCostDocument(id, mode = "view") {
 
 function openCostRequestDocument(requestId, fileId) {
   const file = costRows("requests").find((request) => request.id === requestId)?.documents?.find((item) => item.id === fileId);
+  if (file?.file_url) {
+    window.open(file.file_url, "_blank", "noopener,noreferrer");
+    return;
+  }
   if (!file?.file_data_base64) return alert("The original request document is not available.");
   const binary = atob(file.file_data_base64);
   const bytes = new Uint8Array(binary.length);
@@ -5978,7 +6284,20 @@ function renderGovernanceSearch() {
 
 function renderGovernanceReports() {
   const reports = ["User activity report", "Hub activity report", "Security report", "Login report", "Failed login report", "Approval report", "Full system activity report"];
-  return `<section class="finance-card"><h2>Audit Reports</h2><p class="finance-note">Reports respect the current Audit Search Centre filters. Full system exports are restricted to Super Admin users.</p><div class="governance-report-grid">${reports.map((report) => `<article><strong>${escapeHtml(report)}</strong><div class="row-actions"><button class="secondary-btn" data-governance-export="pdf" data-report="${escapeHtml(report)}">PDF</button><button class="secondary-btn" data-governance-export="csv" data-report="${escapeHtml(report)}">CSV</button><button class="secondary-btn" data-governance-export="excel" data-report="${escapeHtml(report)}">Excel</button></div></article>`).join("")}</div></section>`;
+  const backupPanel = isSuperAdmin() ? `
+    <section class="finance-card">
+      <div class="panel-heading">
+        <div><p class="eyebrow">System Backup</p><h2>Backup & Export</h2></div>
+        <div class="row-actions">
+          <button class="primary-btn" type="button" data-admin-server-backup>Download Full Server Backup</button>
+          <button class="secondary-btn" type="button" data-admin-browser-backup>Export Browser Data</button>
+          <button class="secondary-btn" type="button" data-admin-migrate-browser-uploads>Migrate Browser Uploads to Server</button>
+        </div>
+      </div>
+      <p class="finance-note">Server backup includes persistent server files such as data/app-db.json, cleanup backups, template PDFs, and server upload folders if they exist. Browser Data Export captures this browser's localStorage and IndexedDB uploads that the server cannot see.</p>
+    </section>
+  ` : "";
+  return `${backupPanel}<section class="finance-card"><h2>Audit Reports</h2><p class="finance-note">Reports respect the current Audit Search Centre filters. Full system exports are restricted to Super Admin users.</p><div class="governance-report-grid">${reports.map((report) => `<article><strong>${escapeHtml(report)}</strong><div class="row-actions"><button class="secondary-btn" data-governance-export="pdf" data-report="${escapeHtml(report)}">PDF</button><button class="secondary-btn" data-governance-export="csv" data-report="${escapeHtml(report)}">CSV</button><button class="secondary-btn" data-governance-export="excel" data-report="${escapeHtml(report)}">Excel</button></div></article>`).join("")}</div></section>`;
 }
 
 async function loadGovernancePasswordResetRequests() {
@@ -6955,6 +7274,18 @@ function fileToBase64(file) {
 
 async function requestFileMetadata(file) {
   const mimeType = requestDocumentMimeType(file);
+  if (window.location.protocol !== "file:" && isSuperAdmin()) {
+    try {
+      const serverRecord = await uploadFileToServer(file, {
+        module: activeSection === "salesRequests" ? "Sales Quotation Requests" : "Cost Hub",
+        relatedType: activeSection === "salesRequests" ? "sales_request_upload" : "cost_document_upload",
+      });
+      return serverUploadMetadata(serverRecord, file);
+    } catch (error) {
+      console.warn("Server upload failed; keeping browser copy for this file", error);
+      alert(`Server upload failed for ${file.name}. The file will remain in this browser only until it is migrated.\n\n${error.message || error}`);
+    }
+  }
   return {
     id: `request-file-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     file_name: file.name,
@@ -11877,10 +12208,36 @@ supplierImportMapping.addEventListener("change", (event) => {
 confirmSupplierImport.addEventListener("click", confirmSupplierPriceImport);
 downloadSupplierImportErrors.addEventListener("click", exportSupplierImportErrors);
 
-supplierQuoteUpload.addEventListener("change", () => {
+supplierQuoteUpload.addEventListener("change", async () => {
   const files = Array.from(supplierQuoteUpload.files || []);
-  const metadata = files.map(fileMetadata);
-  state.supplierQuoteFiles = [...state.supplierQuoteFiles, ...files];
+  const metadata = [];
+  const browserOnlyFiles = [];
+  for (const file of files) {
+    if (window.location.protocol !== "file:" && isSuperAdmin()) {
+      try {
+        const serverRecord = await uploadFileToServer(file, {
+          module: "Quotation",
+          relatedType: "supplier_quotation",
+          quoteNumber: fields.quoteNumber.value || "",
+          clientName: fields.clientName.value || "",
+        });
+        metadata.push({
+          ...fileMetadata(file),
+          ...serverUploadMetadata(serverRecord, file),
+          fileId: serverRecord.id,
+          name: serverRecord.originalFilename || file.name,
+          size: serverRecord.fileSize || file.size,
+        });
+        continue;
+      } catch (error) {
+        console.warn("Supplier quotation server upload failed; using browser storage fallback", error);
+        alert(`Server upload failed for ${file.name}. This file will remain in browser storage until migrated.\n\n${error.message || error}`);
+      }
+    }
+    metadata.push(fileMetadata(file));
+    browserOnlyFiles.push(file);
+  }
+  state.supplierQuoteFiles = [...state.supplierQuoteFiles, ...browserOnlyFiles];
   state.supplierQuotes = [...state.supplierQuotes, ...metadata];
   state.supplierQuote = state.supplierQuotes[0] || null;
 
@@ -11960,7 +12317,7 @@ loginForm.addEventListener("submit", async (event) => {
     }
     return;
   }
-  if (user.mustChangePassword) {
+  if (user.mustChangePassword || user.passwordSetupComplete === false) {
     const newPassword = prompt(`Please create a new password before continuing. ${passwordPolicyMessage}`);
     if (!newPassword || !isStrongPassword(newPassword.trim())) {
       alert(strongPasswordMessage(newPassword || ""));
@@ -11971,6 +12328,7 @@ loginForm.addEventListener("submit", async (event) => {
     try {
       await changeBackendPassword(loginPassword.value, newPassword.trim());
       user.mustChangePassword = false;
+      user.passwordSetupComplete = true;
       writeAudit("Changed temporary password", email, "Authentication", email, "First login password change");
     } catch (error) {
       alert(error.message || "Password could not be changed.");
@@ -11992,6 +12350,9 @@ loginForm.addEventListener("submit", async (event) => {
     permissionsExplicit: Boolean(user.permissionsExplicit),
     hasLoggedIn: true,
     inviteStatus: "Active",
+    passwordSetupComplete: Boolean(user.passwordSetupComplete ?? true),
+    mustChangePassword: false,
+    isActive: true,
     passwordHash: undefined,
     legacyPasswordHash: member?.legacyPasswordHash,
   });
@@ -12620,6 +12981,18 @@ portalHubGrid.addEventListener("click", async (event) => {
   const governanceExport = event.target.closest("[data-governance-export]");
   if (governanceExport) {
     governanceExportAudit(governanceExport.dataset.governanceExport, governanceExport.dataset.report || "Full system activity report");
+    return;
+  }
+  if (event.target.closest("[data-admin-server-backup]")) {
+    await downloadServerBackup();
+    return;
+  }
+  if (event.target.closest("[data-admin-browser-backup]")) {
+    await exportBrowserBackup();
+    return;
+  }
+  if (event.target.closest("[data-admin-migrate-browser-uploads]")) {
+    await migrateBrowserUploadsToServer();
     return;
   }
   const financeOpeningViewButton = event.target.closest("[data-finance-opening-view]");
