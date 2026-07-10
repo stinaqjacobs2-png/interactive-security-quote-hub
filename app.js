@@ -3921,6 +3921,9 @@ let costRequestFilters = { status: "", requester: "", supplier: "", date: "", en
 let costDashboardFilters = { month: todayInputValue().slice(0, 7), supplierId: "", branch: "" };
 let costSelectedEntityOverview = "";
 let costEntityOverviewTab = "paid";
+let costServerState = null;
+let costServerLoading = false;
+let costServerNotice = "";
 
 const governanceTabs = [
   { key: "dashboard", label: "System Dashboard" },
@@ -5071,20 +5074,77 @@ function renderFinanceHub(tab = activeFinanceTab) {
 }
 
 function costRows(type) {
+  if (costServerState && Array.isArray(costServerState[type])) return costServerState[type];
   return storageList(costStorageKeys[type], []);
+}
+
+function persistCostRows(type, rows) {
+  fetch(`/api/cost/table/${encodeURIComponent(type)}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rows }),
+  })
+    .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.error || "Cost Hub save failed"))))
+    .then((body) => {
+      if (costServerState && Array.isArray(body.rows)) costServerState[type] = body.rows;
+      costServerNotice = "Saved to server";
+    })
+    .catch((error) => {
+      console.error("Cost Hub server save failed", error);
+      costServerNotice = `Server save failed: ${error.message}`;
+    });
 }
 
 function saveCostRows(type, rows) {
   saveStorageList(costStorageKeys[type], rows);
+  if (costServerState) costServerState[type] = rows;
+  persistCostRows(type, rows);
+}
+
+async function loadCostServerState(force = false) {
+  if (costServerLoading || (costServerState && !force)) return costServerState;
+  costServerLoading = true;
+  try {
+    const response = await fetch("/api/cost/state", { credentials: "include" });
+    if (!response.ok) throw new Error((await response.json()).error || "Cost Hub state could not be loaded");
+    const state = await response.json();
+    costServerState = state;
+    for (const type of ["requests", "entities", "suppliers", "purchaseOrders", "bills", "payments", "credits", "documents"]) {
+      const localRows = storageList(costStorageKeys[type], []);
+      if ((!Array.isArray(costServerState[type]) || !costServerState[type].length) && localRows.length) {
+        costServerState[type] = localRows;
+        persistCostRows(type, localRows);
+      }
+    }
+    costServerNotice = "Using server-backed Cost Hub storage";
+  } catch (error) {
+    console.error("Cost Hub state load failed", error);
+    costServerNotice = `Using browser fallback: ${error.message}`;
+  } finally {
+    costServerLoading = false;
+  }
+  return costServerState;
 }
 
 function costAudit(action, reference = "-", notes = "") {
   writeAudit(action, reference, "Cost Hub", reference, notes || `Action by ${currentUserName()}`);
+  fetch("/api/cost/audit", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, reference, notes }),
+  }).catch(() => {});
 }
 
 function nextCostNumber(prefix, type) {
   const sequence = JSON.parse(localStorage.getItem(costStorageKeys.sequence) || "{}");
-  sequence[type] = Number(sequence[type] || 0) + 1;
+  const rowsType = type === "request" ? "requests" : type === "po" ? "purchaseOrders" : type;
+  const existingMax = costRows(rowsType).reduce((max, row) => {
+    const match = String(row.number || row.reference || "").match(/(\d+)$/);
+    return Math.max(max, match ? Number(match[1]) : 0);
+  }, 0);
+  sequence[type] = Math.max(Number(sequence[type] || 0), existingMax) + 1;
   localStorage.setItem(costStorageKeys.sequence, JSON.stringify(sequence));
   return `${prefix}-${new Date().getFullYear()}-${String(sequence[type]).padStart(4, "0")}`;
 }
@@ -5522,10 +5582,55 @@ function renderCostDocuments() {
   return `<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Supporting records</p><h2>Documents</h2></div></div><form class="cost-form-grid" data-cost-form="documents"><label>Supplier<select name="supplierId">${costSupplierOptions()}</select></label><label>Document type<select name="documentType"><option>Supplier quotation</option><option>Supplier invoice</option><option>Proof of payment</option><option>Statement</option><option>Contract</option><option>Other</option></select></label><label class="cost-form-wide">Files<input type="file" name="files" multiple required /></label><button class="primary-btn" type="submit">Upload documents</button></form>${costTable(["File", "Type", "Supplier", "Uploaded", "Actions"], rows)}</section>`;
 }
 
+function costAgeBucket(dueDateValue) {
+  if (!dueDateValue) return { label: "No due date", key: "noDate", days: 0 };
+  const due = new Date(`${String(dueDateValue).slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(due.getTime())) return { label: "No due date", key: "noDate", days: 0 };
+  const today = new Date(`${todayInputValue()}T00:00:00`);
+  const days = Math.floor((today - due) / 86400000);
+  if (days <= 0) return { label: "Current", key: "current", days };
+  if (days <= 30) return { label: "1-30", key: "d30", days };
+  if (days <= 60) return { label: "31-60", key: "d60", days };
+  if (days <= 90) return { label: "61-90", key: "d90", days };
+  if (days <= 120) return { label: "91-120", key: "d120", days };
+  return { label: "120+", key: "d120plus", days };
+}
+
+function costOutstandingBillRows() {
+  return costRows("bills")
+    .map((bill) => {
+      const supplier = costRows("suppliers").find((item) => item.id === bill.supplierId);
+      const paid = costBillPayments(bill.id);
+      const total = financeNumber(bill.total);
+      const balance = Math.max(0, total - paid);
+      const age = costAgeBucket(bill.dueDate);
+      return { ...bill, supplierName: supplier?.name || "Unknown creditor", paid, balance, age };
+    })
+    .filter((bill) => bill.balance > 0 && !["Paid", "Rejected", "Cancelled", "Archived"].includes(String(bill.status || "")));
+}
+
 function renderCostReports() {
   const bills = costRows("bills");
-  const supplierRows = costRows("suppliers").map((supplier) => { const supplierBills = bills.filter((bill) => bill.supplierId === supplier.id); const total = supplierBills.reduce((sum, bill) => sum + financeNumber(bill.total), 0); const paid = supplierBills.reduce((sum, bill) => sum + costBillPayments(bill.id), 0); return `<tr><td>${escapeHtml(supplier.name)}</td><td>${supplierBills.length}</td><td>${money.format(total)}</td><td>${money.format(paid)}</td><td>${money.format(Math.max(0, total - paid))}</td></tr>`; });
-  return `<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Cost reporting</p><h2>Supplier Cost Report</h2></div><button class="secondary-btn" data-cost-export-report>Export CSV</button></div>${costTable(["Supplier", "Bills", "Total billed", "Paid", "Outstanding"], supplierRows)}</section>`;
+  const outstandingRows = costOutstandingBillRows();
+  const supplierRows = costRows("suppliers").map((supplier) => {
+    const supplierBills = bills.filter((bill) => bill.supplierId === supplier.id);
+    const outstandingBills = outstandingRows.filter((bill) => bill.supplierId === supplier.id);
+    const total = supplierBills.reduce((sum, bill) => sum + financeNumber(bill.total), 0);
+    const paid = supplierBills.reduce((sum, bill) => sum + costBillPayments(bill.id), 0);
+    const outstanding = outstandingBills.reduce((sum, bill) => sum + bill.balance, 0);
+    const oldest = outstandingBills.map((bill) => bill.dueDate).filter(Boolean).sort()[0] || "-";
+    const buckets = { current: 0, d30: 0, d60: 0, d90: 0, d120: 0, d120plus: 0, noDate: 0 };
+    outstandingBills.forEach((bill) => { buckets[bill.age.key] += bill.balance; });
+    return `<tr><td><strong>${escapeHtml(supplier.name)}</strong><small>${escapeHtml(supplier.paymentTerms || "")}</small></td><td>${outstandingBills.length}</td><td>${escapeHtml(formatDate(oldest))}</td><td>${money.format(buckets.current)}</td><td>${money.format(buckets.d30)}</td><td>${money.format(buckets.d60)}</td><td>${money.format(buckets.d90)}</td><td>${money.format(buckets.d120)}</td><td>${money.format(buckets.d120plus)}</td><td><strong>${money.format(outstanding)}</strong><small>Paid ${money.format(paid)} / billed ${money.format(total)}</small></td></tr>`;
+  });
+  const totals = outstandingRows.reduce((summary, bill) => {
+    summary.total += bill.balance;
+    summary[bill.age.key] += bill.balance;
+    return summary;
+  }, { total: 0, current: 0, d30: 0, d60: 0, d90: 0, d120: 0, d120plus: 0, noDate: 0 });
+  const overdue = totals.d30 + totals.d60 + totals.d90 + totals.d120 + totals.d120plus;
+  const cards = `<div class="dashboard-summary-grid">${renderSummaryCard("Total outstanding", money.format(totals.total))}${renderSummaryCard("Overdue", money.format(overdue))}${renderSummaryCard("Current", money.format(totals.current))}${renderSummaryCard("Outstanding invoices", outstandingRows.length)}</div>`;
+  return `<section class="finance-card"><div class="panel-heading"><div><p class="eyebrow">Cost reporting</p><h2>Creditor Age Analysis</h2><p>Outstanding creditor balances by due-date bucket, including current, 30 days, 60 days, 90 days, 120 days and older.</p></div><div class="row-actions"><button class="secondary-btn" data-cost-export-report>Export CSV</button><button class="secondary-btn" data-cost-server-age-export>Server CSV</button></div></div>${costServerNotice ? `<p class="finance-note">${escapeHtml(costServerNotice)}</p>` : ""}${cards}${costTable(["Creditor", "Open invoices", "Oldest due", "Current", "1-30", "31-60", "61-90", "91-120", "120+", "Total outstanding"], supplierRows)}</section>`;
 }
 
 function renderCostSetup() {
@@ -5540,6 +5645,11 @@ function renderCostAudit() {
 
 function renderCostHub(tab = activeCostTab) {
   activeCostTab = costTabs.some((item) => item.key === tab) ? tab : "dashboard";
+  if (!costServerState && !costServerLoading) {
+    portalHubGrid.innerHTML = `<section class="finance-hub-shell cost-hub-shell"><main class="finance-main"><section class="finance-card"><h2>Loading Cost Hub</h2><p class="finance-note">Connecting to server-backed Cost Hub records...</p></section></main></section>`;
+    loadCostServerState(true).then(() => renderCostHub(activeCostTab));
+    return;
+  }
   const hub = companyHubBySlug("cost-hub");
   const renderers = {
     dashboard: renderCostDashboard, requests: renderCostRequests, approvals: renderCostPoApprovals, entities: renderCostEntities, suppliers: renderCostSuppliers, purchaseOrders: renderCostPurchaseOrders, bills: renderCostBills, payments: renderCostPayments, credits: renderCostCredits, documents: renderCostDocuments, reports: renderCostReports, setup: renderCostSetup, audit: renderCostAudit,
@@ -5549,6 +5659,7 @@ function renderCostHub(tab = activeCostTab) {
   const requestCount = costRows("requests").filter((request) => ["Submitted", "Supplier approval required"].includes(request.status)).length;
   const approvalCount = costRows("purchaseOrders").filter((po) => ["Pending approval", "Draft"].includes(po.status)).length;
   portalHubGrid.innerHTML = `<section class="finance-hub-shell cost-hub-shell"><aside class="finance-sidebar"><div class="brand"><img class="brand-logo" src="./interactive-security-logo.jpg" alt="Interactive Security" /><div><strong>${escapeHtml(hub.name)}</strong><small>Supplier costs</small></div></div><nav>${costTabs.map((item) => `<button class="nav-item ${item.key === activeCostTab ? "active" : ""}" type="button" data-cost-tab="${item.key}">${escapeHtml(item.label)}${item.key === "requests" && requestCount ? ` <span class="status-badge status-info">${requestCount}</span>` : ""}${item.key === "approvals" && approvalCount ? ` <span class="status-badge status-warning">${approvalCount}</span>` : ""}</button>`).join("")}</nav><div class="finance-user-panel"><small>Signed in as</small><strong>${escapeHtml(currentUserName())}</strong><span>${escapeHtml(currentMember().access || "Member")}</span><button class="secondary-btn" type="button" data-finance-logout>Logout</button></div></aside><main class="finance-main"><div class="topbar"><div><p class="eyebrow">Interactive Security</p><h1>${escapeHtml(costTabs.find((item) => item.key === activeCostTab)?.label || "Cost Hub")}</h1></div><button class="secondary-btn" type="button" onclick="window.location.href='/'">Back to portal</button></div>${content}</main></section>`;
+  if (costServerNotice) portalHubGrid.querySelector(".finance-main")?.insertAdjacentHTML("afterbegin", `<p class="finance-note">${escapeHtml(costServerNotice)}</p>`);
   portalHubGrid.insertAdjacentHTML("beforeend", `<datalist id="costEntityNames">${costEntityDatalist()}</datalist>`);
   portalHubGrid.querySelectorAll('[name="branch"]').forEach((input) => input.setAttribute("list", "costEntityNames"));
   costAudit("Opened Cost Hub tab", activeCostTab);
@@ -5760,15 +5871,24 @@ function processCostRequest(requestId) {
 }
 
 function exportCostReport() {
-  const rows = [["Supplier", "Bill count", "Total billed", "Paid", "Outstanding"]];
-  costRows("suppliers").forEach((supplier) => {
-    const bills = costRows("bills").filter((bill) => bill.supplierId === supplier.id);
-    const total = bills.reduce((sum, bill) => sum + financeNumber(bill.total), 0);
-    const paid = bills.reduce((sum, bill) => sum + costBillPayments(bill.id), 0);
-    rows.push([supplier.name, bills.length, total.toFixed(2), paid.toFixed(2), Math.max(0, total - paid).toFixed(2)]);
-  });
-  downloadBlobFile(new Blob([rows.map((row) => row.map(csvEscape).join(",")).join("\n")], { type: "text/csv;charset=utf-8" }), `cost-hub-supplier-report-${todayInputValue()}.csv`);
-  costAudit("Exported Cost Hub report", "Supplier cost report", `${rows.length - 1} suppliers`);
+  const rows = [
+    ["Creditor", "Entity", "Invoice", "Due date", "Days outstanding", "Age bucket", "Total", "Paid", "Outstanding", "Status", "Type"],
+    ...costOutstandingBillRows().map((bill) => [
+      bill.supplierName,
+      bill.branch || bill.entityName || "",
+      bill.billNumber || bill.invoiceNumber || "",
+      bill.dueDate || "",
+      Math.max(0, bill.age.days),
+      bill.age.label,
+      financeNumber(bill.total),
+      bill.paid,
+      bill.balance,
+      costBillStatus(bill),
+      bill.costType || bill.type || "Ad hoc",
+    ]),
+  ];
+  downloadBlobFile(new Blob([rows.map((row) => row.map(csvEscape).join(",")).join("\n")], { type: "text/csv;charset=utf-8" }), `cost-hub-creditor-age-analysis-${todayInputValue()}.csv`);
+  costAudit("Exported creditor age analysis", "CSV", `${rows.length - 1} outstanding invoice row(s)`);
 }
 
 function isSuperAdmin() {
@@ -12805,6 +12925,10 @@ portalHubGrid.addEventListener("click", async (event) => {
   }
   if (event.target.closest("[data-cost-export-report]")) {
     exportCostReport();
+    return;
+  }
+  if (event.target.closest("[data-cost-server-age-export]")) {
+    window.location.href = `/api/cost/report/creditor-age-analysis.csv?generated=${encodeURIComponent(new Date().toISOString())}`;
     return;
   }
   const viewCostDocumentId = event.target.closest("[data-cost-view-document]")?.dataset.costViewDocument;

@@ -158,6 +158,43 @@ const mimeTypes = {
   ".json": "application/json; charset=utf-8",
 };
 
+const costTableMap = {
+  requests: "cost_requests",
+  entities: "cost_entities",
+  suppliers: "cost_creditors",
+  purchaseOrders: "cost_purchase_orders",
+  bills: "cost_bills",
+  payments: "cost_payments",
+  credits: "cost_credits",
+  documents: "cost_documents",
+};
+
+function defaultCostConfig() {
+  return {
+    vatRate: 15,
+    paymentTerms: "30 days",
+    categories: ["Stock", "Services", "Subcontractors", "Labour", "Consumables"],
+    departments: [],
+    costCentres: [],
+    priorities: ["Low", "Normal", "High", "Urgent"],
+    statuses: ["Draft", "Submitted", "Under Review", "Information Required", "Approved", "Scheduled for Payment", "Part paid", "Paid", "Rejected", "Cancelled", "On Hold", "Archived"],
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function ensureCostDb(db) {
+  Object.values(costTableMap).forEach((table) => {
+    if (!Array.isArray(db[table])) db[table] = [];
+  });
+  ["cost_status_history", "cost_imports", "cost_notifications"].forEach((table) => {
+    if (!Array.isArray(db[table])) db[table] = [];
+  });
+  if (!db.cost_config || typeof db.cost_config !== "object" || Array.isArray(db.cost_config)) {
+    db.cost_config = defaultCostConfig();
+  }
+  return db;
+}
+
 function ensureDb() {
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
   if (!fs.existsSync(dbPath)) {
@@ -184,12 +221,17 @@ function ensureDb() {
   }
   const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
   let changed = false;
-  ["sessions", "sso_tokens", "members", "user_permissions", "sales_quotation_requests", "sales_quotation_request_files", "uploaded_files", "email_logs", "audit_trail", "password_reset_tokens"].forEach((table) => {
+  ["sessions", "sso_tokens", "members", "user_permissions", "sales_quotation_requests", "sales_quotation_request_files", "uploaded_files", "email_logs", "audit_trail", "password_reset_tokens", "cost_entities", "cost_creditors", "cost_requests", "cost_purchase_orders", "cost_bills", "cost_payments", "cost_credits", "cost_documents", "cost_status_history", "cost_imports", "cost_notifications"].forEach((table) => {
     if (!Array.isArray(db[table])) {
       db[table] = [];
       changed = true;
     }
   });
+  ensureCostDb(db);
+  if (!db.cost_config) {
+    db.cost_config = defaultCostConfig();
+    changed = true;
+  }
   if (!db.security_settings) {
     db.security_settings = {
       maxFailedLogins: MAX_FAILED_LOGINS,
@@ -269,7 +311,10 @@ function readDb() {
 
 function writeDb(db) {
   ensureDb();
-  fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
+  ensureCostDb(db);
+  const tempPath = `${dbPath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(db, null, 2));
+  fs.renameSync(tempPath, dbPath);
 }
 
 function normalizeZipPath(value = "") {
@@ -615,6 +660,89 @@ function writeAudit(db, action, user, module = "Authentication", reference = use
   db.audit_trail = db.audit_trail.slice(0, 5000);
 }
 
+function requireCostSession(req, res) {
+  const session = getSession(req);
+  if (!session) {
+    json(res, 401, { error: "Not signed in" });
+    return null;
+  }
+  if (!hasPermission(session, "cost_hub") && !hasPermission(session, "administration_governance")) {
+    json(res, 403, { error: "Cost Hub access denied." });
+    return null;
+  }
+  return session;
+}
+
+function publicCostState(db) {
+  ensureCostDb(db);
+  return {
+    requests: db.cost_requests,
+    entities: db.cost_entities,
+    suppliers: db.cost_creditors,
+    purchaseOrders: db.cost_purchase_orders,
+    bills: db.cost_bills,
+    payments: db.cost_payments,
+    credits: db.cost_credits,
+    documents: db.cost_documents,
+    setup: db.cost_config || defaultCostConfig(),
+    statusHistory: db.cost_status_history.slice(0, 500),
+    audit: db.audit_trail.filter((entry) => entry.module === "Cost Hub").slice(0, 500),
+  };
+}
+
+function costTableName(type) {
+  return costTableMap[type] || "";
+}
+
+function costMoney(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function costBillPaid(db, billId) {
+  return (db.cost_payments || [])
+    .filter((payment) => payment.billId === billId)
+    .reduce((sum, payment) => sum + costMoney(payment.amount), 0);
+}
+
+function costAgeBucket(dueDateValue, asOf = new Date()) {
+  if (!dueDateValue) return "No due date";
+  const due = new Date(`${String(dueDateValue).slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(due.getTime())) return "No due date";
+  const days = Math.floor((new Date(asOf.toISOString().slice(0, 10)).getTime() - due.getTime()) / 86400000);
+  if (days <= 0) return "Current";
+  if (days <= 30) return "1-30";
+  if (days <= 60) return "31-60";
+  if (days <= 90) return "61-90";
+  if (days <= 120) return "91-120";
+  return "120+";
+}
+
+function costCreditorAgeRows(db) {
+  const suppliers = db.cost_creditors || [];
+  const bills = (db.cost_bills || []).filter((bill) => !["Paid", "Rejected", "Cancelled", "Archived"].includes(String(bill.status || "")));
+  return suppliers.map((supplier) => {
+    const supplierBills = bills.filter((bill) => bill.supplierId === supplier.id);
+    const row = { creditor: supplier.name || "Unknown creditor", entity: "", total: 0, current: 0, d30: 0, d60: 0, d90: 0, d120: 0, d120plus: 0, invoices: 0, oldestDueDate: "" };
+    supplierBills.forEach((bill) => {
+      const balance = Math.max(0, costMoney(bill.total) - costBillPaid(db, bill.id));
+      if (!balance) return;
+      row.total += balance;
+      row.invoices += 1;
+      row.entity = row.entity || bill.branch || bill.entityName || "";
+      if (bill.dueDate && (!row.oldestDueDate || bill.dueDate < row.oldestDueDate)) row.oldestDueDate = bill.dueDate;
+      const bucket = costAgeBucket(bill.dueDate);
+      if (bucket === "Current") row.current += balance;
+      else if (bucket === "1-30") row.d30 += balance;
+      else if (bucket === "31-60") row.d60 += balance;
+      else if (bucket === "61-90") row.d90 += balance;
+      else if (bucket === "91-120") row.d120 += balance;
+      else row.d120plus += balance;
+    });
+    return row;
+  }).filter((row) => row.total > 0).sort((a, b) => b.total - a.total);
+}
+
 function json(res, status, payload) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -798,7 +926,7 @@ function saveSession(user) {
   db.sessions = db.sessions.filter((item) => normalizeEmail(item.email) !== normalizeEmail(session.email) || new Date(item.expiresAt) > new Date());
   db.sessions.push(session);
   // FIX: find existing member BEFORE building memberRecord so we can use their
-  // stored contact fields as fallback — prevents SSO login from wiping phone/branch/department.
+  // stored contact fields as fallback â€” prevents SSO login from wiping phone/branch/department.
   const memberIndex = db.members.findIndex((member) => normalizeEmail(member.email) === normalizeEmail(session.email) || member.id === session.userId);
   const existingMember = memberIndex >= 0 ? normalizeMemberAuthState(db.members[memberIndex]) : {};
   const normalizedUser = normalizeMemberAuthState({ ...existingMember, ...user });
@@ -1297,6 +1425,67 @@ async function handleApi(req, res) {
         department: member.department || "",
       }));
     return json(res, 200, { members: activeMembers });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/cost/state") {
+    const session = requireCostSession(req, res);
+    if (!session) return;
+    const db = readDb();
+    return json(res, 200, publicCostState(db));
+  }
+
+  if (req.method === "POST" && url.pathname.startsWith("/api/cost/table/")) {
+    const session = requireCostSession(req, res);
+    if (!session) return;
+    const type = decodeURIComponent(url.pathname.split("/").pop() || "");
+    const table = costTableName(type);
+    if (!table) return json(res, 404, { error: "Unknown Cost Hub table." });
+    const body = await readBody(req);
+    if (!Array.isArray(body.rows)) return json(res, 400, { error: "Rows must be an array." });
+    if (body.rows.length > 10000) return json(res, 400, { error: "Too many rows in one save." });
+    const db = readDb();
+    ensureCostDb(db);
+    const now = new Date().toISOString();
+    db[table] = body.rows.map((row) => ({
+      ...(row && typeof row === "object" ? row : {}),
+      id: row?.id || crypto.randomUUID(),
+      updatedAt: now,
+      updatedBy: session.email,
+    }));
+    writeAudit(db, "Saved Cost Hub table", session, "Cost Hub", type, `${db[table].length} record(s) saved server-side`);
+    writeDb(db);
+    return json(res, 200, { ok: true, rows: db[table] });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/cost/audit") {
+    const session = requireCostSession(req, res);
+    if (!session) return;
+    const body = await readBody(req);
+    const db = readDb();
+    writeAudit(db, String(body.action || "Cost Hub activity"), session, "Cost Hub", String(body.reference || "-"), String(body.notes || ""));
+    writeDb(db);
+    return json(res, 200, { ok: true });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/cost/report/creditor-age-analysis.csv") {
+    const session = requireCostSession(req, res);
+    if (!session) return;
+    const db = readDb();
+    const rows = costCreditorAgeRows(db);
+    const escapeCsv = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+    const csvRows = [
+      ["Creditor", "Entity", "Invoices", "Oldest due date", "Current", "1-30", "31-60", "61-90", "91-120", "120+", "Total outstanding"],
+      ...rows.map((row) => [row.creditor, row.entity, row.invoices, row.oldestDueDate, row.current, row.d30, row.d60, row.d90, row.d120, row.d120plus, row.total]),
+    ];
+    writeAudit(db, "Exported creditor age analysis", session, "Cost Hub", "Creditor Age Analysis", `${rows.length} creditor row(s)`);
+    writeDb(db);
+    res.writeHead(200, {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="cost-hub-creditor-age-analysis-${new Date().toISOString().slice(0, 10)}.csv"`,
+      "Cache-Control": "no-store",
+    });
+    res.end(csvRows.map((row) => row.map(escapeCsv).join(",")).join("\n"));
+    return;
   }
 
   if (req.method === "POST" && url.pathname === "/api/finance/import-opening-balances") {
